@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       SUSFS:
-        description: 📦 是否启用SUSFS
+        description: "📦 SuSFS Support"
         required: true
         type: choice
         options:
@@ -17,7 +17,7 @@ on:
           - "Off"
         default: "Off"
       KPM:
-        description: 🧩 是否启用KPM
+        description: "🧩 KPM Support"
         required: true
         type: choice
         options:
@@ -25,7 +25,7 @@ on:
           - "Off"
         default: "On"
       bbg:
-        description: 🛡️ 否启用BBG基带保护
+        description: "🛡️ BBG baseband protection"
         required: true
         type: choice
         options:
@@ -33,7 +33,7 @@ on:
           - "Off"
         default: "On"
       bbr:
-        description: 📶 是否启用BBR算法(对手机日用无太大意义甚至可能负优化)
+        description: "📶 BBR algorithm (Has little practical benefit for everyday phone use and may even result in negative optimization)"
         required: true
         type: choice
         options:
@@ -41,17 +41,17 @@ on:
           - "Off"
         default: "Off"
       adios_rekernel_enable:
-        description: ⚙️ 是否启用ADIOS IO调度器及Re-Kernel支持
+        description: "⚙️ ADIOS I/O scheduler and Re-Kernel support"
         required: true
         type: choice
         default: 安装ADIOS调度器
         options:
-          - 均不安装
-          - 安装ADIOS调度器
-          - 安装Re-Kernel
-          - 均安装
+          - "none"
+          - "ADIOS only"
+          - "Re-Kernel only"
+          - "both"
       proxy:
-        description: 🌐 是否添加代理性能优化
+        description: "🌐 Proxy performance optimization"
         required: true
         type: choice
         options:
@@ -59,8 +59,7 @@ on:
           - "Off"
         default: "On"
       UNICODE_BYPASS:
-        description: 🚀 是否添加Unicode零宽绕过修复补丁(高内核版本不推荐开启, 建议使用
-          https://t.me/real5ec1cff/271 无痛修复)
+        description: "🚀 Unicode zero-width bypass fix patch (Not recommended for higher kernel versions; it is suggested to use https://t.me/real5ec1cff/271 for a painless fix)"
         required: true
         type: choice
         options:
@@ -68,13 +67,13 @@ on:
           - "Off"
         default: "Off"
       kernel_suffix:
-        description: 📝 内核后缀(留空默认,开头别加连字符,勿加空格等影响指令运行的保留字符)
+        description: "📝 Kernel suffix (Leave empty to use the default; do not add a hyphen at the beginning, and do not include spaces or other reserved characters that may affect command execution)"
         required: false
         type: string
         default: ""
       BUILD_TIME:
         type: string
-        description: "📅 自定义构建时间(输入F使用当前UTC时间)"
+        description: "📅 Custom build time (Enter F to use the current UTC time)"
         required: false
         default: "Thu Dec 11 04:17:27 UTC 2025"
         
@@ -308,7 +307,7 @@ jobs:
           echo "📦 应用lz4补丁..."
           git apply -p1 < 001-lz4.patch || true
           patch -p1 < 002-zstd.patch || true
-          
+
           echo "📦 正在启用POLLY支持..."
           git apply -p1 < EnablePOLLY.patch || true
 
@@ -418,13 +417,13 @@ jobs:
             echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
 
-          if [[ "${{ github.event.inputs.adios_rekernel_enable }}" == "安装ADIOS调度器" || "${{ github.event.inputs.adios_rekernel_enable }}" == "均安装" ]]; then
+          if [[ "${{ github.event.inputs.adios_rekernel_enable }}" == "ADIOS only" || "${{ github.event.inputs.adios_rekernel_enable }}" == "both" ]]; then
             echo "📦 正在设置 ADIOS..."
             echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
 
-          if [[ "${{ github.event.inputs.adios_rekernel_enable }}" == "安装Re-Kernel" || "${{ github.event.inputs.adios_rekernel_enable }}" == "均安装" ]]; then
+          if [[ "${{ github.event.inputs.adios_rekernel_enable }}" == "Re-Kernel only" || "${{ github.event.inputs.adios_rekernel_enable }}" == "both" ]]; then
             echo "📦 正在设置 Re-Kernel..."
             echo "CONFIG_REKERNEL=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
