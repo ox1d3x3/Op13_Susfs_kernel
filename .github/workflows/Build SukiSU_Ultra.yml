@@ -1,10 +1,10 @@
 ---
 name: Build SukiSU Ultra
 env:
-  TZ: Australia/Perth
+  TZ: Asia/Shanghai
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
-  KERNEL_NAME: "android15-8-g29d86c5fc9dd-abogki428889875-4k-Ox1d3x3-SUS"
+  KERNEL_NAME: "android15-8-g29d86c5fc9dd-abogki428889875-4k"
 on:
   workflow_dispatch:
     inputs:
@@ -341,42 +341,60 @@ jobs:
             KSU_SUSFS_PATCH="$(realpath "$KSU_SUSFS_PATCH")"
             echo "📦 Enable patch absolute path: $KSU_SUSFS_PATCH"
 
-            apply_patch_anywhere() {
-              local p="$1"
-              local dirs=("./common" "./KernelSU" ".")
-              local strips=(1 0 2 3 4)
-              for d in "${dirs[@]}"; do
-                [ -d "$d" ] || continue
-                for s in "${strips[@]}"; do
-                  if (cd "$d" && git apply --check -p"$s" "$p" >/dev/null 2>&1); then
-                    echo "↪️ Applying in $d with git apply -p$s"
-                    (cd "$d" && git apply -p"$s" "$p")
-                    return 0
-                  fi
-                  if (cd "$d" && patch -p"$s" --dry-run --forward -l -F 3 < "$p" >/dev/null 2>&1); then
-                    echo "↪️ Applying in $d with patch -p$s"
-                    (cd "$d" && patch -p"$s" --forward -l -F 3 < "$p")
-                    return 0
-                  fi
-                done
-              done
-              return 1
-            }
+                        apply_ksu_susfs_enable_patch() {
+                          local p="$1"
+                          local strips=(1 0 2 3 4)
 
-            if ! apply_patch_anywhere "$KSU_SUSFS_PATCH"; then
-              echo "❌ SUSFS enable patch failed to apply. The susfs4ksu branch likely doesn't match the KernelSU/SukiSU version in this tree."
-              exit 1
-            fi
+                          # Prefer applying into the tree that is actually built: kernel_platform/common
+                          for s in "${strips[@]}"; do
+                            if git apply --check --directory=common -p"$s" "$p" >/dev/null 2>&1; then
+                              echo "↪️ Applying into ./common with git apply --directory=common -p$s"
+                              git apply --directory=common -p"$s" "$p"
+                              return 0
+                            fi
+                          done
 
-            # Ensure the symbol now exists in the tree that is built (kernel_platform/common).
-            if ! grep -Rqs 'config[[:space:]]\+KSU_SUSFS' ./common/drivers/kernelsu 2>/dev/null; then
-              echo "❌ KSU_SUSFS Kconfig symbol still not found under common/drivers/kernelsu after patching."
-              echo "---- drivers/kernelsu SUSFS grep ----"
-              grep -RIn --max-count=80 'KSU_SUSFS\|SUSFS' ./common/drivers/kernelsu 2>/dev/null || true
-              exit 1
-            fi
-            echo "✅ KernelSU SUSFS symbol detected"
-          fi
+                          for s in "${strips[@]}"; do
+                            if patch -p"$s" --dry-run --forward -l -F 3 -d common < "$p" >/dev/null 2>&1; then
+                              echo "↪️ Applying into ./common with patch -d common -p$s"
+                              patch -p"$s" --forward --batch -l -F 3 -d common < "$p"
+                              return 0
+                            fi
+                          done
+
+                          # Some enable patches already include 'common/' in paths; try applying from inside common.
+                          for s in "${strips[@]}"; do
+                            if (cd common && git apply --check -p"$s" "$p" >/dev/null 2>&1); then
+                              echo "↪️ Applying inside ./common with git apply -p$s"
+                              (cd common && git apply -p"$s" "$p")
+                              return 0
+                            fi
+                            if (cd common && patch -p"$s" --dry-run --forward -l -F 3 < "$p" >/dev/null 2>&1); then
+                              echo "↪️ Applying inside ./common with patch -p$s"
+                              (cd common && patch -p"$s" --forward --batch -l -F 3 < "$p")
+                              return 0
+                            fi
+                          done
+
+                          return 1
+                        }
+
+                        if ! apply_ksu_susfs_enable_patch "$KSU_SUSFS_PATCH"; then
+                          echo "❌ SUSFS enable patch failed to apply into ./common."
+                          echo "   The susfs4ksu branch likely doesn't match the KernelSU/SukiSU driver version in this kernel tree."
+                          exit 1
+                        fi
+
+                        # Ensure the symbol now exists in the tree that is built (kernel_platform/common).
+                        if ! grep -Rqs 'config[[:space:]]\+KSU_SUSFS' ./common/drivers/kernelsu 2>/dev/null; then
+                          echo "❌ KSU_SUSFS Kconfig symbol still not found under common/drivers/kernelsu after patching."
+                          echo "   (If you see KSU_SUSFS in other paths below, it means the patch doesn't match this tree's driver layout.)"
+                          echo "---- SUSFS grep (first 40 matches) ----"
+                          grep -RIn --max-count=40 'config[[:space:]]\+KSU_SUSFS|KSU_SUSFS|SUSFS' . 2>/dev/null || true
+                          exit 1
+                        fi
+                        echo "✅ KernelSU SUSFS symbol detected in common/drivers/kernelsu"
+                      fi
 
           cd ./common
           
@@ -440,9 +458,71 @@ jobs:
             return 0
           }
 
+          # Verify helper: confirms a patch is already applied (reverse-apply would succeed).
+          verify_patch_applied() {
+            local p="$1"
+            local strips=(1 0 2 3 4)
+            for s in "${strips[@]}"; do
+              if git apply -R --check -p"$s" "$p" >/dev/null 2>&1; then
+                return 0
+              fi
+              if patch -p"$s" -R --dry-run --batch -l -F 3 < "$p" >/dev/null 2>&1; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          # Apply a patch and ensure it is actually in effect (or already present).
+          apply_patch_required_verified() {
+            local p="$1"
+            echo "Applying (verified) patch: $p"
+
+            if verify_patch_applied "$p"; then
+              echo "✅ Patch already present: $p"
+              return 0
+            fi
+
+            local strips=(1 0 2 3 4)
+            local applied=0
+
+            if grep -q "GIT binary patch" "$p"; then
+              for s in "${strips[@]}"; do
+                if git apply --binary -p"$s" "$p" >/dev/null 2>&1; then
+                  applied=1; break
+                fi
+              done
+            else
+              for s in "${strips[@]}"; do
+                if patch -p"$s" --forward --batch -l -F 3 < "$p" >/dev/null 2>&1; then
+                  applied=1; break
+                fi
+              done
+            fi
+
+            if [ "$applied" -ne 1 ]; then
+              echo "❌ Failed to apply patch: $p"
+              exit 1
+            fi
+
+            if ! verify_patch_applied "$p"; then
+              echo "❌ Patch did not verify as applied: $p"
+              exit 1
+            fi
+
+            echo "✅ Patch applied and verified: $p"
+          }
+
           echo "Applying lz4 patch..."
-          # LZ4 patch may contain git binary patch blocks; treat as optional to avoid hard-failing the build.
-          apply_patch_optional 001-lz4.patch
+          apply_patch_required_verified 001-lz4.patch
+
+          # Ensure the lz4 ARMv8 asm source is present where Kbuild expects it.
+          if [ ! -f "./lib/lz4/lz4armv8/lz4armv8.S" ] && [ ! -f "./lib/lz4/lz4armv8.S" ]; then
+            echo "❌ lz4armv8.S not found in expected locations under common/lib/lz4"
+            ls -la ./lib/lz4 || true
+            exit 1
+          fi
+          echo "✅ LZ4 sources detected"
           
           echo "Applying zstd patch..."
           apply_patch_optional 002-zstd.patch
@@ -452,7 +532,7 @@ jobs:
           
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
             echo "Applying SUSFS patch..."
-            apply_patch_required 50_add_susfs_in_gki-android15-6.6.patch
+            apply_patch_required_verified 50_add_susfs_in_gki-android15-6.6.patch
           else
             echo "Applying MANUAL_HOOK patch..."
             apply_patch_required scope_min_manual_hooks_v1.9.patch
@@ -485,6 +565,11 @@ jobs:
           }
           
           append_cfg "CONFIG_KSU=y"
+          
+          # --- ZRAM: default compression to LZ4 (requires 001-lz4.patch) ---
+          append_cfg "CONFIG_ZRAM_DEF_COMP_LZ4=y"
+          append_cfg "# CONFIG_ZRAM_DEF_COMP_LZORLE is not set"
+          append_cfg 'CONFIG_ZRAM_DEF_COMP="lz4"'
           
           if [ "${{ github.event.inputs.KPM }}" == "On" ]; then
             echo "📦 Enabling KPM..."
@@ -624,6 +709,18 @@ jobs:
 
           echo "---- Effective config (KSU/KPM/SUSFS) ----"
           grep -nE '^CONFIG_KSU(=|_)|^CONFIG_KPM(=|_)' out/.config || true
+
+          echo "---- Effective config (ZRAM/LZ4) ----"
+          grep -nE '^CONFIG_ZRAM(=|_)|^CONFIG_ZRAM_DEF_COMP(=|_)|^CONFIG_ZRAM_DEF_COMP_LZ4(=|_)|^CONFIG_LZ4(=|_)' out/.config | head -n 80 || true
+
+          if ! grep -q '^CONFIG_ZRAM_DEF_COMP_LZ4=y' out/.config; then
+            echo "❌ LZ4 ZRAM default was requested by workflow, but CONFIG_ZRAM_DEF_COMP_LZ4 is not enabled in out/.config"
+            exit 1
+          fi
+          if ! grep -q '^CONFIG_ZRAM_DEF_COMP="lz4"' out/.config; then
+            echo "❌ ZRAM default compressor is not set to lz4 (CONFIG_ZRAM_DEF_COMP=\"lz4\")"
+            exit 1
+          fi
 
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
             if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
