@@ -338,6 +338,8 @@ jobs:
               exit 1
             fi
             echo "📦 Using enable patch: $KSU_SUSFS_PATCH"
+            KSU_SUSFS_PATCH="$(realpath "$KSU_SUSFS_PATCH")"
+            echo "📦 Enable patch absolute path: $KSU_SUSFS_PATCH"
 
             apply_patch_anywhere() {
               local p="$1"
@@ -469,106 +471,144 @@ jobs:
           echo "📦 Enabling KSU support..."
           
           DEFCONFIG_PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig"
+
+
+          if [ ! -f "$DEFCONFIG_PATH" ]; then
+            echo "❌ Defconfig not found at: $DEFCONFIG_PATH"
+            ls -la "$(dirname "$DEFCONFIG_PATH")" || true
+            exit 1
+          fi
+
+          append_cfg() {
+            local line="$1"
+            grep -qxF "$line" "$DEFCONFIG_PATH" || echo "$line" >> "$DEFCONFIG_PATH"
+          }
           
-          echo "CONFIG_KSU=y" >> "$DEFCONFIG_PATH"
+          append_cfg "CONFIG_KSU=y"
           
           if [ "${{ github.event.inputs.KPM }}" == "On" ]; then
             echo "📦 Enabling KPM..."
-            echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
+            append_cfg "CONFIG_KPM=y"
           fi
-          
-          
+
+          # --- SUSFS / Manual mode (SukiSU Ultra compatible) ---
+          # Kconfig will silently ignore unknown symbols, so we only write symbols that exist in this tree.
+          KSU_KCONFIG_DIR="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/drivers/kernelsu"
+          ksym_exists() { grep -RInqE "^[[:space:]]*config[[:space:]]+$1([[:space:]]|$)" "$KSU_KCONFIG_DIR" 2>/dev/null; }
+
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
             echo "📦 Enabling SUSFS features..."
-            echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> ./common/arch/arm64/configs/gki_defconfig
-          else 
-            echo "📦 Enabling MANUAL_HOOK..."
-            echo "CONFIG_KSU_SUSFS=n" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_MANUAL_HOOK=y" >> ./common/arch/arm64/configs/gki_defconfig
+            if ! ksym_exists KSU_SUSFS; then
+              echo "❌ KSU_SUSFS symbol not present in KernelSU driver. SUSFS enable patch didn't apply."
+              exit 1
+            fi
+            append_cfg "CONFIG_KSU_SUSFS=y"
+            for sym in \
+              KSU_SUSFS_SUS_PATH \
+              KSU_SUSFS_SUS_MOUNT \
+              KSU_SUSFS_SUS_KSTAT \
+              KSU_SUSFS_SPOOF_UNAME \
+              KSU_SUSFS_ENABLE_LOG \
+              KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+              KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+              KSU_SUSFS_OPEN_REDIRECT \
+              KSU_SUSFS_SUS_MAP
+            do
+              if ksym_exists "$sym"; then
+                append_cfg "CONFIG_${sym}=y"
+              else
+                echo "ℹ️ Skipping missing symbol: CONFIG_${sym}"
+              fi
+            done
+
+            # If manual mode exists, explicitly disable it to avoid conflicts.
+            if ksym_exists KSU_MANUAL_SU; then append_cfg "CONFIG_KSU_MANUAL_SU=n"; fi
+            if ksym_exists KSU_MANUAL_HOOK; then append_cfg "CONFIG_KSU_MANUAL_HOOK=n"; fi
+          else
+            echo "📦 SUSFS=Off: enabling KernelSU manual mode (if supported)..."
+            append_cfg "CONFIG_KSU_SUSFS=n"
+            if ksym_exists KSU_MANUAL_SU; then
+              append_cfg "CONFIG_KSU_MANUAL_SU=y"
+            elif ksym_exists KSU_MANUAL_HOOK; then
+              append_cfg "CONFIG_KSU_MANUAL_HOOK=y"
+            else
+              echo "⚠️ No manual mode symbol found (KSU_MANUAL_SU / KSU_MANUAL_HOOK). Leaving defaults."
+            fi
           fi
           
           echo "📦 Adding support for Mountify (backslashxx/mountify) module"
-          echo "CONFIG_TMPFS_XATTR=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_TMPFS_POSIX_ACL=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
           
           
           if [ "${{ github.event.inputs.bbg }}" == "On" ]; then
             echo "⚡ Configuring BBG..."
-            echo 'CONFIG_BBG=y' >> ./common/arch/arm64/configs/gki_defconfig
-            echo 'CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf,baseband_guard"' >> ./common/arch/arm64/configs/gki_defconfig
+            echo 'CONFIG_BBG=y' >> "$DEFCONFIG_PATH"
+            echo 'CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf,baseband_guard"' >> "$DEFCONFIG_PATH"
           fi          
           
           
           if [ "${{ github.event.inputs.bbr }}" == "On" ]; then
             echo "🌐 Enabling BBR congestion control..."
-            echo "CONFIG_TCP_CONG_ADVANCED=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_TCP_CONG_BBR=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_NET_SCH_FQ=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_TCP_CONG_BIC=n" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_TCP_CONG_WESTWOOD=n" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_TCP_CONG_HTCP=n" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_TCP_CONG_ADVANCED=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_NET_SCH_FQ=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_TCP_CONG_BIC=n" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_TCP_CONG_WESTWOOD=n" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_TCP_CONG_HTCP=n" >> "$DEFCONFIG_PATH"
           fi
           
           # Add O2 config
           
           echo "📦 Setting O2..."
-          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> "$DEFCONFIG_PATH"
           
           # Enable POLLY in LLVM
           echo "📦 Setting POLLY..."
-          echo "CONFIG_LLVM_POLLY=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_LD_DEAD_CODE_DATA_ELIMINATION=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_LLVM_POLLY=y" >> "$DEFCONFIG_PATH"
+          echo "CONFIG_LD_DEAD_CODE_DATA_ELIMINATION=y" >> "$DEFCONFIG_PATH"
           
           if [ "${{ github.event.inputs.proxy }}" == "On" ]; then
             # Add proxy config
             echo "📦 Applying proxy/network optimizations..."
-            echo "CONFIG_BPF_STREAM_PARSER=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_NETFILTER_XT_SET=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET_MAX=65534" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET_BITMAP_IP=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET_BITMAP_IPMAC=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET_BITMAP_PORT=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET_HASH_IP=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET_HASH_IPMARK=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET_HASH_IPPORT=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET_HASH_IPPORTIP=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET_HASH_IPPORTNET=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET_HASH_IPMAC=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET_HASH_MAC=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET_HASH_NETPORTNET=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET_HASH_NET=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET_HASH_NETNET=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET_HASH_NETPORT=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET_HASH_NETIFACE=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP_SET_LIST_SET=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP6_NF_NAT=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_BPF_STREAM_PARSER=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_NETFILTER_XT_SET=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET_MAX=65534" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET_BITMAP_IP=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET_BITMAP_IPMAC=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET_BITMAP_PORT=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET_HASH_IP=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET_HASH_IPMARK=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET_HASH_IPPORT=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET_HASH_IPPORTIP=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET_HASH_IPPORTNET=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET_HASH_IPMAC=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET_HASH_MAC=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET_HASH_NETPORTNET=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET_HASH_NET=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET_HASH_NETNET=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET_HASH_NETPORT=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET_HASH_NETIFACE=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP_SET_LIST_SET=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP6_NF_NAT=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> "$DEFCONFIG_PATH"
           fi
           
           if [[ "${{ github.event.inputs.adios_rekernel_enable }}" == "ADIOS only" || "${{ github.event.inputs.adios_rekernel_enable }}" == "both" ]]; then
             echo "📦 Setting up ADIOS..."
-            echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> "$DEFCONFIG_PATH"
+            echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> "$DEFCONFIG_PATH"
           fi
           
           if [[ "${{ github.event.inputs.adios_rekernel_enable }}" == "Re-Kernel only" || "${{ github.event.inputs.adios_rekernel_enable }}" == "both" ]]; then
             echo "📦 Setting up Re-Kernel..."
-            echo "CONFIG_REKERNEL=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_REKERNEL=y" >> "$DEFCONFIG_PATH"
           fi
           
           # Skip installing UAPI headers to usr/include to save build time
-          echo "CONFIG_HEADERS_INSTALL=n" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_HEADERS_INSTALL=n" >> "$DEFCONFIG_PATH"
           
           
           # Remove check_defconfig
