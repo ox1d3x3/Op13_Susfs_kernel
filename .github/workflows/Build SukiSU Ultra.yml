@@ -1,10 +1,10 @@
 ---
 name: Build SukiSU Ultra
 env:
-  TZ: Asia/Shanghai
+  TZ: Australia/Perth
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
-  KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k-ox1d3x3-SUS
+  KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k-Ox1d3x3-SUS
 on:
   workflow_dispatch:
     inputs:
@@ -44,7 +44,7 @@ on:
         description: "⚙️ ADIOS I/O scheduler and Re-Kernel support"
         required: true
         type: choice
-        default: 安装ADIOS调度器
+        default: "ADIOS only"
         options:
           - "none"
           - "ADIOS only"
@@ -73,9 +73,9 @@ on:
         default: ""
       BUILD_TIME:
         type: string
-        description: "📅 Custom build time (Enter F to use the current UTC time)"
+        description: "📅 Custom build time (Enter F to use the current Perth time)"
         required: false
-        default: "Thu Dec 11 04:17:27 UTC 2025"
+        default: "F"
         
 jobs:
   build:
@@ -87,7 +87,7 @@ jobs:
       CCACHE_HARDLINK: "true"
       CCACHE_MAXSIZE: 8G
     steps:
-      - name: 🚀 Maximize Build Space | 最大化构建空间
+      - name: 🚀 Maximize Build Space
         uses: easimon/maximize-build-space@master
         with:
           root-reserve-mb: 8192
@@ -97,22 +97,22 @@ jobs:
           remove-haskell: "true"
           remove-codeql: "true"
           
-      - name: ⚙️ Setup Cache Env | 设置缓存环境
+      - name: ⚙️ Setup Cache Env
         run: |
-          echo "🔧 正在设置机型隔离缓存目录..."
+          echo "🔧 Setting up device-isolated cache directory..."
           echo "CCACHE_DIR=$HOME/.ccache_SukiSU" >> $GITHUB_ENV
           mkdir -p "$HOME/.ccache_SukiSU"
 
-          echo "✅ 缓存目录已设置: $HOME/.ccache_SukiSU"
+          echo "✅ Cache directory set: $HOME/.ccache_SukiSU"
           
-      - name: 🔐 Configure Git | 配置Git账户
+      - name: 🔐 Configure Git
         run: |
-          echo "🔧 正在配置Git用户信息..."
-          git config --global user.name "GitHub Actions - chenhua13 Kernel"
+          echo "🔧 Configuring Git user info..."
+          git config --global user.name "GitHub Actions - Ox1d3x3_SUS Kernel"
           git config --global user.email "builder@localhost"
-          echo "✅ Git配置完成"
+          echo "✅ Git config complete"
           
-      - name: 📦 Cache & Install Dependencies | 缓存 & 安装构建依赖
+      - name: 📦 Cache & Install Dependencies
         uses: awalsh128/cache-apt-pkgs-action@latest
         with:
           packages: python3 git curl ccache libelf-dev build-essential flex bison
@@ -121,7 +121,7 @@ jobs:
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
           execute_install_scripts: true
           
-      - name: 💾 Restore ccache (With SUSFS) | 恢复ccache缓存 (With SUSFS)
+      - name: 💾 Restore ccache (With SUSFS)
         if: ${{ github.event.inputs.SUSFS == 'On' }}
         uses: actions/cache@v3
         with:
@@ -132,7 +132,7 @@ jobs:
 
             ccache-${{ runner.os }}-SukiSU-SUSFS
             
-      - name: 💾 Restore ccache (Without SUSFS) | 恢复ccache缓存 (Without SUSFS)
+      - name: 💾 Restore ccache (Without SUSFS)
         if: ${{ github.event.inputs.SUSFS == 'Off' }}
         uses: actions/cache@v3
         with:
@@ -143,9 +143,9 @@ jobs:
 
             ccache-${{ runner.os }}-SukiSU-NoSUSFS
             
-      - name: ⚙️ Initialize ccache | 初始化ccache
+      - name: ⚙️ Initialize ccache
         run: |
-          echo "🔧 正在初始化ccache..."
+          echo "🔧 Initializing ccache..."
           INIT_FLAG="${{ env.CCACHE_DIR }}/.ccache_initialized"
 
           if command -v ccache >/dev/null 2>&1; then
@@ -153,41 +153,41 @@ jobs:
               mkdir -p "${{ env.CCACHE_DIR }}"
               ccache -M ${{ env.CCACHE_MAXSIZE }}
               touch "$INIT_FLAG"
-              echo "✅ ccache初始化完成"
+              echo "✅ ccache initialized"
             else
-              echo "ℹ️ ccache已存在，跳过初始化"
+              echo "ℹ️ ccache already initialized, skipping"
             fi
           else
-            echo "⚠️ 未找到ccache命令，跳过初始化"
+            echo "⚠️ ccache not found, skipping initialization"
           fi
-          # 显示缓存统计
+# Show ccache statistics
           ccache -s
-          echo "✅ ccache初始化流程完成"
+          echo "✅ ccache initialization flow complete"
           
-      - name: 📥 Install Repo Tool | 安装Repo工具
+      - name: 📥 Install Repo Tool
         run: |
-          echo "⬇️ 正在下载repo工具..."
+          echo "⬇️ Downloading repo tool..."
           curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > ~/repo
           chmod a+x ~/repo
           sudo mv ~/repo /usr/local/bin/repo
-          echo "✅ repo工具安装完成"
+          echo "✅ repo tool installed"
           
-      - name: 📥 Install Neutron Clang Tool | 安装Neutron Clang工具
+      - name: 📥 Install Neutron Clang Tool
         run: |
-          echo "⬇️ 正在下载rneutron clang具..."
+          echo "⬇️ Downloading Neutron clang tool..."
           mkdir -p "$HOME/toolchains/neutron-clang"
           cd "$HOME/toolchains/neutron-clang"
           bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S
-          echo "✅ neutron clang工具安装完成"
+          echo "✅ Neutron clang tool installed"
           
-      - name: "⬇️ Clone Kernel Source | 克隆内核源码"
+      - name: "⬇️ Clone Kernel Source"
         run: |
           mkdir kernel_workspace && cd kernel_workspace
 
-          echo "🌐 正在初始化内核仓库..."
+          echo "🌐 Initializing kernel repo..."
           repo init -u https://github.com/mrcxlinux/actions_oplus_sm8750.git -b refs/heads/zh -m manifest.xml --depth=1
 
-          echo "🔄 同步代码库(使用$(nproc --all)线程)..."
+          echo "🔄 Syncing repos (using $(nproc --all) threads)..."
           repo sync -c -j$(nproc --all) --no-tags --no-clone-bundle --force-sync
           
           rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
@@ -201,25 +201,25 @@ jobs:
           sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' kernel_platform/msm-kernel/scripts/setlocalversion
           sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' kernel_platform/external/dtc/scripts/setlocalversion
 
-          echo "✅ 内核配置完成"
+          echo "✅ Kernel setup complete"
           
-      - name: ⚡ Setup Baseband-guard | 配置 Baseband-guard
+      - name: ⚡ Setup Baseband-guard
         if: ${{ github.event.inputs.bbg == 'On' }}
         run: |
           set -e
           cd kernel_workspace/kernel_platform/common
           
-          echo "🛠️ 正在设置BBG..."
+          echo "🛠️ Setting up BBG..."
           curl -sSL https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh -o setup.sh
           bash setup.sh     
               
-      - name: ⚡ Setup SukiSU Ultra | 配置 SukiSU Ultra
+      - name: ⚡ Setup SukiSU Ultra
         run: |
           cd kernel_workspace/kernel_platform
 
-          # 下载并执行设置脚本
+# (translated comment)
 
-          echo "🛠️ 正在设置SukiSU Ultra..."
+          echo "🛠️ Setting up SukiSU Ultra..."
 
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh" | bash -s main
 
@@ -234,12 +234,12 @@ jobs:
           done
 
           if [ -z "$KSU_API_VERSION" ]; then
-            echo "❌ 错误：未能获取 KSU_API_VERSION" >&2
+            echo "❌ Error: failed to fetch KSU_API_VERSION" >&2
             exit 1
           fi
 
           KSU_COMMIT_HASH=$(git ls-remote https://github.com/SukiSU-Ultra/SukiSU-Ultra.git refs/heads/builtin | cut -f1 | cut -c1-8)
-          KSU_VERSION_FULL="v${KSU_API_VERSION}-${KSU_COMMIT_HASH}@chenhua13"
+          KSU_VERSION_FULL="v${KSU_API_VERSION}-${KSU_COMMIT_HASH}@Ox1d3x3_SUS"
 
           sed -i '/define get_ksu_version_full/,/endef/d' kernel/Kbuild
           sed -i '/KSU_VERSION_API :=/d' kernel/Kbuild
@@ -251,7 +251,7 @@ jobs:
             if echo "$line" | grep -q 'REPO_OWNER :='; then
               cat >> "$TMP_FILE" <<EOF
           define get_ksu_version_full
-          v\\\$\$1-${KSU_COMMIT_HASH}@chenhua13
+          v\\\$\$1-${KSU_COMMIT_HASH}@Ox1d3x3_SUS
           endef
 
           KSU_VERSION_API := ${KSU_API_VERSION}
@@ -261,13 +261,13 @@ jobs:
           done < kernel/Kbuild
           mv "$TMP_FILE" kernel/Kbuild
 
-          echo "✅ SukiSU Ultra 版本信息配置完成"
+          echo "✅ SukiSU Ultra version metadata configured"
 
-      - name: 🔧 Setup Patches | 配置补丁
+      - name: 🔧 Setup Patches
         run: |
           cd kernel_workspace
 
-          echo "⬇️ 克隆所需补丁..."
+          echo "⬇️ Cloning required patches..."
 
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then          
             git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6
@@ -278,7 +278,7 @@ jobs:
 
           cd kernel_platform
 
-          echo "📝 复制补丁文件..."
+          echo "📝 Copying patch files..."
 
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
             cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
@@ -299,51 +299,87 @@ jobs:
           if [ "${{ github.event.inputs.UNICODE_BYPASS }}" = "On" ]; then
             cp ../kernel_patches/common/unicode_bypass_fix_6.1+.patch ./common/unicode_bypass_fix.patch
           fi
-
           cd ./common
 
-          if [ "${{ github.event.inputs.UNICODE_BYPASS }}" = "On" ]; then
-            echo "📦 正在应用Unicode零宽绕过修复补丁..."
-            patch -p1 < unicode_bypass_fix.patch
-          fi
+# Normalize line endings for patch files (prevents "corrupt binary patch" issues)
+dos2unix 001-lz4.patch 002-zstd.patch EnablePOLLY.patch 2>/dev/null || true
+if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
+  dos2unix 50_add_susfs_in_gki-android15-6.6.patch 2>/dev/null || true
+else
+  dos2unix scope_min_manual_hooks_v1.9.patch 2>/dev/null || true
+fi
+if [ "${{ github.event.inputs.UNICODE_BYPASS }}" = "On" ]; then
+  dos2unix unicode_bypass_fix.patch 2>/dev/null || true
+fi
 
-          echo "📦 应用lz4补丁..."
-          git apply -p1 < 001-lz4.patch
-          patch -p1 < 002-zstd.patch
+if [ "${{ github.event.inputs.UNICODE_BYPASS }}" = "On" ]; then
+  echo "Applying Unicode zero-width bypass fix patch..."
+  patch -p1 < unicode_bypass_fix.patch
+fi
 
-          echo "📦 正在启用POLLY支持..."
-          git apply -p1 < EnablePOLLY.patch || true
+apply_patch_required() {
+  local p="$1"
+  echo "Applying required patch: $p"
+  # Try git apply first (3-way helps when the base has small diffs)
+  git apply -p1 --3way --whitespace=nowarn "$p" && return 0
+  echo "git apply failed for $p, trying GNU patch with fuzz..."
+  patch -p1 -l -F 3 < "$p"
+}
 
-          if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-            echo "📦 应用SUSFS补丁..."
-            patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch
-          else
-            echo "📦 应用MANUAL_HOOK补丁..."
-            patch -p1 -F 3 < scope_min_manual_hooks_v1.9.patch
-          fi
+apply_patch_optional() {
+  local p="$1"
+  echo "Applying optional patch: $p"
+  if git apply -p1 --3way --whitespace=nowarn "$p"; then
+    return 0
+  fi
+  echo "git apply failed for $p, trying GNU patch with fuzz..."
+  if patch -p1 -l -F 3 < "$p"; then
+    return 0
+  fi
+  echo "⚠️ Optional patch did not apply cleanly: $p (continuing without it)"
+  return 0
+}
 
-          echo "✅ 所有补丁应用完成"
+echo "Applying lz4 patch..."
+apply_patch_required 001-lz4.patch
 
-      - name: ⚙️ Configure Kernel Options | 配置内核选项
+echo "Applying zstd patch..."
+apply_patch_optional 002-zstd.patch
+
+echo "Enabling POLLY support..."
+apply_patch_optional EnablePOLLY.patch
+
+if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
+  echo "Applying SUSFS patch..."
+  apply_patch_required 50_add_susfs_in_gki-android15-6.6.patch
+else
+  echo "Applying MANUAL_HOOK patch..."
+  apply_patch_required scope_min_manual_hooks_v1.9.patch
+fi
+
+echo "✅ Patch step completed"
+
+
+      - name: ⚙️ Configure Kernel Options
         run: |
           cd kernel_workspace/kernel_platform
 
-          echo "⚙️ 正在配置内核编译选项..."
+          echo "⚙️ Configuring kernel build options..."
 
-          echo "📦 启用 KSU 支持..."
+          echo "📦 Enabling KSU support..."
 
           DEFCONFIG_PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig"
           
           echo "CONFIG_KSU=y" >> "$DEFCONFIG_PATH"
 
           if [ "${{ github.event.inputs.KPM }}" == "On" ]; then
-            echo "📦 启用 KPM..."
+            echo "📦 Enabling KPM..."
             echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
 
 
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-            echo "📦 启用 SUSFS 功能..."
+            echo "📦 Enabling SUSFS features..."
             echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -355,25 +391,25 @@ jobs:
             echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> ./common/arch/arm64/configs/gki_defconfig
           else 
-            echo "📦 启用 MANUAL_HOOK..."
+            echo "📦 Enabling MANUAL_HOOK..."
             echo "CONFIG_KSU_SUSFS=n" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_MANUAL_HOOK=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
 
-          echo "📦 添加对 Mountify (backslashxx/mountify) 模块的支持"
+          echo "📦 Adding support for Mountify (backslashxx/mountify) module"
           echo "CONFIG_TMPFS_XATTR=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> ./common/arch/arm64/configs/gki_defconfig
 
 
           if [ "${{ github.event.inputs.bbg }}" == "On" ]; then
-            echo "⚡ 配置 BBG 中..."
+            echo "⚡ Configuring BBG..."
             echo 'CONFIG_BBG=y' >> ./common/arch/arm64/configs/gki_defconfig
             echo 'CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf,baseband_guard"' >> ./common/arch/arm64/configs/gki_defconfig
           fi          
 
 
           if [ "${{ github.event.inputs.bbr }}" == "On" ]; then
-            echo "🌐 启用 BBR 网络算法..."
+            echo "🌐 Enabling BBR congestion control..."
             echo "CONFIG_TCP_CONG_ADVANCED=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_TCP_CONG_BBR=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_NET_SCH_FQ=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -384,17 +420,17 @@ jobs:
                  
           # Add O2 config
 
-          echo "📦 设置 O2..."
+          echo "📦 Setting O2..."
           echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> ./common/arch/arm64/configs/gki_defconfig
           
           # Enable POLLY in LLVM
-          echo "📦 设置 POLLY..."
+          echo "📦 Setting POLLY..."
           echo "CONFIG_LLVM_POLLY=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_LD_DEAD_CODE_DATA_ELIMINATION=y" >> ./common/arch/arm64/configs/gki_defconfig
 
           if [ "${{ github.event.inputs.proxy }}" == "On" ]; then
             # Add proxy config
-            echo "📦 加入代理优化..."
+            echo "📦 Applying proxy/network optimizations..."
             echo "CONFIG_BPF_STREAM_PARSER=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_NETFILTER_XT_SET=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -421,40 +457,40 @@ jobs:
           fi
 
           if [[ "${{ github.event.inputs.adios_rekernel_enable }}" == "ADIOS only" || "${{ github.event.inputs.adios_rekernel_enable }}" == "both" ]]; then
-            echo "📦 正在设置 ADIOS..."
+            echo "📦 Setting up ADIOS..."
             echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
 
           if [[ "${{ github.event.inputs.adios_rekernel_enable }}" == "Re-Kernel only" || "${{ github.event.inputs.adios_rekernel_enable }}" == "both" ]]; then
-            echo "📦 正在设置 Re-Kernel..."
+            echo "📦 Setting up Re-Kernel..."
             echo "CONFIG_REKERNEL=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
 
-          #跳过将uapi标准头安装到 usr/include 目录的不必要操作，节省编译时间
+          # Skip installing UAPI headers to usr/include to save build time
           echo "CONFIG_HEADERS_INSTALL=n" >> ./common/arch/arm64/configs/gki_defconfig
 
 
           # Remove check_defconfig
           sed -i 's/check_defconfig//' ./common/build.config.gki
 
-          echo "✅ 内核配置更新完成"
+          echo "✅ Kernel config updated"
           
-      - name: 📦 Add build name | 添加制作名称
+      - name: 📦 Add build name
         run: |
-          echo "📦 替换内核版本后缀..."
+          echo "📦 Replacing kernel version suffix..."
 
           cd $GITHUB_WORKSPACE/kernel_workspace/kernel_platform/
 
           if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
             SUFFIX="${{ github.event.inputs.kernel_suffix }}"
-            echo "当前内核版本后缀：$SUFFIX"
+            echo "Current kernel version suffix: $SUFFIX"
             for f in ./common/scripts/setlocalversion; do
               sed -i "\$s|echo \"\\\$res\"|echo \"-${SUFFIX}\"|" "$f"
             done
             sed -i "s/-4k/-${SUFFIX}/g" ./common/arch/arm64/configs/gki_defconfig
           else
-            echo "当前内核版本后缀：${KERNEL_NAME}"
+            echo "Current kernel version suffix: ${KERNEL_NAME}"
             for f in ./common/scripts/setlocalversion; do
               sed -i "\$s|echo \"\\\$res\"|echo \"-${KERNEL_NAME}\"|" "$f"
             done
@@ -465,7 +501,7 @@ jobs:
 
           echo "CONFIG_LOCALVERSION_AUTO=n" >> ./common/arch/arm64/configs/gki_defconfig
           
-      - name: 📅 Set up custom BUILD_TIME | 设置自定义 BUILD_TIME
+      - name: 📅 Set up custom BUILD_TIME
         shell: bash
         run: |
           INPUT_TIME="${{ github.event.inputs.BUILD_TIME }}"
@@ -473,8 +509,8 @@ jobs:
             DATESTR="$INPUT_TIME"
             echo "Using input BUILD_TIME: $DATESTR"
           else
-            DATESTR="$(TZ='UTC' date +'%a %b %d %T %Z %Y')"
-            echo "Using UTC time as fallback: $DATESTR"
+            DATESTR="$(TZ='Australia/Perth' date +'%a %b %d %T %Z %Y')"
+            echo "Using Perth time as fallback: $DATESTR"
           fi
           echo "KBUILD_BUILD_TIMESTAMP=${DATESTR}" >> "$GITHUB_ENV"
           echo "KBUILD_BUILD_VERSION=1" >> "$GITHUB_ENV"
@@ -490,9 +526,9 @@ jobs:
             fi
           done
           
-      - name: 🔨 Build Kernel | 编译内核
+      - name: 🔨 Build Kernel
         run: |
-          echo "🏗️ 开始内核编译..."
+          echo "🏗️ Starting kernel build..."
             export PATH="/usr/lib/ccache:$HOME/toolchains/neutron-clang/bin:$PATH" 
             export PATH="/usr/lib/ccache:$PATH"
             sudo apt install libelf-dev
@@ -506,36 +542,36 @@ jobs:
             echo "FAKETIME=$FAKETIME" >> $GITHUB_ENV
             SO_DIR=$(pwd)
             export PRELOAD_LIBS="$SO_DIR/libfakestat.so $SO_DIR/libfaketimeMT.so"
-            #创建 CC (编译器) 包装器
+# Create CC (compiler) wrapper
             echo '#!/bin/bash' > cc-wrapper
             echo 'export LD_PRELOAD="'$PRELOAD_LIBS'"' >> cc-wrapper
             echo 'export FAKESTAT="'$FAKESTAT'"' >> cc-wrapper
             echo 'export FAKETIME="'$FAKETIME'"' >> cc-wrapper
             echo 'ccache clang "$@"' >> cc-wrapper
-            #创建 LD (链接器) 包装器
+# Create LD (linker) wrapper
             echo '#!/bin/bash' > ld-wrapper
             echo 'export LD_PRELOAD="'$PRELOAD_LIBS'"' >> ld-wrapper
             echo 'export FAKESTAT="'$FAKESTAT'"' >> ld-wrapper
             echo 'export FAKETIME="'$FAKETIME'"' >> ld-wrapper
             echo 'ld.lld "$@"' >> ld-wrapper
 
-            # 测试时间劫持测试是否正常工作
-            echo "--- [Wrapper Test] 正在创建通用的时间劫持测试脚本 ---"
+# Wrapper self-test
+            echo "--- [Wrapper Test] Creating generic time-spoof test script ---"
             echo '#!/bin/bash' > test-wrapper.sh
             echo 'export LD_PRELOAD="'$PRELOAD_LIBS'"' >> test-wrapper.sh
             echo 'export FAKESTAT="'$FAKESTAT'"' >> test-wrapper.sh
             echo 'export FAKETIME="'$FAKETIME'"' >> test-wrapper.sh
-            echo 'echo ">>> Wrapper 内部环境检查完毕."' >> test-wrapper.sh
-            echo 'exec "$@"' >> test-wrapper.sh # 执行所有传入的参数
+            echo 'echo ">>> Wrapper internal environment check complete."' >> test-wrapper.sh
+            echo 'exec "$@"' >> test-wrapper.sh # Execute all passed arguments
             chmod +x test-wrapper.sh
-            echo "--- [Wrapper Test] 正在测试 (date) 命令 ---"
+            echo "--- [Wrapper Test] Testing (date) command ---"
             ./test-wrapper.sh date
-            echo "--- [Wrapper Test] 正在测试 (stat) 命令 ---"
+            echo "--- [Wrapper Test] Testing (stat) command ---"
             ./test-wrapper.sh stat ./Makefile
-            echo "--- [Wrapper Test] 测试完毕 ---"
+            echo "--- [Wrapper Test] Test complete ---"
             chmod +x cc-wrapper ld-wrapper
-            echo "--- 编译前环境时间: $(LD_PRELOAD=$PRELOAD_LIBS date) ---"
-            echo "--- 编译前环境文件时间戳: ---"
+            echo "--- Pre-build env time: $(LD_PRELOAD=$PRELOAD_LIBS date) ---"
+            echo "--- Pre-build file timestamp: ---"
             LD_PRELOAD=$PRELOAD_LIBS stat ./Makefile
             set -o pipefail
             echo "---- Tool versions ----"
@@ -555,21 +591,21 @@ jobs:
               }
             }
 
-          # 显示ccache统计信息
+# Show ccache statistics
           ccache -s
 
-          echo "✅ 内核编译完成"
+          echo "✅ Kernel build complete"
           
-      - name: 📤 Upload build log | 上传编译日志
+      - name: 📤 Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-log
           path: kernel_workspace/kernel_platform/common/build.log
 
-      - name: 📦 Package Kernel | 打包内核
+      - name: 📦 Package Kernel
         run: |
-          echo "📦 准备AnyKernel3打包环境..."
+          echo "📦 Preparing AnyKernel3 packaging environment..."
           git clone https://github.com/mrcxlinux/AnyKernel3 --depth=1
           rm -rf ./AnyKernel3/.git
           mkdir -p kernel_workspace/kernel_platform/out/Final-Image-Find/
@@ -581,7 +617,7 @@ jobs:
 
           if [ -n "$image_path" ]; then
             dir1=$(dirname "$image_path")/
-            echo "✅ 成功找到 Image 文件"
+            echo "✅ Successfully found Image file"
           fi
 
           if [ -n "$image_path" ] && [ -f "$image_path" ]; then
@@ -590,10 +626,10 @@ jobs:
             cp "$image_path" kernel_workspace/kernel_platform/out/Final-Image-Find/Image
           fi
           
-      - name: 🧩 Patch Kernel Image (KPM) | KPM修补镜像
+      - name: 🧩 Patch Kernel Image (KPM)
         if: ${{ github.event.inputs.KPM == 'On' }}
         run: |
-          echo "🔧 正在应用KPM补丁..."
+          echo "🔧 Applying KPM patch..."
           cd kernel_workspace/kernel_platform/out/Final-Image-Find
           curl -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.13.0/patch_linux
           chmod +x patch_linux
@@ -603,9 +639,9 @@ jobs:
           mv oImage Image
           cp Image $GITHUB_WORKSPACE/AnyKernel3/Image
 
-          echo "✅ KPM补丁应用完成"
+          echo "✅ KPM patch applied"
           
-      - name: 🧠 Set Artifact Name | 设置产物名称
+      - name: 🧠 Set Artifact Name
         id: set_name
         run: |
           BASE_NAME="SukiSU_Ultra_lz4_${{ env.KSUVER }}"
@@ -618,32 +654,32 @@ jobs:
 
           echo "ARTIFACT_NAME=${FINAL_NAME}" >> $GITHUB_OUTPUT
           
-      - name: 📤 Upload AnyKernel3 | 上传 AnyKernel3
+      - name: 📤 Upload AnyKernel3
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.set_name.outputs.ARTIFACT_NAME }}
           path: ./AnyKernel3/*
 
-      - name: 📝 Make ZRAM module | 制作 ZRAM 模块
+      - name: 📝 Make ZRAM module
         run: |
           set -e
-          echo "📥 正在下载 zram.zip…"
+          echo "📥 Downloading zram.zip..."
           curl -L "https://github.com/cctv18/oppo_oplus_realme_sm8750/raw/refs/heads/main/zram.zip" -o "$GITHUB_WORKSPACE/zram.zip"
           
-          echo "📦 正在解压…"
+          echo "📦 Extracting..."
           unzip -q "$GITHUB_WORKSPACE/zram.zip" -d "$GITHUB_WORKSPACE/zram"
           
-          echo "🔁 正在替换 zram.ko…"
+          echo "🔁 Replacing zram.ko..."
           find "$GITHUB_WORKSPACE/zram" -name "zram.ko" -exec cp "./kernel_workspace/kernel_platform/common/out/drivers/block/zram/zram.ko" {} \;
           rm -rf $GITHUB_WORKSPACE/zram.zip
           
-          echo "📦 正在重新打包 zip…"
+          echo "📦 Repacking zip..."
           cd "$GITHUB_WORKSPACE/zram"
           zip -qr "../zram.zip" .
           
-          echo "✅ 完成！"
+          echo "✅ Done!"
 
-      - name: 📤 Upload zram.zip | 上传 zram.zip
+      - name: 📤 Upload zram.zip
         uses: actions/upload-artifact@v4
         with:
           name: zram-module.zip
