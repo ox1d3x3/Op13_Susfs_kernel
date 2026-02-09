@@ -73,6 +73,35 @@
 
 ➜ run workflow
 
+
+### ⚠️ Warning / No Warranty (Read Before Flashing)
+
+By proceeding, you understand and accept that:
+
+No warranty / Use at your own risk. Flashing kernels/modules can cause bootloops, soft-bricks, data loss, or instability.
+
+I (and the kernel/module authors) provide no guarantee this will work on your device/ROM, and we are not responsible for any damage.
+
+You are fully responsible for anything that happens to your phone.
+
+
+### ✅ Strongly recommended before you continue: make backups in OFOX
+
+Before flashing anything, backup these partitions using OrangeFox Recovery Project (OFOX):
+
+boot
+
+init_boot
+
+recovery (if your device/ROM exposes it in OFOX)
+
+Also make sure you have:
+
+A copy of your current working kernel/zip (or stock boot image)
+
+A way to restore via OFOX or fastboot if needed
+
+
 ---
 ### 📱 Supported devices
 
@@ -92,8 +121,4 @@
 ### Credits ⸜(｡˃ ᵕ ˂ )⸝♡
 [Xiaomichael](https://github.com/xiaomichael) | [cctv18](https://github.com/cctv18) | [vc-teahouse](https://github.com/vc-teahouse) | [Numbersf](https://github.com/Numbersf) | [mrcxlinux](https://github.com/mrcxlinux)
 
----
 
-<p align="center">🌟 please star this project! it would help a lot!</p>
-
-<p align="center">💴 I do <em><strong>NOT</strong></em> accept donations!</p>
