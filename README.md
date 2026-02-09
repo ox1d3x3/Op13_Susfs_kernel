@@ -90,7 +90,7 @@
 
 ---
 ### Credits ⸜(｡˃ ᵕ ˂ )⸝♡
-[Xiaomichael](https://github.com/xiaomichael) | [cctv18](https://github.com/cctv18) | [vc-teahouse](https://github.com/vc-teahouse) | [Numbersf](https://github.com/Numbersf)
+[Xiaomichael](https://github.com/xiaomichael) | [cctv18](https://github.com/cctv18) | [vc-teahouse](https://github.com/vc-teahouse) | [Numbersf](https://github.com/Numbersf) | [mrcxlinux](https://github.com/mrcxlinux)
 
 ---
 
