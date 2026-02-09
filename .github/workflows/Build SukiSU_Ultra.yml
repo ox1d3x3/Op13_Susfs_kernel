@@ -4,7 +4,7 @@ env:
   TZ: Australia/Perth
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
-  KERNEL_NAME: "android15-8-g29d86c5fc9dd-abogki428889875-4k-Ox1d3x3-SUS"
+  KERNEL_NAME: "android15-8-g29d86c5fc9dd-abogki428889875-4k"
 on:
   workflow_dispatch:
     inputs:
@@ -57,7 +57,7 @@ on:
         options:
           - "On"
           - "Off"
-        default: "Off"
+        default: "On"
       UNICODE_BYPASS:
         description: "🚀 Unicode zero-width bypass fix patch (Not recommended for higher kernel versions; it is suggested to use https://t.me/real5ec1cff/271 for a painless fix)"
         required: true
@@ -88,7 +88,7 @@ jobs:
       CCACHE_MAXSIZE: 8G
     steps:
       - name: 🚀 Maximize Build Space
-        uses: easimon/maximize-build-space@master
+        uses: easimon/maximize-build-space@v9
         with:
           root-reserve-mb: 8192
           temp-reserve-mb: 4096
@@ -112,8 +112,27 @@ jobs:
           git config --global user.email "builder@localhost"
           echo "✅ Git config complete"
           
+      - name: 🌐 Default Network Optimization
+        run: |
+          echo "CURL_OPTS=--retry 5 --retry-all-errors --connect-timeout 20 --max-time 1200" >> "$GITHUB_ENV"
+
+          # Make APT more resilient (retries + sane timeouts)
+          echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries
+          echo 'Acquire::http::Timeout "30";' | sudo tee -a /etc/apt/apt.conf.d/80-retries
+          echo 'Acquire::https::Timeout "30";' | sudo tee -a /etc/apt/apt.conf.d/80-retries
+
+          # Git fetch speed + resilience
+          git config --global protocol.version 2
+          git config --global fetch.parallel 8
+          git config --global submodule.fetchJobs 8
+          git config --global http.lowSpeedLimit 1000
+          git config --global http.lowSpeedTime 60
+          git config --global core.compression 0
+
+          echo "✅ Default network optimizations enabled"
+
       - name: 📦 Cache & Install Dependencies
-        uses: awalsh128/cache-apt-pkgs-action@latest
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.0
         with:
           packages: python3 git curl ccache libelf-dev build-essential flex bison
             libssl-dev libncurses-dev liblz4-tool zlib1g-dev libxml2-utils rsync
@@ -123,7 +142,7 @@ jobs:
           
       - name: 💾 Restore ccache (With SUSFS)
         if: ${{ github.event.inputs.SUSFS == 'On' }}
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ github.ref }}-SukiSU-SUSFS
@@ -134,7 +153,7 @@ jobs:
             
       - name: 💾 Restore ccache (Without SUSFS)
         if: ${{ github.event.inputs.SUSFS == 'Off' }}
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ github.ref }}-SukiSU-NoSUSFS
@@ -167,7 +186,7 @@ jobs:
       - name: 📥 Install Repo Tool
         run: |
           echo "⬇️ Downloading repo tool..."
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > ~/repo
+          curl $CURL_OPTS -fsSL https://storage.googleapis.com/git-repo-downloads/repo > ~/repo
           chmod a+x ~/repo
           sudo mv ~/repo /usr/local/bin/repo
           echo "✅ repo tool installed"
@@ -177,7 +196,7 @@ jobs:
           echo "⬇️ Downloading Neutron clang tool..."
           mkdir -p "$HOME/toolchains/neutron-clang"
           cd "$HOME/toolchains/neutron-clang"
-          bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S
+          bash <(curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S
           echo "✅ Neutron clang tool installed"
           
       - name: "⬇️ Clone Kernel Source"
@@ -210,7 +229,7 @@ jobs:
           cd kernel_workspace/kernel_platform/common
           
           echo "🛠️ Setting up BBG..."
-          curl -sSL https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh -o setup.sh
+          curl $CURL_OPTS -fsSL https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh -o setup.sh
           bash setup.sh     
           
       - name: ⚡ Setup SukiSU Ultra
@@ -221,14 +240,14 @@ jobs:
           
           echo "🛠️ Setting up SukiSU Ultra..."
           
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh" | bash -s main
+          curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh" | bash -s main
           
           cd KernelSU
           KSU_VERSION_COUNT=$(git rev-list --count main)
           export KSUVER=$(expr $KSU_VERSION_COUNT + 37185)
           
           for i in {1..3}; do
-            KSU_API_VERSION=$(curl -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/Kbuild" | \
+            KSU_API_VERSION=$(curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/Kbuild" | \
               grep -m1 "KSU_VERSION_API :=" | cut -d'=' -f2 | tr -d '[:space:]')
             [ -n "$KSU_API_VERSION" ] && break || sleep 2
           done
@@ -303,7 +322,28 @@ jobs:
           
           if [ "${{ github.event.inputs.UNICODE_BYPASS }}" = "On" ]; then
             cp ../kernel_patches/common/unicode_bypass_fix_6.1+.patch ./common/unicode_bypass_fix.patch
+          fi          # If SUSFS is enabled, also apply the KernelSU/SukiSU SUSFS enable patch.
+          # Some trees keep KernelSU under common/drivers/kernelsu, others have a separate KernelSU directory.
+          if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
+            echo "🔧 Enabling SUSFS support..."
+            KSU_SUSFS_PATCH="$(find ../susfs4ksu -maxdepth 8 -type f -name '10_enable_susfs*.patch' | head -n 1)"
+            if [ -n "$KSU_SUSFS_PATCH" ]; then
+              echo "📦 Found SUSFS enable patch: $KSU_SUSFS_PATCH"
+
+              if grep -qE '^diff --git (drivers/kernelsu/|common/drivers/kernelsu/)' "$KSU_SUSFS_PATCH"; then
+                echo "↪️ Patch targets drivers/kernelsu -> applying in common/"
+                ( cd ./common && patch -p1 --forward -l -F 3 < "$KSU_SUSFS_PATCH" ) ||                   echo "⚠️ SUSFS enable patch did not apply cleanly (continuing; it may already be included)."
+              elif [ -d "./KernelSU" ]; then
+                echo "↪️ Patch targets KernelSU repo -> applying in KernelSU/"
+                ( cd ./KernelSU && patch -p1 --forward -l -F 3 < "$KSU_SUSFS_PATCH" ) ||                   echo "⚠️ SUSFS enable patch did not apply cleanly (continuing; it may already be included)."
+              else
+                echo "⚠️ KernelSU directory not found and patch does not target drivers/kernelsu; skipping."
+              fi
+            else
+              echo "⚠️ Could not find 10_enable_susfs*.patch in susfs4ksu; continuing."
+            fi
           fi
+
           cd ./common
           
           # Normalize line endings for *text* patches only (skip "GIT binary patch" payloads).
@@ -337,39 +377,34 @@ jobs:
           apply_patch_required() {
             local p="$1"
             echo "Applying required patch: $p"
-            # Use direct apply to avoid 3-way blob warnings in shallow checkouts
-            git apply -p1 --whitespace=nowarn "$p" && return 0
-            echo "git apply failed for $p, trying GNU patch with fuzz..."
-            patch -p1 -l -F 3 < "$p"
+
+            # If the patch contains a git 'GIT binary patch' block, use git apply --binary.
+            # Otherwise prefer GNU patch (more tolerant and doesn't need git blobs for 3-way).
+            if grep -q "GIT binary patch" "$p"; then
+              git apply --binary -p1 "$p"
+              return $?
+            fi
+
+            patch -p1 --forward -l -F 3 < "$p"
           }
           
           apply_patch_optional() {
             local p="$1"
             echo "Applying optional patch: $p"
-            if git apply -p1 --whitespace=nowarn "$p"; then
-              return 0
+
+            if grep -q "GIT binary patch" "$p"; then
+              if git apply --binary -p1 "$p"; then
+                return 0
+              fi
+            else
+              if patch -p1 --forward -l -F 3 < "$p"; then
+                return 0
+              fi
             fi
-            echo "git apply failed for $p, trying GNU patch with fuzz..."
-            if patch -p1 -l -F 3 < "$p"; then
-              return 0
-            fi
+
             echo "⚠️ Optional patch does not apply to this kernel tree: $p (skipping)"
             return 0
           }
-          
-          
-          # If SUSFS is enabled, also apply the KernelSU-side SUSFS enable patch (if it exists in susfs4ksu)
-          if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-            echo "🔎 Searching for KernelSU SUSFS enable patch in susfs4ksu..."
-            KSU_SUSFS_PATCH="$(find ../susfs4ksu -maxdepth 4 -type f -name '10_enable_susfs*.patch' | head -n 1)"
-            if [ -n "$KSU_SUSFS_PATCH" ]; then
-              echo "📦 Applying KernelSU SUSFS enable patch: $KSU_SUSFS_PATCH"
-              apply_patch_required "$KSU_SUSFS_PATCH"
-            else
-              echo "⚠️ No 10_enable_susfs*.patch found in susfs4ksu (gki-android15-6.6)."
-              echo "   If SUSFS is not detected on-device, this is the first thing to check."
-            fi
-          fi
 
           echo "Applying lz4 patch..."
           # LZ4 patch may contain git binary patch blocks; treat as optional to avoid hard-failing the build.
@@ -589,8 +624,8 @@ jobs:
             export PATH="/usr/lib/ccache:$PATH"
             sudo apt install libelf-dev
             cd kernel_workspace/kernel_platform/common
-            wget https://github.com/cctv18/oppo_oplus_realme_sm8750/raw/refs/heads/main/lib/libfakestat.so
-            wget https://github.com/cctv18/oppo_oplus_realme_sm8750/raw/refs/heads/main/lib/libfaketimeMT.so
+            curl $CURL_OPTS -fL https://github.com/cctv18/oppo_oplus_realme_sm8750/raw/refs/heads/main/lib/libfakestat.so -o libfakestat.so
+            curl $CURL_OPTS -fL https://github.com/cctv18/oppo_oplus_realme_sm8750/raw/refs/heads/main/lib/libfaketimeMT.so -o libfaketimeMT.so
             chmod 777 ./*.so
             export FAKESTAT="2025-05-25 12:00:00"
             export FAKETIME="@2025-05-25 13:00:00"
@@ -687,7 +722,7 @@ jobs:
         run: |
           echo "🔧 Applying KPM patch..."
           cd kernel_workspace/kernel_platform/out/Final-Image-Find
-          curl -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.13.0/patch_linux
+          curl $CURL_OPTS -fL -o patch_linux https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.13.0/patch_linux
           chmod +x patch_linux
           ./patch_linux
           
@@ -798,7 +833,7 @@ jobs:
         run: |
           set -e
           echo "📥 Downloading zram.zip..."
-          curl -L "https://github.com/cctv18/oppo_oplus_realme_sm8750/raw/refs/heads/main/zram.zip" -o "$GITHUB_WORKSPACE/zram.zip"
+          curl $CURL_OPTS -fL "https://github.com/cctv18/oppo_oplus_realme_sm8750/raw/refs/heads/main/zram.zip" -o "$GITHUB_WORKSPACE/zram.zip"
           
           echo "📦 Extracting..."
           unzip -q "$GITHUB_WORKSPACE/zram.zip" -d "$GITHUB_WORKSPACE/zram"
