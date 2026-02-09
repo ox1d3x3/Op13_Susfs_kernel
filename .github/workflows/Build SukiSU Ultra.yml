@@ -4,7 +4,7 @@ env:
   TZ: Asia/Shanghai
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
-  KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
+  KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k-ox1d3x3-SUS
 on:
   workflow_dispatch:
     inputs:
@@ -118,6 +118,7 @@ jobs:
           packages: python3 git curl ccache libelf-dev build-essential flex bison
             libssl-dev libncurses-dev liblz4-tool zlib1g-dev libxml2-utils rsync
             unzip gawk dos2unix
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
           execute_install_scripts: true
           
       - name: 💾 Restore ccache (With SUSFS) | 恢复ccache缓存 (With SUSFS)
@@ -288,7 +289,9 @@ jobs:
           fi
 
           cp ../kernel_patches/zram/001-lz4.patch ./common/
-          cp ../kernel_patches/zram/lz4armv8.S ./common/lib
+          mkdir -p ./common/lib/lz4
+          cp ../kernel_patches/zram/lz4armv8.S ./common/lib/lz4/
+          ls -l ./common/lib/lz4/lz4armv8.S
           cp ../kernel_patches/zram/002-zstd.patch ./common/
 
           cp ../kernel_patches/common/EnablePOLLY.patch ./common/
@@ -305,15 +308,15 @@ jobs:
           fi
 
           echo "📦 应用lz4补丁..."
-          git apply -p1 < 001-lz4.patch || true
-          patch -p1 < 002-zstd.patch || true
+          git apply -p1 < 001-lz4.patch
+          patch -p1 < 002-zstd.patch
 
           echo "📦 正在启用POLLY支持..."
           git apply -p1 < EnablePOLLY.patch || true
 
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
             echo "📦 应用SUSFS补丁..."
-            patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch || true
+            patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch
           else
             echo "📦 应用MANUAL_HOOK补丁..."
             patch -p1 -F 3 < scope_min_manual_hooks_v1.9.patch
@@ -444,17 +447,18 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel_workspace/kernel_platform/
 
           if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
-            echo "当前内核版本后缀：${{ github.event.inputs.kernel_suffix }}"
+            SUFFIX="${{ github.event.inputs.kernel_suffix }}"
+            echo "当前内核版本后缀：$SUFFIX"
             for f in ./common/scripts/setlocalversion; do
-              sed -i "\$s|echo \"\\\$res\"|echo \"-${{ github.event.inputs.kernel_suffix }}\"|" "$f"
+              sed -i "\$s|echo \"\\\$res\"|echo \"-${SUFFIX}\"|" "$f"
             done
-            sudo sed -i 's/-4k/-${{ github.event.inputs.KERNEL_SUFFIX }}/g' ./common/arch/arm64/configs/gki_defconfig
+            sed -i "s/-4k/-${SUFFIX}/g" ./common/arch/arm64/configs/gki_defconfig
           else
-            echo "当前内核版本后缀：${{ env.KERNEL_NAME }}"
+            echo "当前内核版本后缀：${KERNEL_NAME}"
             for f in ./common/scripts/setlocalversion; do
-              sed -i "\$s|echo \"\\\$res\"|echo \"-${{ env.KERNEL_NAME }}\"|" "$f"
+              sed -i "\$s|echo \"\\\$res\"|echo \"-${KERNEL_NAME}\"|" "$f"
             done
-            sudo sed -i 's/-4k/-${{ env.KERNEL_NAME }}/g' ./common/arch/arm64/configs/gki_defconfig
+            sed -i "s/-4k/-${KERNEL_NAME}/g" ./common/arch/arm64/configs/gki_defconfig
           fi
 
           sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
@@ -533,13 +537,36 @@ jobs:
             echo "--- 编译前环境时间: $(LD_PRELOAD=$PRELOAD_LIBS date) ---"
             echo "--- 编译前环境文件时间戳: ---"
             LD_PRELOAD=$PRELOAD_LIBS stat ./Makefile
-            make -j$(nproc --all) LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2  gki_defconfig all
+            set -o pipefail
+            echo "---- Tool versions ----"
+            clang --version || true
+            ld.lld --version || true
+            aarch64-linux-gnu-objcopy --version || true
+
+            echo "---- Build (LLVM_IAS=1) ----"
+            make -j$(nproc --all) LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 gki_defconfig all 2>&1 | tee build.log || {
+              echo "❌ Build failed (LLVM_IAS=1). Showing error summary:"
+              grep -nEi "fatal error:|error:|ld\.lld: error|undefined reference|No such file|not found|killed|No space" build.log | head -n 120 || true
+              echo "🔁 Retrying with LLVM_IAS=0 (GNU as fallback)..."
+              make -j$(nproc --all) LLVM=1 LLVM_IAS=0 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 gki_defconfig all 2>&1 | tee -a build.log || {
+                echo "❌ Build failed again (LLVM_IAS=0). Error summary:"
+                grep -nEi "fatal error:|error:|ld\.lld: error|undefined reference|No such file|not found|killed|No space" build.log | head -n 200 || true
+                exit 2
+              }
+            }
 
           # 显示ccache统计信息
           ccache -s
 
           echo "✅ 内核编译完成"
           
+      - name: 📤 Upload build log | 上传编译日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: kernel_workspace/kernel_platform/common/build.log
+
       - name: 📦 Package Kernel | 打包内核
         run: |
           echo "📦 准备AnyKernel3打包环境..."
