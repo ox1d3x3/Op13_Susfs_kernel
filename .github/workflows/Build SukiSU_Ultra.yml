@@ -322,46 +322,71 @@ jobs:
           patch -p1 < unicode_bypass_fix.patch
           fi
           
+          \
           apply_patch_required() {
-          local p="$1"
-          echo "Applying required patch: $p"
-          # Try git apply first (3-way helps when the base has small diffs)
-          git apply -p1 --3way --whitespace=nowarn "$p" && return 0
-          echo "git apply failed for $p, trying GNU patch with fuzz..."
-          patch -p1 -l -F 3 < "$p"
+            local p="$1"
+            echo "Applying required patch: $p"
+
+            # 1) Try git apply (no --3way; repo is shallow due to --depth=1)
+            if git apply -p1 --check --whitespace=nowarn "$p"; then
+              git apply -p1 --whitespace=nowarn "$p"
+              return 0
+            fi
+
+            echo "git apply check failed for $p, trying GNU patch (dry-run)..."
+            # 2) Dry-run GNU patch to avoid partial application
+            if patch --dry-run -p1 -l -F 3 < "$p" >/dev/null; then
+              patch -p1 -l -F 3 < "$p"
+              return 0
+            fi
+
+            echo "❌ Required patch could not be applied cleanly: $p" >&2
+            exit 1
           }
-          
+
           apply_patch_optional() {
-          local p="$1"
-          echo "Applying optional patch: $p"
-          if git apply -p1 --3way --whitespace=nowarn "$p"; then
-          return 0
-          fi
-          echo "git apply failed for $p, trying GNU patch with fuzz..."
-          if patch -p1 -l -F 3 < "$p"; then
-          return 0
-          fi
-          echo "⚠️ Optional patch did not apply cleanly: $p (continuing without it)"
-          return 0
+            local p="$1"
+            echo "Applying optional patch: $p"
+
+            # Only apply if it can be applied cleanly (prevents half-applied patches)
+            if git apply -p1 --check --whitespace=nowarn "$p"; then
+              git apply -p1 --whitespace=nowarn "$p"
+              return 0
+            fi
+
+            if patch --dry-run -p1 -l -F 3 < "$p" >/dev/null 2>&1; then
+              patch -p1 -l -F 3 < "$p"
+              return 0
+            fi
+
+            echo "⚠️ Optional patch does not apply to this kernel tree: $p (skipping)"
+            return 0
           }
-          
+
           echo "Applying lz4 patch..."
           apply_patch_required 001-lz4.patch
-          
+
           echo "Applying zstd patch..."
           apply_patch_optional 002-zstd.patch
-          
+
           echo "Enabling POLLY support..."
           apply_patch_optional EnablePOLLY.patch
-          
+
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-          echo "Applying SUSFS patch..."
-          apply_patch_required 50_add_susfs_in_gki-android15-6.6.patch
+            echo "Applying SUSFS patch..."
+            apply_patch_required 50_add_susfs_in_gki-android15-6.6.patch
           else
-          echo "Applying MANUAL_HOOK patch..."
-          apply_patch_required scope_min_manual_hooks_v1.9.patch
+            echo "Applying MANUAL_HOOK patch..."
+            apply_patch_required scope_min_manual_hooks_v1.9.patch
           fi
-          
+
+          # Fail if any .rej files were created (means partial patch applied)
+          if find . -name "*.rej" | grep -q .; then
+            echo "❌ Patch rejects found:"
+            find . -name "*.rej" -maxdepth 6 -print
+            exit 1
+          fi
+
           echo "✅ Patch step completed"
           
           
