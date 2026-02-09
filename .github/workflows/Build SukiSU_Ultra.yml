@@ -4,7 +4,7 @@ env:
   TZ: Australia/Perth
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
-  KERNEL_NAME: "android15-8-g29d86c5fc9dd-abogki428889875-4k"
+  KERNEL_NAME: "android15-8-g29d86c5fc9dd-abogki428889875-4k-Ox1d3x3-SUS"
 on:
   workflow_dispatch:
     inputs:
@@ -322,26 +322,58 @@ jobs:
           
           if [ "${{ github.event.inputs.UNICODE_BYPASS }}" = "On" ]; then
             cp ../kernel_patches/common/unicode_bypass_fix_6.1+.patch ./common/unicode_bypass_fix.patch
-          fi          # If SUSFS is enabled, also apply the KernelSU/SukiSU SUSFS enable patch.
-          # Some trees keep KernelSU under common/drivers/kernelsu, others have a separate KernelSU directory.
-          if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-            echo "🔧 Enabling SUSFS support..."
-            KSU_SUSFS_PATCH="$(find ../susfs4ksu -maxdepth 8 -type f -name '10_enable_susfs*.patch' | head -n 1)"
-            if [ -n "$KSU_SUSFS_PATCH" ]; then
-              echo "📦 Found SUSFS enable patch: $KSU_SUSFS_PATCH"
+          fi
 
-              if grep -qE '^diff --git (drivers/kernelsu/|common/drivers/kernelsu/)' "$KSU_SUSFS_PATCH"; then
-                echo "↪️ Patch targets drivers/kernelsu -> applying in common/"
-                ( cd ./common && patch -p1 --forward -l -F 3 < "$KSU_SUSFS_PATCH" ) ||                   echo "⚠️ SUSFS enable patch did not apply cleanly (continuing; it may already be included)."
-              elif [ -d "./KernelSU" ]; then
-                echo "↪️ Patch targets KernelSU repo -> applying in KernelSU/"
-                ( cd ./KernelSU && patch -p1 --forward -l -F 3 < "$KSU_SUSFS_PATCH" ) ||                   echo "⚠️ SUSFS enable patch did not apply cleanly (continuing; it may already be included)."
-              else
-                echo "⚠️ KernelSU directory not found and patch does not target drivers/kernelsu; skipping."
-              fi
-            else
-              echo "⚠️ Could not find 10_enable_susfs*.patch in susfs4ksu; continuing."
+          # If SUSFS is enabled, also apply the KernelSU/SukiSU SUSFS enable patch (required).
+          # This patch adds the Kconfig symbols like CONFIG_KSU_SUSFS. If it doesn't apply, SUSFS can't be enabled.
+          if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
+            echo "🔧 Enabling SUSFS support in KernelSU driver..."
+
+            # Find the enable patch (name differs across branches)
+            KSU_SUSFS_PATCH="$(find ../susfs4ksu -maxdepth 10 -type f \( -name '10_*susfs*.patch' -o -iname '*enable*su*sfs*.patch' -o -iname '*ksu*susfs*.patch' \) | head -n 1)"
+            if [ -z "$KSU_SUSFS_PATCH" ]; then
+              echo "❌ Could not find a KernelSU SUSFS enable patch inside susfs4ksu."
+              echo "   Listing available patches (first 80):"
+              find ../susfs4ksu -maxdepth 6 -type f -name '*.patch' | head -n 80 || true
+              exit 1
             fi
+            echo "📦 Using enable patch: $KSU_SUSFS_PATCH"
+
+            apply_patch_anywhere() {
+              local p="$1"
+              local dirs=("./common" "./KernelSU" ".")
+              local strips=(1 0 2 3 4)
+              for d in "${dirs[@]}"; do
+                [ -d "$d" ] || continue
+                for s in "${strips[@]}"; do
+                  if (cd "$d" && git apply --check -p"$s" "$p" >/dev/null 2>&1); then
+                    echo "↪️ Applying in $d with git apply -p$s"
+                    (cd "$d" && git apply -p"$s" "$p")
+                    return 0
+                  fi
+                  if (cd "$d" && patch -p"$s" --dry-run --forward -l -F 3 < "$p" >/dev/null 2>&1); then
+                    echo "↪️ Applying in $d with patch -p$s"
+                    (cd "$d" && patch -p"$s" --forward -l -F 3 < "$p")
+                    return 0
+                  fi
+                done
+              done
+              return 1
+            }
+
+            if ! apply_patch_anywhere "$KSU_SUSFS_PATCH"; then
+              echo "❌ SUSFS enable patch failed to apply. The susfs4ksu branch likely doesn't match the KernelSU/SukiSU version in this tree."
+              exit 1
+            fi
+
+            # Ensure the symbol now exists in the tree that is built (kernel_platform/common).
+            if ! grep -Rqs 'config[[:space:]]\+KSU_SUSFS' ./common/drivers/kernelsu 2>/dev/null; then
+              echo "❌ KSU_SUSFS Kconfig symbol still not found under common/drivers/kernelsu after patching."
+              echo "---- drivers/kernelsu SUSFS grep ----"
+              grep -RIn --max-count=80 'KSU_SUSFS\|SUSFS' ./common/drivers/kernelsu 2>/dev/null || true
+              exit 1
+            fi
+            echo "✅ KernelSU SUSFS symbol detected"
           fi
 
           cd ./common
