@@ -44,6 +44,12 @@ on:
         description: "Optional. Leave blank to mimic stock build time, or set to F to use current build time."
         required: false
         default: ""
+      KSU_BRANCH:
+        description: "🌿 KernelSU branch for SukiSU-Ultra setup.sh (builtin recommended for SUSFS)"
+        required: true
+        type: choice
+        options: ["builtin", "main", "old"]
+        default: "builtin"
 
 jobs:
   build:
@@ -164,9 +170,12 @@ jobs:
           set -euo pipefail
           cd kernel_workspace/kernel_platform
 
-          echo "🛠️ Setting up SukiSU Ultra (main)..."
+          KSU_BRANCH="${{ github.event.inputs.KSU_BRANCH }}"
+
+          echo "🛠️ Setting up SukiSU Ultra (${KSU_BRANCH})..."
           # IMPORTANT: use /main/ script (working reference workflows do this)
-          curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
+          curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" -o /tmp/ksu_setup.sh
+          bash /tmp/ksu_setup.sh "$KSU_BRANCH"
 
           # Compute KSU version info locally (no curl pipelines -> avoids curl:(23) broken pipe)
           cd KernelSU
@@ -234,36 +243,32 @@ jobs:
             fi
           fi
 
-          # --- KernelSU SUSFS enable patch (only if KernelSU tree lacks symbols) ---
+          # --- KernelSU SUSFS symbols must exist for real SUSFS integration ---
           if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
-            echo "🔎 Checking for KernelSU SUSFS Kconfig symbols..."
+            echo "🔎 Verifying KernelSU SUSFS Kconfig symbols exist..."
             if ! grep -RqsE '^[[:space:]]*(menuconfig|config)[[:space:]]+KSU_SUSFS([[:space:]]|$)' "$KSU_DIR/kernel" 2>/dev/null; then
-              echo "⚠️ KSU_SUSFS symbol not found in $KSU_DIR/kernel. Applying enable patch..."
-              ENABLE_PATCH="susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-              if [ ! -f "$ENABLE_PATCH" ]; then
-                echo "❌ Enable patch missing: $ENABLE_PATCH" >&2
-                find susfs4ksu -maxdepth 6 -type f -name '*.patch' | head -n 120 || true
-                exit 1
-              fi
-              dos2unix "$ENABLE_PATCH" 2>/dev/null || true
-              (cd "$KSU_DIR" && patch -p1 --forward --batch -l -F 3 < "../../$ENABLE_PATCH")
-
-              echo "🔎 Re-checking for KSU_SUSFS symbol after enable patch..."
-              if ! grep -RqsE '^[[:space:]]*(menuconfig|config)[[:space:]]+KSU_SUSFS([[:space:]]|$)' "$KSU_DIR/kernel" 2>/dev/null; then
-                echo "❌ Enable patch applied but KSU_SUSFS still not present in $KSU_DIR/kernel." >&2
-                echo "---- SUSFS grep (first 120 matches) ----"
-                grep -RIn --max-count=120 -E 'KSU_SUSFS|SUSFS' "$KSU_DIR" 2>/dev/null || true
-                exit 1
-              fi
-              echo "✅ KernelSU SUSFS symbols detected"
-            else
-              echo "✅ KernelSU already has KSU_SUSFS symbols"
+              echo "❌ KernelSU tree does not expose KSU_SUSFS Kconfig symbols. SUSFS cannot be enabled via defconfig."
+              echo "   Fix: set workflow input KSU_BRANCH=builtin (recommended), or use a KernelSU branch/commit that already includes SUSFS support."
+              exit 1
             fi
+            echo "✅ KernelSU exposes KSU_SUSFS symbols"
           fi
 
           # --- ZRAM/LZ4 patches (optional) ---
           if [ "${{ github.event.inputs.ZRAM_LZ4 }}" = "On" ]; then
             echo "🗜️ Applying ZRAM/LZ4 patches (if available)..."
+
+            # Copy lz4k sources (used by known OP13 SukiSU Ultra workflows)
+            if [ -d "SukiSU_patch/other/zram/lz4k" ]; then
+              cp -r SukiSU_patch/other/zram/lz4k/include/linux/* "$COMMON_DIR/include/linux/" || true
+              cp -r SukiSU_patch/other/zram/lz4k/lib/* "$COMMON_DIR/lib/" || true
+              cp -r SukiSU_patch/other/zram/lz4k/crypto/* "$COMMON_DIR/crypto/" || true
+            fi
+            if [ -d "SukiSU_patch/other/zram/lz4k_oplus" ]; then
+              cp -r SukiSU_patch/other/zram/lz4k_oplus "$COMMON_DIR/lib/" || true
+            fi
+
+
 
             # Try SukiSU_patch lz4kd/lz4k_oplus patches first (used by OP13 reference workflows)
             LZ4KD_PATCH="SukiSU_patch/other/zram/zram_patch/${{ env.KERNEL_VERSION }}/lz4kd.patch"
@@ -311,10 +316,16 @@ jobs:
           # KernelSU base
           append_cfg "CONFIG_KSU=y"
 
-          # ZRAM default compression -> LZ4 (symbols exist in this tree even if patches don't)
+          # ZRAM + LZ4 family (requires SukiSU_patch lz4k/lz4kd payload when enabled)
           if [ "${{ github.event.inputs.ZRAM_LZ4 }}" = "On" ]; then
             append_cfg "CONFIG_ZRAM_DEF_COMP_LZ4=y"
             append_cfg "CONFIG_ZRAM_DEF_COMP_LZORLE=n"
+            append_cfg "CONFIG_CRYPTO_LZ4HC=y"
+            append_cfg "CONFIG_CRYPTO_LZ4K=y"
+            append_cfg "CONFIG_CRYPTO_LZ4KD=y"
+            append_cfg "CONFIG_CRYPTO_842=y"
+            append_cfg "CONFIG_CRYPTO_LZ4K_OPLUS=y"
+            append_cfg "CONFIG_ZRAM_WRITEBACK=y"
           fi
 
           # SUSFS toggles (append only if the symbol exists in KernelSU Kconfig)
@@ -360,7 +371,7 @@ jobs:
           make -j"$(nproc --all)" ARCH=arm64 O=out gki_defconfig
 
           echo "---- Effective config (KSU/SUSFS/ZRAM) ----"
-          grep -nE '^CONFIG_KSU=|^CONFIG_KSU_SUSFS=|^CONFIG_ZRAM=|^CONFIG_ZRAM_DEF_COMP' out/.config || true
+          grep -nE '^CONFIG_KSU=|^CONFIG_KSU_SUSFS=|^CONFIG_ZRAM=|^CONFIG_ZRAM_DEF_COMP|^CONFIG_CRYPTO_LZ4K=|^CONFIG_CRYPTO_LZ4KD=|^CONFIG_CRYPTO_LZ4K_OPLUS=' out/.config || true
 
           if ! grep -q '^CONFIG_KSU=y' out/.config; then
             echo "❌ CONFIG_KSU=y missing in out/.config" >&2
@@ -380,6 +391,18 @@ jobs:
           if [ "${{ github.event.inputs.ZRAM_LZ4 }}" = "On" ]; then
             if ! grep -q '^CONFIG_ZRAM_DEF_COMP_LZ4=y' out/.config; then
               echo "❌ ZRAM_LZ4 requested but CONFIG_ZRAM_DEF_COMP_LZ4 is NOT enabled in out/.config" >&2
+              exit 1
+            fi
+          fi
+
+          if [ "${{ github.event.inputs.ZRAM_LZ4 }}" = "On" ]; then
+            if ! grep -q '^CONFIG_CRYPTO_LZ4K=y' out/.config; then
+              echo "❌ ZRAM_LZ4 requested but CONFIG_CRYPTO_LZ4K is NOT enabled in out/.config" >&2
+              echo "   This usually means the lz4k payload/patches did not apply to your kernel tree." >&2
+              exit 1
+            fi
+            if ! grep -q '^CONFIG_CRYPTO_LZ4KD=y' out/.config; then
+              echo "❌ ZRAM_LZ4 requested but CONFIG_CRYPTO_LZ4KD is NOT enabled in out/.config" >&2
               exit 1
             fi
           fi
