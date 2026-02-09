@@ -87,20 +87,15 @@ You are fully responsible for anything that happens to your phone.
 ---
 ### ✅ Strongly recommended before you continue: make backups in OFOX
 
-Before flashing anything, backup these partitions using OrangeFox Recovery Project (OFOX):
+Before flashing anything, backup these partitions using OrangeFox Recovery (OFOX):
 
-**boot**
+1. **boot**
 
-**init_boot**
+2. **init_boot**
 
-**recovery** (if your device/ROM exposes it in OFOX)
+3. **recovery** (if your device/ROM exposes it in OFOX)
 
-Also make sure you have:
-
-A copy of your current working kernel/zip (or stock boot image)
-
-A way to restore via OFOX or fastboot if needed
-
+If got bootloop, restore the backup.
 
 ---
 ### 📱 Supported devices
