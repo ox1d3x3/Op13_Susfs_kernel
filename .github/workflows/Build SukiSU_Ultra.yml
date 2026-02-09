@@ -234,31 +234,35 @@ jobs:
           
       - name: ⚡ Setup SukiSU Ultra
         run: |
+
           set -euo pipefail
+
           cd kernel_workspace/kernel_platform
 
           echo "🛠️ Setting up SukiSU Ultra..."
-
           curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh" | bash -s main
 
           cd KernelSU
           KSU_VERSION_COUNT=$(git rev-list --count main)
           export KSUVER=$(expr $KSU_VERSION_COUNT + 37185)
 
-          # Avoid curl broken-pipe (23) by downloading once and parsing locally
+          # Fetch Kbuild via a temp file (avoids curl:(23) broken pipe issues with grep -m1 pipelines)
           KSU_API_VERSION=""
           for i in {1..3}; do
-            KBUILD_CONTENT="$(curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/Kbuild" || true)"
-            KSU_API_VERSION="$(printf '%s\n' "$KBUILD_CONTENT" | awk -F':=' '/KSU_VERSION_API[[:space:]]*:=/{gsub(/[[:space:]]/,"",$2); print $2; exit}')"
-            [ -n "$KSU_API_VERSION" ] && break || sleep 2
+            KBUILD_TMP="$(mktemp)"
+            if curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/Kbuild" -o "$KBUILD_TMP"; then
+              KSU_API_VERSION="$(grep -m1 "KSU_VERSION_API :=" "$KBUILD_TMP" | cut -d'=' -f2 | tr -d '[:space:]')"
+            fi
+            rm -f "$KBUILD_TMP" || true
+            [ -n "${KSU_API_VERSION:-}" ] && break || sleep 2
           done
 
-          if [ -z "$KSU_API_VERSION" ]; then
+          if [ -z "${KSU_API_VERSION:-}" ]; then
             echo "❌ Error: failed to fetch KSU_API_VERSION" >&2
             exit 1
           fi
 
-          KSU_COMMIT_HASH=$(git ls-remote https://github.com/SukiSU-Ultra/SukiSU-Ultra.git refs/heads/builtin | awk '{print $1}' | cut -c1-8)
+          KSU_COMMIT_HASH=$(git ls-remote https://github.com/SukiSU-Ultra/SukiSU-Ultra.git refs/heads/builtin | cut -f1 | cut -c1-8)
           KSU_VERSION_FULL="v${KSU_API_VERSION}-${KSU_COMMIT_HASH}@Ox1d3x3_SUS"
 
           sed -i '/define get_ksu_version_full/,/endef/d' kernel/Kbuild
@@ -282,484 +286,349 @@ jobs:
           mv "$TMP_FILE" kernel/Kbuild
 
           echo "✅ SukiSU Ultra version metadata configured"
+        shell: bash
 
-          
       - name: 🔧 Setup Patches
         run: |
+
+          set -euo pipefail
+
           cd kernel_workspace
-          
+
           echo "⬇️ Cloning required patches..."
-          
-          if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then          
+
+          if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
             git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6
           fi
-          
+
           git clone https://github.com/mrcxlinux/kernel_patches.git
-                  
+
+          if [ "${{ github.event.inputs.KSU_MANUAL_HOOK }}" == "Off" ]; then
+            git clone https://github.com/tiann/KernelSU.git -b main KernelSU_patch
+          fi
+
           cd kernel_platform
-          
+
           echo "📝 Copying patch files..."
-          
+          cp ../kernel_patches/misc/lz4k.patch ./common/
+          cp ../kernel_patches/misc/zram.patch ./common/
+
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-            cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
-            cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
-            cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
-          else
-            cp ../kernel_patches/sukisu/scope_min_manual_hooks_v1.9.patch ./common/
-          fi
-          
-          cp ../kernel_patches/zram/001-lz4.patch ./common/
-          # Place lz4 ARMv8 asm where Kbuild expects it
-          mkdir -p ./common/lib/lz4/lz4armv8
-          cp ../kernel_patches/zram/lz4armv8.S ./common/lib/lz4/lz4armv8/lz4armv8.S
-          # Backward-compatible copy (some trees reference lib/lz4/lz4armv8.S directly)
-          cp ../kernel_patches/zram/lz4armv8.S ./common/lib/lz4/lz4armv8.S
-          ls -l ./common/lib/lz4/lz4armv8/lz4armv8.S
-          ls -l ./common/lib/lz4/lz4armv8.S
+            # SUSFS file payload
+            cp -r ../susfs4ksu/kernel_patches/fs/* ./common/fs/
+            cp -r ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
 
-          cp ../kernel_patches/zram/002-zstd.patch ./common/
-          
-          cp ../kernel_patches/common/EnablePOLLY.patch ./common/
-          
-          if [ "${{ github.event.inputs.UNICODE_BYPASS }}" = "On" ]; then
-            cp ../kernel_patches/common/unicode_bypass_fix_6.1+.patch ./common/unicode_bypass_fix.patch
-          fi
+            # LZ4 (armv8) source used by some GKI trees
+            cp -r ../susfs4ksu/kernel_patches/lib/lz4/* ./common/lib/lz4/
+            cp -r ../susfs4ksu/kernel_patches/lib/lz4armv8/* ./common/lib/lz4/
 
-                    # If SUSFS is enabled, also apply the KernelSU/SukiSU SUSFS enable patch (required).
-          # IMPORTANT: the enable patch targets the KernelSU tree (KernelSU/kernel/*), not the kernel root.
-          if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-            echo "🔧 Enabling SUSFS support in KernelSU driver..."
-
-            if [ ! -d "./KernelSU" ]; then
-              echo "❌ KernelSU directory not found at kernel_platform/KernelSU."
-              echo "   Make sure the 'Setup SukiSU Ultra' step ran before this step."
-              ls -la . || true
-              exit 1
+            # Some repos keep lz4armv8.S at lib/lz4/
+            if [ -f "./common/lib/lz4/lz4armv8/lz4armv8.S" ]; then
+              cp ./common/lib/lz4/lz4armv8/lz4armv8.S ./common/lib/lz4/ || true
             fi
 
-            # Locate the enable patch inside susfs4ksu (file name may vary per branch)
-            KSU_SUSFS_PATCH="$(find ../susfs4ksu -maxdepth 12 -type f -path '*/kernel_patches/KernelSU/*' \( -name '10_*susfs*.patch' -o -iname '*enable*su*sfs*.patch' -o -iname '*ksu*susfs*.patch' \) | head -n 1)"
+            ls -l ./common/lib/lz4/lz4armv8/lz4armv8.S || true
+            ls -l ./common/lib/lz4/lz4armv8.S || true
+
+            echo "🔧 Enabling SUSFS support in KernelSU driver..."
+
+            # Locate KernelSU root (setup.sh layouts vary)
+            KSU_ROOT=""
+            for cand in "./KernelSU" "./common/KernelSU" "./common/drivers/kernelsu" "./common/drivers/kernelsu/KernelSU"; do
+              if [ -d "$cand" ] && [ -d "$cand/kernel" ] && [ -f "$cand/kernel/Kconfig" ]; then
+                KSU_ROOT="$cand"
+                break
+              fi
+            done
+            if [ -z "$KSU_ROOT" ]; then
+              echo "❌ Could not locate KernelSU root directory (expected */kernel/Kconfig)."
+              echo "   Found these candidates (first 60):"
+              find . -maxdepth 6 -type f -path '*kernel/Kconfig' | head -n 60 || true
+              exit 1
+            fi
+            echo "✅ KernelSU root detected: $KSU_ROOT"
+            echo "KSU_ROOT=$KSU_ROOT" >> "$GITHUB_ENV"
+
+            # Find the enable patch in susfs4ksu
+            KSU_SUSFS_PATCH="$(find ../susfs4ksu -maxdepth 12 -type f -path '*/kernel_patches/KernelSU/*' -name '10_enable_susfs_for_ksu.patch' | head -n 1)"
             if [ -z "$KSU_SUSFS_PATCH" ]; then
-              echo "❌ Could not find a KernelSU SUSFS enable patch inside susfs4ksu."
-              echo "   Listing available KernelSU patches:"
+              KSU_SUSFS_PATCH="$(find ../susfs4ksu -maxdepth 12 -type f -path '*/kernel_patches/KernelSU/*' \( -name '10_*susfs*.patch' -o -iname '*enable*su*sfs*.patch' -o -iname '*ksu*susfs*.patch' \) | head -n 1)"
+            fi
+            if [ -z "$KSU_SUSFS_PATCH" ]; then
+              echo "❌ Could not find SUSFS enable patch under susfs4ksu/kernel_patches/KernelSU/"
               find ../susfs4ksu -maxdepth 12 -type f -path '*/kernel_patches/KernelSU/*' -name '*.patch' | head -n 120 || true
               exit 1
             fi
             KSU_SUSFS_PATCH="$(realpath "$KSU_SUSFS_PATCH")"
             echo "📦 Using enable patch: $KSU_SUSFS_PATCH"
 
-            apply_enable_patch_anywhere() {
-              local p="$1"
-              local strips=(1 0 2 3 4)
-              local roots=(
-                "./KernelSU"
-                "./common/drivers/kernelsu"
-                "./common/drivers/kernelsu/kernel"
-              )
-
-              for r in "${roots[@]}"; do
-                [ -d "$r" ] || continue
-                for s in "${strips[@]}"; do
-                  if (cd "$r" && git apply --check -p"$s" "$p" >/dev/null 2>&1); then
-                    echo "↪️ Applying enable patch in $r with git apply -p$s"
-                    (cd "$r" && git apply -p"$s" "$p")
-                    return 0
-                  fi
-                  if (cd "$r" && patch -p"$s" --dry-run --forward -l -F 3 < "$p" >/dev/null 2>&1); then
-                    echo "↪️ Applying enable patch in $r with patch -p$s"
-                    (cd "$r" && patch -p"$s" --forward --batch -l -F 3 < "$p")
-                    return 0
-                  fi
-                done
-              done
-
-              return 1
-            }
-
-            if ! apply_enable_patch_anywhere "$KSU_SUSFS_PATCH"; then
-              echo "❌ SUSFS enable patch failed to apply to KernelSU driver tree."
-              echo "   This usually means the susfs4ksu branch doesn't match the KernelSU/SukiSU version embedded by setup.sh."
-              exit 1
+            if ! grep -q "GIT binary patch" "$KSU_SUSFS_PATCH"; then
+              dos2unix "$KSU_SUSFS_PATCH" 2>/dev/null || true
             fi
 
-            # Verify the symbol exists after patching.
-            found=0
-            for f in               "./KernelSU/kernel/Kconfig"               "./common/drivers/kernelsu/Kconfig"               "./common/drivers/kernelsu/kernel/Kconfig"
-            do
-              if [ -f "$f" ] && grep -qE '^[[:space:]]*config[[:space:]]+KSU_SUSFS([[:space:]]|$)' "$f"; then
-                echo "✅ KernelSU SUSFS symbol detected in $f"
-                found=1
+            echo "🧾 Patch header preview:"
+            grep -E '^diff --git ' "$KSU_SUSFS_PATCH" | head -n 12 || true
+
+            applied=0
+            for s in 1 0 2 3 4; do
+              if (cd "$KSU_ROOT" && patch -p"$s" --dry-run --forward -l -F 3 < "$KSU_SUSFS_PATCH" >/dev/null 2>&1); then
+                echo "↪️ Applying enable patch in $KSU_ROOT with patch -p$s"
+                (cd "$KSU_ROOT" && patch -p"$s" --forward --batch -l -F 3 < "$KSU_SUSFS_PATCH")
+                applied=1
+                break
+              fi
+              if (cd "$KSU_ROOT" && git apply --check -p"$s" "$KSU_SUSFS_PATCH" >/dev/null 2>&1); then
+                echo "↪️ Applying enable patch in $KSU_ROOT with git apply -p$s"
+                (cd "$KSU_ROOT" && git apply -p"$s" "$KSU_SUSFS_PATCH")
+                applied=1
                 break
               fi
             done
 
-            if [ "$found" -ne 1 ]; then
-              echo "❌ KSU_SUSFS Kconfig symbol still not found after patching."
-              echo "---- SUSFS grep (first 60 matches) ----"
-              grep -RIn --max-count=60 'config[[:space:]]\+KSU_SUSFS|KSU_SUSFS|SUSFS' ./KernelSU ./common/drivers/kernelsu ./common 2>/dev/null || true
+            if [ "$applied" -ne 1 ]; then
+              echo "❌ SUSFS enable patch did not apply cleanly to $KSU_ROOT."
+              echo "   This usually means the susfs4ksu branch doesn't match your KernelSU/SukiSU version."
               exit 1
             fi
+
+            echo "🔎 Verifying SUSFS symbols in KernelSU driver..."
+            if ! grep -Rqs 'KSU_SUSFS' "$KSU_ROOT/kernel" 2>/dev/null; then
+              echo "❌ Enable patch applied, but KSU_SUSFS symbols not found in $KSU_ROOT/kernel."
+              echo "---- SUSFS grep (first 120 matches) ----"
+              grep -RIn --max-count=120 -E 'KSU_SUSFS|SUSFS' "$KSU_ROOT" 2>/dev/null || true
+              exit 1
+            fi
+            echo "✅ KernelSU SUSFS symbols detected in $KSU_ROOT"
+
           fi
 
-
           cd ./common
-          
-          # Normalize line endings for *text* patches only (skip "GIT binary patch" payloads).
+
+          # Helper: normalize non-binary patches
           normalize_patch() {
             local p="$1"
-            [ -f "$p" ] || return 0
             if grep -q "GIT binary patch" "$p"; then
-              echo "Skipping dos2unix for $p (contains GIT binary patch)"
+              echo "⚠️ Skipping dos2unix for binary patch: $p"
               return 0
             fi
             dos2unix "$p" 2>/dev/null || true
           }
-          
-          normalize_patch 001-lz4.patch
-          normalize_patch 002-zstd.patch
-          normalize_patch EnablePOLLY.patch
-          if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-            normalize_patch 50_add_susfs_in_gki-android15-6.6.patch
-          else
-            normalize_patch scope_min_manual_hooks_v1.9.patch
-          fi
-          if [ "${{ github.event.inputs.UNICODE_BYPASS }}" == "On" ]; then
-            normalize_patch unicode_bypass_fix.patch
-          fi
-          
-          if [ "${{ github.event.inputs.UNICODE_BYPASS }}" == "On" ]; then
-            echo "Applying Unicode zero-width bypass fix patch..."
-            patch -p1 < unicode_bypass_fix.patch
-          fi
-          
+
+          # Helper: apply required patch with a few fuzz tries
           apply_patch_required() {
             local p="$1"
-            echo "Applying required patch: $p"
-
-            # If the patch contains a git 'GIT binary patch' block, use git apply --binary.
-            # Otherwise prefer GNU patch (more tolerant and doesn't need git blobs for 3-way).
-            if grep -q "GIT binary patch" "$p"; then
-              git apply --binary -p1 "$p"
-              return $?
-            fi
-
-            patch -p1 --forward -l -F 3 < "$p"
-          }
-          
-          apply_patch_optional() {
-            local p="$1"
-            echo "Applying optional patch: $p"
-
-            if grep -q "GIT binary patch" "$p"; then
-              if git apply --binary -p1 "$p"; then
-                return 0
-              fi
-            else
-              if patch -p1 --forward -l -F 3 < "$p"; then
-                return 0
-              fi
-            fi
-
-            echo "⚠️ Optional patch does not apply to this kernel tree: $p (skipping)"
-            return 0
-          }
-
-          # Verify helper: confirms a patch is already applied (reverse-apply would succeed).
-          verify_patch_applied() {
-            local p="$1"
-            local strips=(1 0 2 3 4)
-            for s in "${strips[@]}"; do
-              if git apply -R --check -p"$s" "$p" >/dev/null 2>&1; then
-                return 0
-              fi
-              if patch -p"$s" -R --dry-run --batch -l -F 3 < "$p" >/dev/null 2>&1; then
+            echo "📌 Applying required patch: $p"
+            normalize_patch "$p"
+            for fuzz in 0 1 2 3; do
+              if patch -p1 --forward --batch -l -F "$fuzz" < "$p"; then
+                echo "✅ Applied: $p (fuzz=$fuzz)"
                 return 0
               fi
             done
-            return 1
-          }
-
-          # Apply a patch and ensure it is actually in effect (or already present).
-          apply_patch_required_verified() {
-            local p="$1"
-            echo "Applying (verified) patch: $p"
-
-            if verify_patch_applied "$p"; then
-              echo "✅ Patch already present: $p"
-              return 0
-            fi
-
-            local strips=(1 0 2 3 4)
-            local applied=0
-
-            if grep -q "GIT binary patch" "$p"; then
-              for s in "${strips[@]}"; do
-                if git apply --binary -p"$s" "$p" >/dev/null 2>&1; then
-                  applied=1; break
-                fi
-              done
-            else
-              for s in "${strips[@]}"; do
-                if patch -p"$s" --forward --batch -l -F 3 < "$p" >/dev/null 2>&1; then
-                  applied=1; break
-                fi
-              done
-            fi
-
-            if [ "$applied" -ne 1 ]; then
-              echo "❌ Failed to apply patch: $p"
-              exit 1
-            fi
-
-            if ! verify_patch_applied "$p"; then
-              echo "❌ Patch did not verify as applied: $p"
-              exit 1
-            fi
-
-            echo "✅ Patch applied and verified: $p"
-          }
-
-          echo "Applying lz4 patch..."
-          apply_patch_required_verified 001-lz4.patch
-
-          # Ensure the lz4 ARMv8 asm source is present where Kbuild expects it.
-          if [ ! -f "./lib/lz4/lz4armv8/lz4armv8.S" ] && [ ! -f "./lib/lz4/lz4armv8.S" ]; then
-            echo "❌ lz4armv8.S not found in expected locations under common/lib/lz4"
-            ls -la ./lib/lz4 || true
+            echo "❌ Failed to apply required patch: $p"
             exit 1
-          fi
-          echo "✅ LZ4 sources detected"
-          
-          echo "Applying zstd patch..."
-          apply_patch_optional 002-zstd.patch
-          
-          echo "Enabling POLLY support..."
-          apply_patch_optional EnablePOLLY.patch
-          
+          }
+
+          # Helper: apply optional patch (won't fail build)
+          apply_patch_optional() {
+            local p="$1"
+            echo "📌 Applying optional patch: $p"
+            normalize_patch "$p"
+            for fuzz in 0 1 2 3; do
+              if patch -p1 --forward --batch -l -F "$fuzz" < "$p"; then
+                echo "✅ Applied: $p (fuzz=$fuzz)"
+                return 0
+              fi
+            done
+            echo "⚠️ Skipped optional patch (did not apply): $p"
+            return 0
+          }
+
+          # Required: SUSFS kernel code + Kconfig hooks (only when enabled)
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-            echo "Applying SUSFS patch..."
-            apply_patch_required_verified 50_add_susfs_in_gki-android15-6.6.patch
-          else
-            echo "Applying MANUAL_HOOK patch..."
-            apply_patch_required scope_min_manual_hooks_v1.9.patch
+            apply_patch_required ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch
+
+            # Sanity: ensure the SUSFS payload is actually present after patching
+            if [ ! -f "./fs/susfs.c" ] && [ ! -f "./fs/susfs/susfs.c" ]; then
+              echo "❌ SUSFS enabled but susfs.c not found under common/fs after patching."
+              echo "   Listing SUSFS-like files (first 60):"
+              find ./fs -maxdepth 3 -type f -iname '*susfs*' | head -n 60 || true
+              exit 1
+            fi
           fi
 
+          # Optional: LZ4K + zram patches (still recommended)
+          apply_patch_optional ./lz4k.patch
+          apply_patch_optional ./zram.patch
 
           echo "✅ Patch step completed"
-          
-          
+        shell: bash
+
       - name: ⚙️ Configure Kernel Options
         run: |
+
+          set -euo pipefail
+
           cd kernel_workspace/kernel_platform
-          
-          echo "⚙️ Configuring kernel build options..."
-          
-          echo "📦 Enabling KSU support..."
-          
-          DEFCONFIG_PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig"
 
-
-          if [ ! -f "$DEFCONFIG_PATH" ]; then
-            echo "❌ Defconfig not found at: $DEFCONFIG_PATH"
-            ls -la "$(dirname "$DEFCONFIG_PATH")" || true
+          DEFCONFIG=./common/arch/arm64/configs/gki_defconfig
+          if [ ! -s "$DEFCONFIG" ]; then
+            echo "❌ Defconfig missing or empty: $DEFCONFIG"
+            ls -la ./common/arch/arm64/configs/ || true
             exit 1
           fi
 
           append_cfg() {
             local line="$1"
-            grep -qxF "$line" "$DEFCONFIG_PATH" || echo "$line" >> "$DEFCONFIG_PATH"
+            grep -qxF "$line" "$DEFCONFIG" || echo "$line" >> "$DEFCONFIG"
           }
-          
+
+          echo "🧩 Enabling KernelSU (base)"
           append_cfg "CONFIG_KSU=y"
-          
-          # --- ZRAM: default compression to LZ4 (requires 001-lz4.patch) ---
-          append_cfg "CONFIG_ZRAM_DEF_COMP_LZ4=y"
-          append_cfg "# CONFIG_ZRAM_DEF_COMP_LZORLE is not set"
-          append_cfg 'CONFIG_ZRAM_DEF_COMP="lz4"'
-          
-          if [ "${{ github.event.inputs.KPM }}" == "On" ]; then
-            echo "📦 Enabling KPM..."
-            append_cfg "CONFIG_KPM=y"
-          fi
 
-          # --- SUSFS / Manual mode (SukiSU Ultra compatible) ---
-          # Kconfig will silently ignore unknown symbols, so we only write symbols that exist in this tree.
-          # Try to locate the KernelSU Kconfig root (layout differs across trees)
+          # Locate KernelSU Kconfig tree (so we only enable SUSFS sub-options that actually exist)
           KSU_KCONFIG_DIR=""
-          for cand in \
-            "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/drivers/kernelsu" \
-            "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/drivers/kernelsu/kernel" \
-            "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/KernelSU/kernel" \
-            "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/KernelSU"
-          do
-            if [ -d "$cand" ]; then
-              KSU_KCONFIG_DIR="$cand"
-              break
+          if [ -n "${KSU_ROOT:-}" ]; then
+            if [ -d "./$KSU_ROOT/kernel" ]; then
+              KSU_KCONFIG_DIR="./$KSU_ROOT/kernel"
+            elif [ -d "./$KSU_ROOT" ]; then
+              KSU_KCONFIG_DIR="./$KSU_ROOT"
             fi
-          done
-
+          fi
+          if [ -z "$KSU_KCONFIG_DIR" ]; then
+            for cand in ./KernelSU/kernel ./KernelSU ./common/drivers/kernelsu/kernel ./common/drivers/kernelsu; do
+              if [ -d "$cand" ]; then
+                KSU_KCONFIG_DIR="$cand"
+                break
+              fi
+            done
+          fi
           if [ -z "$KSU_KCONFIG_DIR" ]; then
             echo "❌ Could not locate KernelSU Kconfig directory."
-            find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 6 -type f -name 'Kconfig' -path '*kernelsu*' | head -n 60 || true
+            find . -maxdepth 7 -type f -name 'Kconfig' -path '*kernelsu*' | head -n 80 || true
             exit 1
           fi
           echo "🔎 KernelSU Kconfig dir: $KSU_KCONFIG_DIR"
 
-          ksym_exists() { grep -RInqE "^[[:space:]]*config[[:space:]]+$1([[:space:]]|$)" "$KSU_KCONFIG_DIR" 2>/dev/null; }
+          ksym_exists() {
+            grep -RInqE "^[[:space:]]*(menuconfig|config)[[:space:]]+$1([[:space:]]|$)" "$KSU_KCONFIG_DIR" 2>/dev/null
+          }
+
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-            echo "📦 Enabling SUSFS features..."
+            echo "🧩 Enabling SUSFS options in defconfig (KernelSU + kernel side)"
+
+            # KernelSU must expose the root symbol once the enable patch is applied
             if ! ksym_exists KSU_SUSFS; then
-              echo "❌ KSU_SUSFS symbol not present in KernelSU driver. SUSFS enable patch didn't apply."
+              echo "❌ KernelSU SUSFS symbol (KSU_SUSFS) not found in $KSU_KCONFIG_DIR."
+              echo "---- KSU_SUSFS grep (first 120 matches) ----"
+              grep -RIn --max-count=120 -E 'KSU_SUSFS|SUSFS' "$KSU_KCONFIG_DIR" 2>/dev/null || true
               exit 1
             fi
+
             append_cfg "CONFIG_KSU_SUSFS=y"
+
             for sym in \
               KSU_SUSFS_SUS_PATH \
               KSU_SUSFS_SUS_MOUNT \
+              KSU_SUSFS_SUS_MOUNT_MNT_ID_REORDER \
               KSU_SUSFS_SUS_KSTAT \
+              KSU_SUSFS_SUS_MAPS \
+              KSU_SUSFS_SUS_MAP \
+              KSU_SUSFS_SUS_PROC_FD_LINK \
+              KSU_SUSFS_SUS_MEMFD \
+              KSU_SUSFS_TRY_UMOUNT \
               KSU_SUSFS_SPOOF_UNAME \
               KSU_SUSFS_ENABLE_LOG \
               KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
               KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-              KSU_SUSFS_OPEN_REDIRECT \
-              KSU_SUSFS_SUS_MAP
+              KSU_SUSFS_OPEN_REDIRECT
             do
               if ksym_exists "$sym"; then
                 append_cfg "CONFIG_${sym}=y"
               else
-                echo "ℹ️ Skipping missing symbol: CONFIG_${sym}"
+                echo "ℹ️ Skipping missing KernelSU option: $sym"
               fi
             done
 
-            # If manual mode exists, explicitly disable it to avoid conflicts.
-            if ksym_exists KSU_MANUAL_SU; then append_cfg "CONFIG_KSU_MANUAL_SU=n"; fi
-            if ksym_exists KSU_MANUAL_HOOK; then append_cfg "CONFIG_KSU_MANUAL_HOOK=n"; fi
           else
-            echo "📦 SUSFS=Off: enabling KernelSU manual mode (if supported)..."
             append_cfg "CONFIG_KSU_SUSFS=n"
-            if ksym_exists KSU_MANUAL_SU; then
-              append_cfg "CONFIG_KSU_MANUAL_SU=y"
-            elif ksym_exists KSU_MANUAL_HOOK; then
-              append_cfg "CONFIG_KSU_MANUAL_HOOK=y"
-            else
-              echo "⚠️ No manual mode symbol found (KSU_MANUAL_SU / KSU_MANUAL_HOOK). Leaving defaults."
+
+            if [ "${{ github.event.inputs.KSU_MANUAL_HOOK }}" == "Off" ]; then
+              echo "🧩 Enabling Manual SU/Hook (only if symbols exist)"
+              if ksym_exists KSU_MANUAL_SU; then append_cfg "CONFIG_KSU_MANUAL_SU=y"; else echo "ℹ️ KSU_MANUAL_SU not found"; fi
+              if ksym_exists KSU_MANUAL_HOOK; then append_cfg "CONFIG_KSU_MANUAL_HOOK=y"; else echo "ℹ️ KSU_MANUAL_HOOK not found"; fi
             fi
           fi
-          
-          echo "📦 Adding support for Mountify (backslashxx/mountify) module"
-          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG_PATH"
-          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG_PATH"
-          
-          
-          if [ "${{ github.event.inputs.bbg }}" == "On" ]; then
-            echo "⚡ Configuring BBG..."
-            echo 'CONFIG_BBG=y' >> "$DEFCONFIG_PATH"
-            echo 'CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf,baseband_guard"' >> "$DEFCONFIG_PATH"
-          fi          
-          
-          
-          if [ "${{ github.event.inputs.bbr }}" == "On" ]; then
-            echo "🌐 Enabling BBR congestion control..."
-            echo "CONFIG_TCP_CONG_ADVANCED=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_NET_SCH_FQ=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_TCP_CONG_BIC=n" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_TCP_CONG_WESTWOOD=n" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_TCP_CONG_HTCP=n" >> "$DEFCONFIG_PATH"
-          fi
-          
-          # Add O2 config
-          
-          echo "📦 Setting O2..."
-          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> "$DEFCONFIG_PATH"
-          
-          # Enable POLLY in LLVM
-          echo "📦 Setting POLLY..."
-          echo "CONFIG_LLVM_POLLY=y" >> "$DEFCONFIG_PATH"
-          echo "CONFIG_LD_DEAD_CODE_DATA_ELIMINATION=y" >> "$DEFCONFIG_PATH"
-          
-          if [ "${{ github.event.inputs.proxy }}" == "On" ]; then
-            # Add proxy config
-            echo "📦 Applying proxy/network optimizations..."
-            echo "CONFIG_BPF_STREAM_PARSER=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_NETFILTER_XT_SET=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET_MAX=65534" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET_BITMAP_IP=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET_BITMAP_IPMAC=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET_BITMAP_PORT=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET_HASH_IP=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET_HASH_IPMARK=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET_HASH_IPPORT=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET_HASH_IPPORTIP=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET_HASH_IPPORTNET=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET_HASH_IPMAC=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET_HASH_MAC=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET_HASH_NETPORTNET=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET_HASH_NET=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET_HASH_NETNET=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET_HASH_NETPORT=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET_HASH_NETIFACE=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP_SET_LIST_SET=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP6_NF_NAT=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> "$DEFCONFIG_PATH"
-          fi
-          
-          if [[ "${{ github.event.inputs.adios_rekernel_enable }}" == "ADIOS only" || "${{ github.event.inputs.adios_rekernel_enable }}" == "both" ]]; then
-            echo "📦 Setting up ADIOS..."
-            echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> "$DEFCONFIG_PATH"
-            echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> "$DEFCONFIG_PATH"
-          fi
-          
-          if [[ "${{ github.event.inputs.adios_rekernel_enable }}" == "Re-Kernel only" || "${{ github.event.inputs.adios_rekernel_enable }}" == "both" ]]; then
-            echo "📦 Setting up Re-Kernel..."
-            echo "CONFIG_REKERNEL=y" >> "$DEFCONFIG_PATH"
-          fi
-          
-          # Skip installing UAPI headers to usr/include to save build time
-          echo "CONFIG_HEADERS_INSTALL=n" >> "$DEFCONFIG_PATH"
-          
-          
-          # Remove check_defconfig
-          sed -i 's/check_defconfig//' ./common/build.config.gki
-          
-          echo "✅ Kernel config updated"
-          
+
+          echo "🧩 Enabling LZ4 + ZRAM defaults"
+          append_cfg "CONFIG_ZRAM=y"
+          append_cfg "CONFIG_CRYPTO_LZ4=y"
+          append_cfg "CONFIG_CRYPTO_LZ4HC=y"
+          append_cfg "CONFIG_LZ4_COMPRESS=y"
+          append_cfg "CONFIG_LZ4HC_COMPRESS=y"
+          append_cfg "CONFIG_ZRAM_DEF_COMP_LZ4=y"
+          append_cfg 'CONFIG_ZRAM_DEF_COMP="lz4"'
+
+          echo "✅ Defconfig updated:"
+          tail -n 40 "$DEFCONFIG"
+        shell: bash
+
       - name: 🔎 Verify KSU/SUSFS config (pre-build)
         run: |
-          cd kernel_workspace/kernel_platform/common
-          # Generate .config from gki_defconfig so we can verify the effective settings
-          make O=out ARCH=arm64 gki_defconfig
 
-          echo "---- Effective config (KSU/KPM/SUSFS) ----"
-          grep -nE '^CONFIG_KSU(=|_)|^CONFIG_KPM(=|_)' out/.config || true
+          set -euo pipefail
 
-          echo "---- Effective config (ZRAM/LZ4) ----"
-          grep -nE '^CONFIG_ZRAM(=|_)|^CONFIG_ZRAM_DEF_COMP(=|_)|^CONFIG_ZRAM_DEF_COMP_LZ4(=|_)|^CONFIG_LZ4(=|_)' out/.config | head -n 80 || true
+          cd kernel_workspace/kernel_platform
 
-          if ! grep -q '^CONFIG_ZRAM_DEF_COMP_LZ4=y' out/.config; then
-            echo "❌ LZ4 ZRAM default was requested by workflow, but CONFIG_ZRAM_DEF_COMP_LZ4 is not enabled in out/.config"
-            exit 1
-          fi
-          if ! grep -q '^CONFIG_ZRAM_DEF_COMP="lz4"' out/.config; then
-            echo "❌ ZRAM default compressor is not set to lz4 (CONFIG_ZRAM_DEF_COMP=\"lz4\")"
-            exit 1
-          fi
+          cd common
+          make O=out gki_defconfig
+
+          echo "🔎 Effective .config checks:"
+          CONFIG_FILE=out/.config
+          test -f "$CONFIG_FILE"
 
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-            if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
-              echo "❌ SUSFS was requested, but CONFIG_KSU_SUSFS is not enabled in out/.config"
-              echo "   Likely causes:"
-              echo "   - SUSFS KernelSU enable patch didn't apply"
-              echo "   - SUSFS Kconfig symbols are missing in this kernel tree"
-              echo "   - You built from a workflow run where SUSFS input was not On"
-              echo ""
-              echo "---- Grep for SUSFS symbols in KernelSU driver ----"
-              grep -RIn --max-count=50 'KSU_SUSFS\|SUSFS' drivers/kernelsu 2>/dev/null || true
+            echo "🔎 Checking for KernelSU SUSFS option in .config..."
+            grep -q '^CONFIG_KSU_SUSFS=y' "$CONFIG_FILE" || {
+              echo "❌ Missing CONFIG_KSU_SUSFS=y in out/.config"
+              echo "---- KSU/SUSFS related config (first 200 lines) ----"
+              grep -nE 'KSU|SUSFS' "$CONFIG_FILE" | head -n 200 || true
+              exit 1
+            }
+
+            echo "🔎 Checking SUSFS files exist..."
+            if [ ! -f "./fs/susfs.c" ] && [ ! -f "./fs/susfs/susfs.c" ]; then
+              echo "❌ SUSFS enabled but susfs.c is missing under common/fs"
+              find ./fs -maxdepth 3 -type f -iname '*susfs*' | head -n 60 || true
               exit 1
             fi
           fi
+
+          echo "🔎 Checking LZ4/ZRAM default compression in .config..."
+          if ! grep -q '^CONFIG_ZRAM=y' "$CONFIG_FILE"; then
+            echo "❌ Missing CONFIG_ZRAM=y"
+            exit 1
+          fi
+
+          if grep -q '^CONFIG_ZRAM_DEF_COMP="lz4"$' "$CONFIG_FILE"; then
+            echo "✅ ZRAM default comp set via CONFIG_ZRAM_DEF_COMP"
+          elif grep -q '^CONFIG_ZRAM_DEF_COMP_LZ4=y$' "$CONFIG_FILE"; then
+            echo "✅ ZRAM default comp set via CONFIG_ZRAM_DEF_COMP_LZ4"
+          else
+            echo "❌ ZRAM LZ4 default not set (need CONFIG_ZRAM_DEF_COMP=\"lz4\" or CONFIG_ZRAM_DEF_COMP_LZ4=y)"
+            grep -nE '^CONFIG_ZRAM_DEF_COMP' "$CONFIG_FILE" || true
+            exit 1
+          fi
+
+          # Make sure LZ4 support is actually enabled
+          if ! grep -q '^CONFIG_LZ4_COMPRESS=y' "$CONFIG_FILE" && ! grep -q '^CONFIG_CRYPTO_LZ4=y' "$CONFIG_FILE"; then
+            echo "❌ LZ4 support not enabled in .config (need CONFIG_LZ4_COMPRESS=y and/or CONFIG_CRYPTO_LZ4=y)"
+            grep -nE 'LZ4' "$CONFIG_FILE" | head -n 120 || true
+            exit 1
+          fi
+
+          echo "✅ Pre-build config verification passed"
+        shell: bash
 
       - name: 📦 Add build name
         run: |
