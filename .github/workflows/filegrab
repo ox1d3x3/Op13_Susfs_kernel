@@ -1,0 +1,128 @@
+name: SUSFS debug artifacts only
+
+on:
+  workflow_dispatch:
+    inputs:
+      ANDROID_VERSION:
+        description: "Android version folder (e.g. android15)"
+        required: true
+        default: "android15"
+      KERNEL_VERSION:
+        description: "Kernel version folder (e.g. 6.6)"
+        required: true
+        default: "6.6"
+      SUSFS:
+        description: "Apply SUSFS patches"
+        required: true
+        type: choice
+        options: ["On", "Off"]
+        default: "On"
+
+jobs:
+  collect-susfs-artifacts:
+    name: collect-susfs-artifacts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git patch dos2unix rsync zip
+
+      - name: Prepare workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p kernel_workspace
+          ls -la
+
+      - name: Clone patch repos + apply SUSFS (no build)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel_workspace
+
+          echo "⬇️ Cloning patch repos..."
+          if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
+            git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${{ github.event.inputs.ANDROID_VERSION }}-${{ github.event.inputs.KERNEL_VERSION }} susfs4ksu
+          fi
+
+          # Optional: keep your patch repos here if needed for context
+          # git clone --depth=1 https://github.com/mrcxlinux/kernel_patches.git kernel_patches || true
+          # git clone --depth=1 https://github.com/ShirkNeko/SukiSU_patch.git SukiSU_patch || true
+
+          # Your kernel tree is expected here (adjust if your repo layout differs)
+          # This workflow assumes you already have kernel sources in your repo:
+          # kernel_workspace/kernel_platform/common exists after checkout
+          if [ ! -d "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common" ]; then
+            echo "❌ Missing kernel tree at kernel_workspace/kernel_platform/common"
+            echo "   Make sure your repo contains kernel_workspace/kernel_platform/common"
+            exit 1
+          fi
+
+          cd kernel_platform
+
+          echo "📝 Copying SUSFS payload..."
+          if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
+            cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ github.event.inputs.ANDROID_VERSION }}-${{ github.event.inputs.KERNEL_VERSION }}.patch ./common/ || true
+            rsync -a ../susfs4ksu/kernel_patches/fs/ ./common/fs/ || true
+            rsync -a ../susfs4ksu/kernel_patches/include/linux/ ./common/include/linux/ || true
+          fi
+
+          echo "📌 Applying SUSFS kernel patch (capture rejects, don't stop)..."
+          set +e
+          if [ "${{ github.event.inputs.SUSFS }}" = "On" ] && [ -f "./common/50_add_susfs_in_gki-${{ github.event.inputs.ANDROID_VERSION }}-${{ github.event.inputs.KERNEL_VERSION }}.patch" ]; then
+            (cd common && patch -p1 --forward -l -F 3 < "50_add_susfs_in_gki-${{ github.event.inputs.ANDROID_VERSION }}-${{ github.event.inputs.KERNEL_VERSION }}.patch")
+          fi
+          set -e
+
+          echo "🔎 Try applying KernelSU SUSFS enable patch (capture rejects, don't stop)..."
+          if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
+            ENABLE_PATCH="$(find ../susfs4ksu -maxdepth 10 -type f -name '10_enable_susfs_for_ksu.patch' | head -n 1)"
+            echo "Enable patch candidate: ${ENABLE_PATCH:-<none>}"
+
+            if [ -n "${ENABLE_PATCH:-}" ]; then
+              # Try applying inside KernelSU tree if it exists, else try common/drivers/kernelsu as fallback
+              set +e
+              if [ -d "./KernelSU/kernel" ]; then
+                (cd KernelSU && patch -p1 --forward -l -F 3 < "$ENABLE_PATCH")
+              elif [ -d "./common/drivers/kernelsu" ]; then
+                (cd common/drivers/kernelsu && patch -p0 --forward -l -F 3 < "$ENABLE_PATCH")
+              fi
+              set -e
+            fi
+          fi
+
+          echo "🧾 Collect quick greps (for dev)..."
+          mkdir -p "$GITHUB_WORKSPACE/kernel_workspace/_debug"
+          {
+            echo "=== GREP: KSU_SUSFS in kernel_platform (first 200) ==="
+            grep -RIn --max-count=200 'KSU_SUSFS\|SUSFS' "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" 2>/dev/null || true
+            echo
+            echo "=== GREP: ZRAM LZ4 symbols (first 200) ==="
+            grep -RIn --max-count=200 'ZRAM_DEF_COMP\|LZ4K\|LZ4KD\|CRYPTO_LZ4' "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common" 2>/dev/null || true
+          } > "$GITHUB_WORKSPACE/kernel_workspace/_debug/greps.txt"
+
+      - name: Upload SUSFS artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: susfs-debug-artifacts-${{ github.run_id }}
+          path: |
+            kernel_workspace/_debug/greps.txt
+            kernel_workspace/susfs4ksu/**
+
+            # Kernel tree patches & rejects
+            kernel_workspace/kernel_platform/common/*.patch
+            kernel_workspace/kernel_platform/common/**/*.rej
+
+            # KernelSU rejects (common locations)
+            kernel_workspace/kernel_platform/KernelSU/**/*.rej
+            kernel_workspace/kernel_platform/common/drivers/kernelsu/**/*.rej
+
+            # If your run produces .config somewhere later, dev can inspect it too:
+            kernel_workspace/kernel_platform/common/out/.config
