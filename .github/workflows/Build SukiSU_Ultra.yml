@@ -15,7 +15,7 @@ on:
         options:
           - "On"
           - "Off"
-        default: "Off"
+        default: "On"
       KPM:
         description: "🧩 KPM Support"
         required: true
@@ -23,7 +23,7 @@ on:
         options:
           - "On"
           - "Off"
-        default: "On"
+        default: "Off"
       bbg:
         description: "🛡️ BBG baseband protection"
         required: true
@@ -57,7 +57,7 @@ on:
         options:
           - "On"
           - "Off"
-        default: "On"
+        default: "Off"
       UNICODE_BYPASS:
         description: "🚀 Unicode zero-width bypass fix patch (Not recommended for higher kernel versions; it is suggested to use https://t.me/real5ec1cff/271 for a painless fix)"
         required: true
@@ -306,15 +306,32 @@ jobs:
           fi
           cd ./common
           
-          # Normalize line endings for patch files (prevents "corrupt binary patch" issues)
-          dos2unix 001-lz4.patch 002-zstd.patch EnablePOLLY.patch 2>/dev/null || true
-          if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-          dos2unix 50_add_susfs_in_gki-android15-6.6.patch 2>/dev/null || true
-          else
-          dos2unix scope_min_manual_hooks_v1.9.patch 2>/dev/null || true
-          fi
-          if [ "${{ github.event.inputs.UNICODE_BYPASS }}" = "On" ]; then
-          dos2unix unicode_bypass_fix.patch 2>/dev/null || true
+          # Normalize line endings for *text* patches only.
+# IMPORTANT: Do NOT run dos2unix on patches that contain "GIT binary patch" blocks,
+# because it can corrupt the base85 payload and cause "corrupt binary patch" errors.
+normalize_patch() {
+  local p="$1"
+  [ -f "$p" ] || return 0
+  if grep -q "GIT binary patch" "$p"; then
+    echo "Skipping dos2unix for $p (contains GIT binary patch)"
+    return 0
+  fi
+  dos2unix "$p" 2>/dev/null || true
+}
+
+normalize_patch 001-lz4.patch
+normalize_patch 002-zstd.patch
+normalize_patch EnablePOLLY.patch
+
+if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
+  normalize_patch 50_add_susfs_in_gki-android15-6.6.patch
+else
+  normalize_patch scope_min_manual_hooks_v1.9.patch
+fi
+
+if [ "${{ github.event.inputs.UNICODE_BYPASS }}" == "On" ]; then
+  normalize_patch unicode_bypass_fix.patch
+fi
           fi
           
           if [ "${{ github.event.inputs.UNICODE_BYPASS }}" = "On" ]; then
