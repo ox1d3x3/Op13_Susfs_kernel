@@ -1,7 +1,7 @@
 <div id="toc" align="center" style="margin-bottom: 0; padding-bottom: 0;">
   <ul style="list-style: none; margin: 0; padding: 0;">
     <summary>
-      <h1 align="center" style="margin: 0; padding: 0;">⋆. 𐙚˚࿔ OnePlus 13 Kernel 𝜗𝜚˚⋆</h1>
+      <h1 align="center" style="margin: 0; padding: 0;"> OnePlus 13 Kernel+SUSFS</h1>
       <p align="center" style="font-size:12px; margin-top: 5px; margin-bottom: 20px;">
 </p>
     </summary>
