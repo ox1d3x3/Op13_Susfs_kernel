@@ -73,9 +73,9 @@ on:
         default: ""
       BUILD_TIME:
         type: string
-        description: "📅 Custom build time (Enter F to use the current Perth time)"
+        description: "Optional. Leave blank to mimic stock build time, or set to F to use current build time."
         required: false
-        default: "F"
+        default: ""
         
 jobs:
   build:
@@ -357,6 +357,20 @@ jobs:
             return 0
           }
           
+          
+          # If SUSFS is enabled, also apply the KernelSU-side SUSFS enable patch (if it exists in susfs4ksu)
+          if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
+            echo "🔎 Searching for KernelSU SUSFS enable patch in susfs4ksu..."
+            KSU_SUSFS_PATCH="$(find ../susfs4ksu -maxdepth 4 -type f -name '10_enable_susfs*.patch' | head -n 1)"
+            if [ -n "$KSU_SUSFS_PATCH" ]; then
+              echo "📦 Applying KernelSU SUSFS enable patch: $KSU_SUSFS_PATCH"
+              apply_patch_required "$KSU_SUSFS_PATCH"
+            else
+              echo "⚠️ No 10_enable_susfs*.patch found in susfs4ksu (gki-android15-6.6)."
+              echo "   If SUSFS is not detected on-device, this is the first thing to check."
+            fi
+          fi
+
           echo "Applying lz4 patch..."
           # LZ4 patch may contain git binary patch blocks; treat as optional to avoid hard-failing the build.
           apply_patch_optional 001-lz4.patch
@@ -495,6 +509,29 @@ jobs:
           
           echo "✅ Kernel config updated"
           
+      - name: 🔎 Verify KSU/SUSFS config (pre-build)
+        run: |
+          cd kernel_workspace/kernel_platform/common
+          # Generate .config from gki_defconfig so we can verify the effective settings
+          make O=out ARCH=arm64 gki_defconfig
+
+          echo "---- Effective config (KSU/KPM/SUSFS) ----"
+          grep -nE '^CONFIG_KSU(=|_)|^CONFIG_KPM(=|_)' out/.config || true
+
+          if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
+            if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
+              echo "❌ SUSFS was requested, but CONFIG_KSU_SUSFS is not enabled in out/.config"
+              echo "   Likely causes:"
+              echo "   - SUSFS KernelSU enable patch didn't apply"
+              echo "   - SUSFS Kconfig symbols are missing in this kernel tree"
+              echo "   - You built from a workflow run where SUSFS input was not On"
+              echo ""
+              echo "---- Grep for SUSFS symbols in KernelSU driver ----"
+              grep -RIn --max-count=50 'KSU_SUSFS\|SUSFS' drivers/kernelsu 2>/dev/null || true
+              exit 1
+            fi
+          fi
+
       - name: 📦 Add build name
         run: |
           echo "📦 Replacing kernel version suffix..."
