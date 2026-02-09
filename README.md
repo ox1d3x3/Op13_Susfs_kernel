@@ -73,7 +73,7 @@
 
 ➜ run workflow
 
-
+---
 ### ⚠️ Warning / No Warranty (Read Before Flashing)
 
 By proceeding, you understand and accept that:
@@ -84,16 +84,16 @@ I (and the kernel/module authors) provide no guarantee this will work on your de
 
 You are fully responsible for anything that happens to your phone.
 
-
+---
 ### ✅ Strongly recommended before you continue: make backups in OFOX
 
 Before flashing anything, backup these partitions using OrangeFox Recovery Project (OFOX):
 
-boot
+**boot**
 
-init_boot
+**init_boot**
 
-recovery (if your device/ROM exposes it in OFOX)
+**recovery** (if your device/ROM exposes it in OFOX)
 
 Also make sure you have:
 
