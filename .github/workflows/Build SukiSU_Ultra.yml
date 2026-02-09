@@ -660,6 +660,84 @@ jobs:
           
           echo "✅ KPM patch applied"
           
+      - name: 🏷️ Customize AnyKernel Banner (with credits)
+        run: |
+          set -e
+          AK="$GITHUB_WORKSPACE/AnyKernel3/anykernel.sh"
+          if [ ! -f "$AK" ]; then
+            echo "❌ anykernel.sh not found at $AK"
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          ak_path = Path("AnyKernel3/anykernel.sh")
+          s = ak_path.read_text(encoding="utf-8", errors="ignore").splitlines(True)
+
+          start_idx = None
+          end_idx = None
+
+          # Locate original author banner block (chenhua13)
+          for i, line in enumerate(s):
+              if 'ui_print "chenhua13 Kernel' in line:
+                  start_idx = i
+                  break
+
+          if start_idx is not None:
+              for j in range(start_idx, len(s)):
+                  if 'ksu_supported' in s[j] and 'ui_print' in s[j]:
+                      end_idx = j
+                      break
+
+          KERNEL_NAME = "android15-8-g29d86c5fc9dd-abogki428889875-4k-Ox1d3x3-SUS"
+          KSUVER = "${{ env.KSUVER }}"
+
+          banner = []
+          banner.append('ui_print " "\n')
+          banner.append('MODEL="$(getprop ro.product.model 2>/dev/null)"; [ -z "$MODEL" ] && MODEL="$(getprop ro.product.marketname 2>/dev/null)"\n')
+          banner.append('DEVICE="$(getprop ro.product.device 2>/dev/null)"\n')
+          banner.append('ANDROID="$(getprop ro.build.version.release 2>/dev/null)"\n')
+          banner.append('PATCH="$(getprop ro.build.version.security_patch 2>/dev/null)"\n')
+          banner.append('SLOT="$(getprop ro.boot.slot_suffix 2>/dev/null)"; [ -z "$SLOT" ] && SLOT="$(getprop ro.boot.slot 2>/dev/null)"\n')
+          banner.append('ui_print "===================================================="\n')
+          banner.append('ui_print "  ${MODEL:-Unknown Model} | SukiSU_SUS Kernel"\n')
+          banner.append(f'ui_print "  Kernel  : {KERNEL_NAME}"\n')
+          banner.append(f'ui_print "  Build   : {KSUVER}"\n')
+          banner.append('ui_print "  Builder : Ox1d3x3 (@ox1d3x3)"\n')
+          banner.append('ui_print "  Credits : chenhua13 / mrcxlinux"\n')
+          banner.append('ui_print "===================================================="\n')
+          banner.append('ui_print "  Device  : ${DEVICE:-unknown}"\n')
+          banner.append('ui_print "  Android : ${ANDROID:-unknown}"\n')
+          banner.append('ui_print "  Patch   : ${PATCH:-unknown}"\n')
+          banner.append('ui_print "  Slot    : ${SLOT:-unknown}"\n')
+          banner.append('ui_print "===================================================="\n')
+          banner.append('ui_print "  ⚠️ No warranty. Flash at your own risk."\n')
+          banner.append('ui_print "  ⚠️ Backup boot / init_boot / recovery via OFOX first."\n')
+          banner.append('ui_print "===================================================="\n')
+          banner.append('ui_print "                   __   __  __"\n')
+          banner.append('ui_print "                  \\ \\ / / /_ |"\n')
+          banner.append('ui_print "                   \\ V /   | |"\n')
+          banner.append('ui_print "                    > <    | |"\n')
+          banner.append('ui_print "                   / . \\   | |"\n')
+          banner.append('ui_print "                  /_/ \\_\\  |_|"\n')
+          banner.append('ui_print "===================================================="\n')
+          banner.append('ui_print "  -> ksu_supported: $ksu_supported"\n')
+
+          banner_text = "".join(banner)
+
+          if start_idx is not None and end_idx is not None and end_idx >= start_idx:
+              s[start_idx:end_idx+1] = [banner_text]
+          else:
+              for i, line in enumerate(s):
+                  if 'abort "  -> Non-GKI device, abort."' in line:
+                      s.insert(i, banner_text)
+                      break
+
+          ak_path.write_text("".join(s), encoding="utf-8")
+          print("✅ anykernel.sh banner updated (with credits)")
+          PY
+
       - name: 🧠 Set Artifact Name
         id: set_name
         run: |
