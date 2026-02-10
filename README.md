@@ -16,7 +16,7 @@
 
 ➜ **version**: `6.6`
 
-➜ **android version**: `15 VanillaIceCream (can be used on later versions too!)`
+➜ **android version**: `15-16`
 
 ➜ can be used on: `OxygenOS / ColorOS`
 
