@@ -1,4 +1,4 @@
-name: Build SukiSU Ultra
+name: Build SukiSU Ultra (Final - No Kheaders)
 env:
   TZ: Asia/Shanghai
   ANDROID_VERSION: android15
@@ -90,7 +90,8 @@ jobs:
       - name: 📦 Install Dependencies
         uses: awalsh128/cache-apt-pkgs-action@v1.4.3
         with:
-          packages: python3 git curl ccache libelf-dev build-essential flex bison libssl-dev libncurses-dev liblz4-tool zlib1g-dev libxml2-utils rsync unzip gawk dos2unix kmod bc
+          # Added 'cpio' to fix the immediate error, though we disable kheaders anyway
+          packages: python3 git curl ccache libelf-dev build-essential flex bison libssl-dev libncurses-dev liblz4-tool zlib1g-dev libxml2-utils rsync unzip gawk dos2unix kmod bc cpio
           execute_install_scripts: true
           
       - name: ⚙️ Setup Cache
@@ -153,11 +154,10 @@ jobs:
           # 1. Download SUSFS patches
           if [ "${{ inputs.SUSFS }}" == "On" ]; then
             echo "⬇️ Cloning SUSFS patches..."
-            # Clone directly here
             git clone --depth 1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6
             
             echo "🩹 Applying SUSFS Kernel Patch..."
-            # FIXED PATH: removed '../' because we are already in the parent folder
+            # Check file existence to avoid "No such file" errors
             if [ -f "susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch" ]; then
                 cp susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
             else
@@ -173,7 +173,7 @@ jobs:
               exit 1
             fi
             
-            # Copy header files (FIXED PATHS)
+            # Copy header files
             cp susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
             cp susfs4ksu/kernel_patches/fs/* ./common/fs/
           fi
@@ -230,6 +230,12 @@ jobs:
           export PATH=$HOME/toolchains/neutron-clang/bin:$PATH
           
           config_file="arch/arm64/configs/gki_defconfig"
+          
+          # 🛑 DISABLE KHEADERS (Fixes the build error)
+          echo "🚫 Disabling CONFIG_IKHEADERS to prevent build errors..."
+          scripts/config --file $config_file -d CONFIG_IKHEADERS
+          
+          # Optimization
           scripts/config --file $config_file -e CONFIG_LTO_CLANG_THIN
           
           if [ "${{ inputs.SUSFS }}" == "On" ]; then
@@ -280,7 +286,7 @@ jobs:
              if [ -f "kernel_workspace/kernel_platform/common/build.log" ]; then
                 tail -n 100 kernel_workspace/kernel_platform/common/build.log
              else
-                echo "⚠️ No build log found (Build failed before logging started)"
+                echo "⚠️ No build log found"
              fi
              exit 1
           fi
