@@ -1,4 +1,4 @@
-name: Build SukiSU Ultra (Final - No Kheaders)
+name: Build SukiSU Ultra
 env:
   TZ: Asia/Shanghai
   ANDROID_VERSION: android15
