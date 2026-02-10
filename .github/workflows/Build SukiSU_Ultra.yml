@@ -339,6 +339,14 @@ jobs:
             fi
             echo "📦 Using enable patch: $KSU_SUSFS_PATCH"
 
+            # Make patch path absolute so it stays valid inside subshells (cd ./common ...)
+            KSU_SUSFS_PATCH="$(realpath \"$KSU_SUSFS_PATCH\")"
+            if [ ! -f "$KSU_SUSFS_PATCH" ]; then
+              echo "❌ SUSFS patch path resolved but file missing: $KSU_SUSFS_PATCH"
+              exit 1
+            fi
+
+
             apply_patch_in_common() {
               local p="$1"
               local strips=(1 0 2 3 4)
