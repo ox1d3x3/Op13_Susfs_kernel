@@ -329,23 +329,41 @@ jobs:
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
             echo "🔧 Enabling SUSFS support in KernelSU driver..."
 
-            # Robustly locate an 'enable SUSFS' patch by content (names differ across branches).
-            KSU_SUSFS_PATCH="$(grep -RIl 'config[[:space:]]\+KSU_SUSFS\|KSU_SUSFS' ../susfs4ksu/kernel_patches --include='*.patch' | head -n 1 || true)"
+            # Robustly locate an "enable SUSFS" patch by content (names differ across branches).
+            # We prefer a patch that introduces the Kconfig symbol: `config KSU_SUSFS`.
+            mapfile -t SUSFS_CANDIDATES < <(grep -RIl --include='*.patch' 'config[[:space:]]\+KSU_SUSFS' ../susfs4ksu/kernel_patches 2>/dev/null || true)
+            if [ "${#SUSFS_CANDIDATES[@]}" -eq 0 ]; then
+              mapfile -t SUSFS_CANDIDATES < <(grep -RIl --include='*.patch' 'KSU_SUSFS' ../susfs4ksu/kernel_patches 2>/dev/null || true)
+            fi
+            KSU_SUSFS_PATCH=""
+            if [ "${#SUSFS_CANDIDATES[@]}" -gt 0 ]; then
+              for p in "${SUSFS_CANDIDATES[@]}"; do
+                if echo "$p" | grep -qiE 'KernelSU|kernelsu|ksu'; then
+                  KSU_SUSFS_PATCH="$p"
+                  break
+                fi
+              done
+              [ -z "$KSU_SUSFS_PATCH" ] && KSU_SUSFS_PATCH="${SUSFS_CANDIDATES[0]}"
+            fi
             if [ -z "$KSU_SUSFS_PATCH" ]; then
               echo "❌ Could not find a SUSFS enable patch inside susfs4ksu/kernel_patches."
-              echo "   Available patch files (first 80):"
-              find ../susfs4ksu/kernel_patches -maxdepth 2 -type f -name '*.patch' | head -n 80 || true
+              echo "   Available patch files (first 120):"
+              find ../susfs4ksu/kernel_patches -maxdepth 3 -type f -name '*.patch' | head -n 120 || true
               exit 1
             fi
             echo "📦 Using enable patch: $KSU_SUSFS_PATCH"
 
-            # Make patch path absolute so it stays valid inside subshells (cd ./common ...)
-            KSU_SUSFS_PATCH="$(realpath \"$KSU_SUSFS_PATCH\")"
+            # Normalize/absolutize the patch path so it stays valid inside subshells (cd ./common ...)
+            # (Some earlier iterations accidentally embedded quotes in this variable; strip them if present.)
+            KSU_SUSFS_PATCH="${KSU_SUSFS_PATCH%\"}"
+            KSU_SUSFS_PATCH="${KSU_SUSFS_PATCH#\"}"
+            KSU_SUSFS_PATCH="${KSU_SUSFS_PATCH%\'}"
+            KSU_SUSFS_PATCH="${KSU_SUSFS_PATCH#\'}"
+            KSU_SUSFS_PATCH="$(realpath "$KSU_SUSFS_PATCH")"
             if [ ! -f "$KSU_SUSFS_PATCH" ]; then
               echo "❌ SUSFS patch path resolved but file missing: $KSU_SUSFS_PATCH"
               exit 1
             fi
-
 
             apply_patch_in_common() {
               local p="$1"
