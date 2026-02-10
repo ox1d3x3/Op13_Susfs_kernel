@@ -1,7 +1,7 @@
 ---
 name: Build SukiSU Ultra
 env:
-  TZ: Asia/Shanghai
+  TZ: Australia/Perth
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
   KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
@@ -234,18 +234,19 @@ jobs:
           
       - name: ⚡ Setup SukiSU Ultra
         run: |
+          set -euo pipefail
+
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
-          
-          # (translated comment)
-          
+
           echo "🛠️ Setting up SukiSU Ultra..."
-          
-          curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh" | bash -s main
-          
+          # Use builtin branch/tag for best compatibility with SukiSU Ultra's in-tree layout.
+          curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh" | bash -s builtin
+
           cd KernelSU
-          KSU_VERSION_COUNT=$(git rev-list --count main)
-          export KSUVER=$(expr $KSU_VERSION_COUNT + 37185)
-          
+          KSU_VERSION_COUNT=$(git rev-list --count HEAD)
+          export KSUVER=$((KSU_VERSION_COUNT + 37185))
+
+          # Fetch the public API version from upstream Kbuild (retry a few times)
           for i in {1..3}; do
             KBUILD_TMP="$(mktemp)"
             curl ${CURL_OPTS:-""} -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/Kbuild" -o "$KBUILD_TMP"
@@ -253,155 +254,176 @@ jobs:
             rm -f "$KBUILD_TMP"
             [ -n "$KSU_API_VERSION" ] && break || sleep 2
           done
-          
-          if [ -z "$KSU_API_VERSION" ]; then
+
+          if [ -z "${KSU_API_VERSION:-}" ]; then
             echo "❌ Error: failed to fetch KSU_API_VERSION" >&2
             exit 1
           fi
-          
+
           KSU_COMMIT_HASH=$(git ls-remote https://github.com/SukiSU-Ultra/SukiSU-Ultra.git refs/heads/builtin | cut -f1 | cut -c1-8)
           KSU_VERSION_FULL="v${KSU_API_VERSION}-${KSU_COMMIT_HASH}@Ox1d3x3_SUS"
-          
+
+          # Re-write Kbuild version section (idempotent)
           sed -i '/define get_ksu_version_full/,/endef/d' kernel/Kbuild
           sed -i '/KSU_VERSION_API :=/d' kernel/Kbuild
           sed -i '/KSU_VERSION_FULL :=/d' kernel/Kbuild
-          
+
           TMP_FILE=$(mktemp)
           while IFS= read -r line; do
             echo "$line" >> "$TMP_FILE"
             if echo "$line" | grep -q 'REPO_OWNER :='; then
               cat >> "$TMP_FILE" <<EOF
           define get_ksu_version_full
-          v\\\$\$1-${KSU_COMMIT_HASH}@Ox1d3x3_SUS
+          v\\$\$1-${KSU_COMMIT_HASH}@Ox1d3x3_SUS
           endef
-          
+
           KSU_VERSION_API := ${KSU_API_VERSION}
           KSU_VERSION_FULL := ${KSU_VERSION_FULL}
           EOF
             fi
           done < kernel/Kbuild
           mv "$TMP_FILE" kernel/Kbuild
-          
+
           echo "✅ SukiSU Ultra version metadata configured"
-          
-            cd "$GITHUB_WORKSPACE/kernel_workspace"
 
-            echo "⬇️ Cloning required patches..."
-            if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-              git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${ANDROID_VERSION}-${KERNEL_VERSION} susfs4ksu
+          cd "$GITHUB_WORKSPACE/kernel_workspace"
+
+          echo "⬇️ Cloning required patches..."
+          if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
+            git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${ANDROID_VERSION}-${KERNEL_VERSION} susfs4ksu
+          fi
+          git clone --depth=1 https://github.com/mrcxlinux/kernel_patches.git kernel_patches
+          git clone --depth=1 https://github.com/ShirkNeko/SukiSU_patch.git SukiSU_patch
+
+          cd kernel_platform
+
+          COMMON_DIR="./common"
+          KSU_DIR="./KernelSU"   # created by SukiSU Ultra setup.sh
+
+          echo "📝 Copying patch files into common tree..."
+          if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
+            # Locate SUSFS core patch for this tree (avoid hardcoding filename)
+            CORE_PATCH="$(find ../susfs4ksu/kernel_patches -maxdepth 2 -type f -name "50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch" 2>/dev/null | head -n 1)"
+            if [ -z "${CORE_PATCH}" ]; then
+              CORE_PATCH="$(find ../susfs4ksu/kernel_patches -maxdepth 2 -type f -name "50_add_susfs_in_gki-android*-6.6*.patch" 2>/dev/null | head -n 1)"
             fi
-            git clone --depth=1 https://github.com/mrcxlinux/kernel_patches.git kernel_patches
-            git clone --depth=1 https://github.com/ShirkNeko/SukiSU_patch.git SukiSU_patch
-
-            cd kernel_platform
-
-            COMMON_DIR="./common"
-            KSU_DIR="./KernelSU"   # created by SukiSU Ultra setup.sh
-
-            echo "📝 Copying patch files into common tree..."
-            if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-              # Locate SUSFS core patch for this tree (avoid hardcoding filename)
-              CORE_PATCH="$(find ../susfs4ksu/kernel_patches -maxdepth 2 -type f -name "50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch" 2>/dev/null | head -n 1)"
-              if [ -z "${CORE_PATCH}" ]; then
-                CORE_PATCH="$(find ../susfs4ksu/kernel_patches -maxdepth 2 -type f -name "50_add_susfs_in_gki-*-6.6*.patch" 2>/dev/null | head -n 1)"
-              fi
-              if [ -z "${CORE_PATCH}" ]; then
-                echo "❌ Could not locate SUSFS core patch (50_add_susfs_in_gki-*.patch) in susfs4ksu."
-                find ../susfs4ksu/kernel_patches -maxdepth 2 -type f -name "*.patch" | sed 's|^|   - |'
-                exit 1
-              fi
-
-              cp "${CORE_PATCH}" "${COMMON_DIR}/50_add_susfs.patch"
-              cp -r ../susfs4ksu/kernel_patches/fs/* "${COMMON_DIR}/fs/" || true
-              cp -r ../susfs4ksu/kernel_patches/include/linux/* "${COMMON_DIR}/include/linux/" || true
-            fi
-
-            # LZ4 ARMv8 asm placement (fixes "No rule to make target ... lz4armv8.o")
-            mkdir -p "${COMMON_DIR}/lib/lz4/lz4armv8"
-            cp ../kernel_patches/zram/lz4armv8.S "${COMMON_DIR}/lib/lz4/lz4armv8/lz4armv8.S"
-            cp ../kernel_patches/zram/lz4armv8.S "${COMMON_DIR}/lib/lz4/lz4armv8.S"
-
-            # Optional performance/feature patches (kept optional: they vary across trees)
-            cp ../kernel_patches/zram/001-lz4.patch "${COMMON_DIR}/" || true
-            cp ../kernel_patches/zram/002-zstd.patch "${COMMON_DIR}/" || true
-            cp ../kernel_patches/common/EnablePOLLY.patch "${COMMON_DIR}/" || true
-
-            echo "---- LZ4 sanity ----"
-            if [ ! -f "${COMMON_DIR}/lib/lz4/lz4armv8/lz4armv8.S" ]; then
-              echo "❌ Missing ${COMMON_DIR}/lib/lz4/lz4armv8/lz4armv8.S (required by Kbuild in this tree)"
+            if [ -z "${CORE_PATCH}" ]; then
+              echo "❌ Could not locate SUSFS core patch (50_add_susfs_in_gki-*.patch) in susfs4ksu."
+              find ../susfs4ksu/kernel_patches -maxdepth 2 -type f -name "*.patch" | sed 's|^|   - |' || true
               exit 1
             fi
 
-            apply_patch_optional() {
-              local dir="$1"
-              local patch="$2"
-              [ -f "$patch" ] || return 0
-              patch="$(realpath "$patch")"
+            cp "${CORE_PATCH}" "${COMMON_DIR}/50_add_susfs.patch"
+            # Copy any extra files shipped with susfs4ksu (ignore if upstream layout changes)
+            rsync -a --ignore-missing-args ../susfs4ksu/kernel_patches/fs/ "${COMMON_DIR}/fs/" || true
+            rsync -a --ignore-missing-args ../susfs4ksu/kernel_patches/include/linux/ "${COMMON_DIR}/include/linux/" || true
+          fi
 
-              echo "Applying optional patch: $(basename "$patch") in $dir"
-              pushd "$dir" >/dev/null
+          # LZ4 ARMv8 asm placement (fixes "No rule to make target ... lz4armv8.o")
+          mkdir -p "${COMMON_DIR}/lib/lz4/lz4armv8"
+          cp ../kernel_patches/zram/lz4armv8.S "${COMMON_DIR}/lib/lz4/lz4armv8/lz4armv8.S"
+          cp ../kernel_patches/zram/lz4armv8.S "${COMMON_DIR}/lib/lz4/lz4armv8.S"
 
-              # git apply first (supports git-format + binary)
-              if git apply -p1 --whitespace=nowarn "$patch" 2>/dev/null; then
-                echo "✅ Applied (git apply)"
-                popd >/dev/null
-                return 0
-              fi
+          # Optional performance/feature patches (kept optional: they vary across trees)
+          cp ../kernel_patches/zram/001-lz4.patch "${COMMON_DIR}/" || true
+          cp ../kernel_patches/zram/002-zstd.patch "${COMMON_DIR}/" || true
+          cp ../kernel_patches/common/EnablePOLLY.patch "${COMMON_DIR}/" || true
 
-              # Fallback: GNU patch with fuzz (text-only)
-              if patch -p1 -l -F 3 < "$patch"; then
-                echo "✅ Applied (patch -F3)"
-                popd >/dev/null
-                return 0
-              fi
+          echo "---- LZ4 sanity ----"
+          if [ ! -f "${COMMON_DIR}/lib/lz4/lz4armv8/lz4armv8.S" ]; then
+            echo "❌ Missing ${COMMON_DIR}/lib/lz4/lz4armv8/lz4armv8.S (required by Kbuild in this tree)"
+            exit 1
+          fi
 
-              echo "⚠️ Optional patch did not apply cleanly: $(basename "$patch") (skipping)"
+          apply_patch_optional() {
+            local dir="$1"
+            local patch="$2"
+            [ -f "$patch" ] || return 0
+            patch="$(realpath "$patch")"
+
+            echo "Applying optional patch: $(basename "$patch") in $dir"
+            pushd "$dir" >/dev/null
+
+            # Already applied?
+            if git apply -p1 --reverse --check "$patch" >/dev/null 2>&1 || patch -p1 -R --dry-run < "$patch" >/dev/null 2>&1; then
+              echo "✅ Optional patch already applied"
               popd >/dev/null
               return 0
-            }
+            fi
 
-            apply_patch_required() {
-              local dir="$1"
-              local patch="$2"
-              [ -f "$patch" ] || { echo "❌ Required patch not found: $patch"; return 1; }
-              patch="$(realpath "$patch")"
-
-              echo "Applying required patch: $(basename "$patch") in $dir"
-              pushd "$dir" >/dev/null
-
-              if git apply -p1 --whitespace=nowarn "$patch" 2>/dev/null; then
-                echo "✅ Applied (git apply)"
-                popd >/dev/null
-                return 0
-              fi
-
-              if patch -p1 -l -F 3 < "$patch"; then
-                echo "✅ Applied (patch -F3)"
-                popd >/dev/null
-                return 0
-              fi
-
-              echo "❌ Required patch failed: $(basename "$patch")"
+            if git apply -p1 --3way --whitespace=nowarn "$patch" >/dev/null 2>&1 || git apply -p1 --whitespace=nowarn "$patch" >/dev/null 2>&1; then
+              echo "✅ Applied (git apply)"
               popd >/dev/null
-              return 1
-            }
+              return 0
+            fi
 
-            echo "🔧 Applying patches to common kernel tree..."
-            apply_patch_optional "${COMMON_DIR}" "${COMMON_DIR}/001-lz4.patch"
-            apply_patch_optional "${COMMON_DIR}" "${COMMON_DIR}/002-zstd.patch"
-            apply_patch_optional "${COMMON_DIR}" "${COMMON_DIR}/EnablePOLLY.patch"
+            if patch -p1 -l -F 3 < "$patch" >/dev/null 2>&1; then
+              echo "✅ Applied (patch -F3)"
+              popd >/dev/null
+              return 0
+            fi
 
-            if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-              echo "🔧 Applying SUSFS core patch to common..."
-              apply_patch_required "${COMMON_DIR}" "${COMMON_DIR}/50_add_susfs.patch"
+            echo "⚠️ Optional patch did not apply cleanly: $(basename "$patch") (skipping)"
+            popd >/dev/null
+            return 0
+          }
 
-              echo "🔧 Enabling SUSFS support in KernelSU (kernel_platform/KernelSU)..."
-              if [ ! -d "${KSU_DIR}" ]; then
-                echo "❌ KernelSU directory not found: ${KSU_DIR}"
-                exit 1
-              fi
+          apply_patch_required() {
+            local dir="$1"
+            local patch="$2"
+            [ -f "$patch" ] || { echo "❌ Required patch not found: $patch"; return 1; }
+            patch="$(realpath "$patch")"
 
-              # Candidate enable patches (try SukiSU-first, then KernelSU, then any)
+            echo "Applying required patch: $(basename "$patch") in $dir"
+            pushd "$dir" >/dev/null
+
+            # Already applied?
+            if git apply -p1 --reverse --check "$patch" >/dev/null 2>&1 || patch -p1 -R --dry-run < "$patch" >/dev/null 2>&1; then
+              echo "✅ Patch already applied"
+              popd >/dev/null
+              return 0
+            fi
+
+            if git apply -p1 --3way --whitespace=nowarn "$patch" >/dev/null 2>&1 || git apply -p1 --whitespace=nowarn "$patch" >/dev/null 2>&1; then
+              echo "✅ Applied (git apply)"
+              popd >/dev/null
+              return 0
+            fi
+
+            if patch -p1 -l -F 3 < "$patch" >/dev/null 2>&1; then
+              echo "✅ Applied (patch -F3)"
+              popd >/dev/null
+              return 0
+            fi
+
+            echo "❌ Required patch failed: $(basename "$patch")"
+            echo "---- Rejects (first 120 lines each) ----"
+            find . -maxdepth 3 -name "*.rej" -print -exec sed -n '1,120p' {} \; || true
+            popd >/dev/null
+            return 1
+          }
+
+          echo "🔧 Applying patches to common kernel tree..."
+          apply_patch_optional "${COMMON_DIR}" "${COMMON_DIR}/001-lz4.patch"
+          apply_patch_optional "${COMMON_DIR}" "${COMMON_DIR}/002-zstd.patch"
+          apply_patch_optional "${COMMON_DIR}" "${COMMON_DIR}/EnablePOLLY.patch"
+
+          if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
+            echo "🔧 Applying SUSFS core patch to common..."
+            apply_patch_required "${COMMON_DIR}" "${COMMON_DIR}/50_add_susfs.patch"
+
+            echo "🔧 Ensuring KernelSU <-> SUSFS integration..."
+            if [ ! -d "${KSU_DIR}" ]; then
+              echo "❌ KernelSU directory not found: ${KSU_DIR}"
+              exit 1
+            fi
+
+            # If KSU_SUSFS already exists, don't force-apply the enable patch (upstream may already include it).
+            if grep -Rqs "config KSU_SUSFS" "${KSU_DIR}/kernel" "${COMMON_DIR}/drivers/kernelsu" 2>/dev/null; then
+              echo "✅ KSU_SUSFS already present in KernelSU tree; skipping enable patch."
+            else
+              echo "🔧 Applying SUSFS enable patch to KernelSU (only if missing)..."
+
               mapfile -t ENABLE_CANDIDATES < <(find ../susfs4ksu/kernel_patches -type f -iname "*enable_susfs_for_ksu.patch" 2>/dev/null | sort)
               if [ "${#ENABLE_CANDIDATES[@]}" -eq 0 ]; then
                 ENABLE_CANDIDATES=($(find ../susfs4ksu/kernel_patches -type f -iname "*enable*su*susfs*.patch" 2>/dev/null | sort))
@@ -440,35 +462,30 @@ jobs:
                 [ "$success" = "1" ] || { echo "❌ All enable patch candidates failed to apply."; exit 1; }
               fi
               echo "✅ Enable patch applied: ${ENABLE_PATCH}"
-
-              echo "🧩 Verifying Kconfig symbol exists..."
-              if ! grep -Rqs "config KSU_SUSFS" "${KSU_DIR}/kernel" "${COMMON_DIR}/drivers/kernelsu" 2>/dev/null; then
-                echo "❌ KSU_SUSFS Kconfig symbol not found after enable patch."
-                exit 1
-              fi
-
-              echo "📝 Enabling SUSFS options in gki_defconfig..."
-              DEFCONFIG="${COMMON_DIR}/arch/arm64/configs/gki_defconfig"
-              mapfile -t KSU_SUSFS_SYMS < <(grep -RhoP '^\s*config\s+\K(KSU_SUSFS[0-9A-Za-z_]*)' "${KSU_DIR}/kernel" "${COMMON_DIR}/drivers/kernelsu" 2>/dev/null | sort -u)
-              for sym in "${KSU_SUSFS_SYMS[@]}"; do
-                if ! grep -q "^CONFIG_${sym}=" "${DEFCONFIG}"; then
-                  echo "CONFIG_${sym}=y" >> "${DEFCONFIG}"
-                fi
-              done
-
-              if grep -Rqs "^\s*config\s+SUSFS" "${COMMON_DIR}/fs" 2>/dev/null; then
-                if ! grep -q "^CONFIG_SUSFS=" "${DEFCONFIG}"; then
-                  echo "CONFIG_SUSFS=y" >> "${DEFCONFIG}"
-                fi
-              fi
-
-              echo "---- SUSFS config summary ----"
-              grep -E "SUSFS" "${DEFCONFIG}" | tail -n 50 || true
             fi
 
-            echo "✅ Patch step completed"
-          
-          
+            echo "🧩 Verifying Kconfig symbol exists..."
+            if ! grep -Rqs "config KSU_SUSFS" "${KSU_DIR}/kernel" "${COMMON_DIR}/drivers/kernelsu" 2>/dev/null; then
+              echo "❌ KSU_SUSFS Kconfig symbol not found (integration missing)."
+              exit 1
+            fi
+
+            echo "📝 Enabling SUSFS options in gki_defconfig..."
+            DEFCONFIG="${COMMON_DIR}/arch/arm64/configs/gki_defconfig"
+            mapfile -t KSU_SUSFS_SYMS < <(grep -RhoP '^\s*config\s+\K(KSU_SUSFS[0-9A-Za-z_]*)' "${KSU_DIR}/kernel" "${COMMON_DIR}/drivers/kernelsu" 2>/dev/null | sort -u)
+            for sym in "${KSU_SUSFS_SYMS[@]}"; do
+              grep -q "^CONFIG_${sym}=" "${DEFCONFIG}" || echo "CONFIG_${sym}=y" >> "${DEFCONFIG}"
+            done
+
+            if grep -Rqs "^\s*config\s+SUSFS" "${COMMON_DIR}/fs" 2>/dev/null; then
+              grep -q "^CONFIG_SUSFS=" "${DEFCONFIG}" || echo "CONFIG_SUSFS=y" >> "${DEFCONFIG}"
+            fi
+
+            echo "---- SUSFS config summary ----"
+            grep -E "SUSFS" "${DEFCONFIG}" | tail -n 50 || true
+          fi
+
+          echo "✅ Patch step completed"
       - name: ⚙️ Configure Kernel Options
         run: |
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
