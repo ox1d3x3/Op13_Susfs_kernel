@@ -4,7 +4,7 @@ env:
   TZ: Australia/Perth
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
-  KERNEL_NAME: android15-16-GKI-build10022026-4k@Ox1d3x3_SUS
+  KERNEL_NAME: android15-16-GKI11022026-optimal-4k@Ox1d3x3_SUS
 on:
   workflow_dispatch:
     inputs:
@@ -906,10 +906,14 @@ jobs:
           banner.append('DEVICE="$(getprop ro.product.device 2>/dev/null)"; [ -z "$DEVICE" ] && DEVICE="$(getprop ro.product.name 2>/dev/null)"\n')
           banner.append('PATCH="$(getprop ro.build.version.security_patch 2>/dev/null)"\n')
           banner.append('ANDROID="$(getprop ro.build.version.release 2>/dev/null)"\n')
+          banner.append('SLOT_SUFFIX="$(getprop ro.boot.slot_suffix 2>/dev/null)"\n')
+          banner.append('if [ -z "$SLOT_SUFFIX" ]; then SLOT="$(getprop ro.boot.slot 2>/dev/null)"; [ -n "$SLOT" ] && SLOT_SUFFIX="_$SLOT"; fi\n')
+          banner.append('if [ -z "$SLOT_SUFFIX" ]; then SLOT_SUFFIX="$(grep -oE "androidboot.slot_suffix=[^ ]+" /proc/cmdline 2>/dev/null | head -n1 | cut -d= -f2)"; fi\n')
+          banner.append('if [ -z "$SLOT_SUFFIX" ]; then SLOT="$(grep -oE "androidboot.slot=[^ ]+" /proc/cmdline 2>/dev/null | head -n1 | cut -d= -f2)"; [ -n "$SLOT" ] && SLOT_SUFFIX="_$SLOT"; fi\n')
           banner.append('ui_print "Device : $DEVICE"\n')
           banner.append('ui_print "Android: $ANDROID"\n')
           banner.append('ui_print "Patch  : $PATCH"\n')
-          banner.append('ui_print "Slot   : $SLOT"\n')
+          banner.append('if [ -n "$SLOT_SUFFIX" ]; then ui_print "Slot   : $SLOT_SUFFIX"; fi\n')
 
           # Open GitHub page after flash (works when flashing in Android; safe no-op elsewhere)
           banner.append('if [ -n "$(command -v cmd 2>/dev/null)" ]; then\n')
