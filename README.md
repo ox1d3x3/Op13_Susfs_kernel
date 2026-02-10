@@ -74,7 +74,7 @@ Before flashing anything, backup these partitions using OrangeFox Recovery (OFOX
 If got bootloop, restore the backup.
 
 ---
-### 📱 Supported devices
+### 📱 Supported and Tested devices
 
 > OnePlus 13
 
