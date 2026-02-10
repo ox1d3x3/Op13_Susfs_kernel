@@ -1,9 +1,8 @@
-name: Build SukiSU Ultra
+name: Build SukiSU Ultra (Final Fix)
 env:
   TZ: Asia/Shanghai
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
-  # Adjusted kernel name to be cleaner
   KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
   # Performance Flags
   CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
@@ -39,7 +38,7 @@ on:
           - "Off"
         default: "On"
       bbr:
-        description: "📶 BBR TCP Congestion (Better Network Speed)"
+        description: "📶 BBR TCP Congestion"
         required: true
         type: choice
         options:
@@ -47,7 +46,7 @@ on:
           - "Off"
         default: "On"
       optimize_level:
-        description: "🚀 Optimization Level (O3 = Best Perf/Battery balance)"
+        description: "🚀 Optimization Level"
         required: true
         type: choice
         options:
@@ -55,7 +54,7 @@ on:
           - "O2"
         default: "O3"
       clean_build:
-        description: "🧹 Clean Build (Disable ccache for this run)"
+        description: "🧹 Clean Build"
         type: boolean
         default: false
       kernel_suffix:
@@ -83,8 +82,6 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-          
-          # Network optimizations for cloning
           git config --global protocol.version 2
           git config --global http.postBuffer 524288000
           git config --global http.lowSpeedLimit 1000
@@ -96,7 +93,7 @@ jobs:
           packages: python3 git curl ccache libelf-dev build-essential flex bison libssl-dev libncurses-dev liblz4-tool zlib1g-dev libxml2-utils rsync unzip gawk dos2unix kmod bc
           execute_install_scripts: true
           
-      - name: ⚙️ Setup Cache (Smart)
+      - name: ⚙️ Setup Cache
         if: ${{ inputs.clean_build == false }}
         uses: actions/cache@v4
         with:
@@ -117,15 +114,13 @@ jobs:
           ccache -z
           echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
 
-      - name: 📥 Download Tools (Repo & Neutron)
+      - name: 📥 Download Tools
         run: |
-          # Install Repo
           mkdir -p ~/bin
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
           chmod a+x ~/bin/repo
           export PATH=~/bin:$PATH
           
-          # Install Neutron Clang
           mkdir -p "$HOME/toolchains/neutron-clang"
           cd "$HOME/toolchains/neutron-clang"
           bash <(curl -fsSL "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S
@@ -134,25 +129,17 @@ jobs:
         run: |
           export PATH=~/bin:$PATH
           mkdir kernel_workspace && cd kernel_workspace
-          
-          echo "🌐 Initializing kernel repo..."
           repo init -u https://github.com/mrcxlinux/actions_oplus_sm8750.git -b refs/heads/zh -m manifest.xml --depth=1
           repo sync -c -j$(nproc) --no-tags --no-clone-bundle --force-sync
-          
-          # Clean protected exports to avoid conflicts
           rm -f kernel_platform/common/android/abi_gki_protected_exports_* || true
           rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || true
 
-      - name: ⚡ Setup SukiSU Ultra (KernelSU Fork)
+      - name: ⚡ Setup SukiSU Ultra
         run: |
           cd kernel_workspace/kernel_platform
-          
-          echo "🛠️ Setting up SukiSU Ultra..."
           curl -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh" | bash -s main
-          
-          # Verify SukiSU installation
           if [ -d "KernelSU" ]; then
-            echo "✅ SukiSU initialized in $(pwd)/KernelSU"
+            echo "✅ SukiSU initialized"
           else
             echo "❌ SukiSU setup failed!"
             exit 1
@@ -166,11 +153,19 @@ jobs:
           # 1. Download SUSFS patches
           if [ "${{ inputs.SUSFS }}" == "On" ]; then
             echo "⬇️ Cloning SUSFS patches..."
+            # Clone directly here
             git clone --depth 1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6
             
-            # Apply Kernel-side SUSFS Patch
             echo "🩹 Applying SUSFS Kernel Patch..."
-            cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
+            # FIXED PATH: removed '../' because we are already in the parent folder
+            if [ -f "susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch" ]; then
+                cp susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
+            else
+                echo "❌ Patch file not found in cloned repo!"
+                ls -R susfs4ksu
+                exit 1
+            fi
+
             if patch -d common -p1 < common/50_add_susfs_in_gki-android15-6.6.patch; then
               echo "✅ SUSFS Kernel Patch applied successfully."
             else
@@ -178,12 +173,12 @@ jobs:
               exit 1
             fi
             
-            # Copy header files
-            cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
-            cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
+            # Copy header files (FIXED PATHS)
+            cp susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
+            cp susfs4ksu/kernel_patches/fs/* ./common/fs/
           fi
 
-          # 2. Fix LZ4 Assembly Path (Clean version)
+          # 2. Fix LZ4 Assembly Path
           echo "🔧 Fixing LZ4 assembly path..."
           if [ -f "./common/lib/lz4/lz4armv8.S" ]; then
              mkdir -p ./common/lib/lz4/lz4armv8
@@ -193,45 +188,36 @@ jobs:
              echo "✅ LZ4 path is already correct."
           fi
 
-      - name: 💉 Inject SUSFS into SukiSU (The Fix)
+      - name: 💉 Inject SUSFS into SukiSU
         if: ${{ inputs.SUSFS == 'On' }}
         run: |
           cd kernel_workspace/kernel_platform
           
-          # Target file in KernelSU/SukiSU
           KSU_DIR="KernelSU"
           KSU_CORE="$KSU_DIR/kernel/ksu.c"
           
-          # If ksu.c doesn't exist, check for core_hook.c (newer forks)
+          # Fallback for newer forks
           if [ ! -f "$KSU_CORE" ]; then
             KSU_CORE="$KSU_DIR/kernel/core_hook.c"
           fi
           
           if [ ! -f "$KSU_CORE" ]; then
-            echo "❌ Could not find ksu.c or core_hook.c in KernelSU directory!"
+            echo "❌ Could not find ksu.c or core_hook.c!"
             exit 1
           fi
           
           echo "💉 Injecting SUSFS hooks into: $KSU_CORE"
           
-          # 1. Check if already patched
           if grep -q "susfs_init" "$KSU_CORE"; then
             echo "ℹ️ SUSFS hooks already present."
           else
-            # 2. Add Header
             sed -i '/#include <linux\/types.h>/a #include <linux/susfs.h>' "$KSU_CORE" || sed -i '1i #include <linux/susfs.h>' "$KSU_CORE"
-            
-            # 3. Add susfs_init() inside ksu_init()
-            # Looks for "int __init ksu_init(void) {" and adds susfs_init(); after the brace
             sed -i '/int __init ksu_init(void)/,/^{/ s/^{/{\n\tsusfs_init();/' "$KSU_CORE"
-            
-            # 4. Add susfs_exit() inside ksu_exit()
             sed -i '/void __exit ksu_exit(void)/,/^{/ s/^{/{\n\tsusfs_exit();/' "$KSU_CORE"
-            
-            echo "✅ Successfully injected SUSFS init/exit calls via sed."
+            echo "✅ Successfully injected SUSFS hooks."
           fi
 
-      - name: 🛡️ Setup Baseband Guard (BBG)
+      - name: 🛡️ Setup Baseband Guard
         if: ${{ inputs.bbg == 'On' }}
         run: |
           cd kernel_workspace/kernel_platform/common
@@ -243,12 +229,10 @@ jobs:
           cd kernel_workspace/kernel_platform/common
           export PATH=$HOME/toolchains/neutron-clang/bin:$PATH
           
-          # Function to toggle config
           config_file="arch/arm64/configs/gki_defconfig"
           scripts/config --file $config_file -e CONFIG_LTO_CLANG_THIN
           
           if [ "${{ inputs.SUSFS }}" == "On" ]; then
-             echo "✅ Enabling SUSFS Configs"
              scripts/config --file $config_file -e CONFIG_KSU_SUSFS
              scripts/config --file $config_file -e CONFIG_KSU_SUSFS_SUS_PATH
              scripts/config --file $config_file -e CONFIG_KSU_SUSFS_SUS_MOUNT
@@ -262,14 +246,11 @@ jobs:
           fi
           
           if [ "${{ inputs.bbr }}" == "On" ]; then
-             echo "✅ Enabling BBR"
              scripts/config --file $config_file -e CONFIG_TCP_CONG_BBR
              scripts/config --file $config_file -e CONFIG_DEFAULT_BBR
           fi
           
-          # Optimization
           if [ "${{ inputs.optimize_level }}" == "O3" ]; then
-             echo "🚀 Setting O3 Optimization..."
              sed -i 's/-O2/-O3/g' Makefile
           fi
 
@@ -278,7 +259,6 @@ jobs:
           export PATH="/usr/lib/ccache:$HOME/toolchains/neutron-clang/bin:$PATH"
           cd kernel_workspace/kernel_platform/common
           
-          echo "🏗️ Starting Build..."
           make -j$(nproc) \
             O=out \
             ARCH=arm64 \
@@ -297,21 +277,21 @@ jobs:
              echo "✅ Build Success!"
           else
              echo "❌ Build Failed. Checking logs..."
-             tail -n 100 kernel_workspace/kernel_platform/common/build.log
+             if [ -f "kernel_workspace/kernel_platform/common/build.log" ]; then
+                tail -n 100 kernel_workspace/kernel_platform/common/build.log
+             else
+                echo "⚠️ No build log found (Build failed before logging started)"
+             fi
              exit 1
           fi
-          # Show ccache stats
           ccache -s
 
       - name: 📦 Package with AnyKernel3
         run: |
           git clone --depth 1 https://github.com/mrcxlinux/AnyKernel3
           rm -rf AnyKernel3/.git
-          
-          # Copy Image
           cp kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image AnyKernel3/
           
-          # Apply KPM Patch if requested
           if [ "${{ inputs.KPM }}" == "On" ]; then
             cd AnyKernel3
             curl -L -o patch_linux https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.13.0/patch_linux
@@ -322,7 +302,6 @@ jobs:
             cd ..
           fi
           
-          # Zip it
           cd AnyKernel3
           zip -r9 ../SukiSU-Ultra-Kernel.zip *
 
