@@ -4,7 +4,7 @@ env:
   TZ: Australia/Perth
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
-  KERNEL_NAME: android15-16-GKI-Build10022026-4k@Ox1d3x3_SUS
+  KERNEL_NAME: android15-16-GKI-build10022026-4k@Ox1d3x3_SUS
 on:
   workflow_dispatch:
     inputs:
@@ -843,98 +843,97 @@ jobs:
           fi
 
           python3 - <<'PY'
-from pathlib import Path
+          from pathlib import Path
 
-ak_path = Path("AnyKernel3/anykernel.sh")
-s = ak_path.read_text(encoding="utf-8", errors="ignore").splitlines(True)
+          ak_path = Path("AnyKernel3/anykernel.sh")
+          s = ak_path.read_text(encoding="utf-8", errors="ignore").splitlines(True)
 
-start_idx = None
-end_idx = None
+          # Remove noisy warnings (no value after successful flash)
+          remove_phrases = [
+              "No warranty",
+              "Flash at your own risk",
+              "Backup boot",
+              "Backup init_boot",
+              "Backup boot / init_boot",
+              "Backup boot/init_boot",
+              "Backup boot / init_boot / recovery",
+          ]
+          cleaned = []
+          for ln in s:
+              if "ui_print" in ln and any(p in ln for p in remove_phrases):
+                  continue
+              cleaned.append(ln)
+          s = cleaned
 
-# Locate original author banner block (chenhua13)
-for i, line in enumerate(s):
-    if 'ui_print "chenhua13 Kernel' in line:
-        start_idx = i
-        break
+          start_idx = None
+          end_idx = None
 
-if start_idx is not None:
-    for j in range(start_idx, len(s)):
-        # end marker used by many WildKernels anykernel.sh variants
-        if 'ksu_supported' in s[j] and 'ui_print' in s[j]:
-            end_idx = j
-            break
+          # Locate original author banner block (chenhua13) used in WildKernels scripts
+          for i, line in enumerate(s):
+              if 'ui_print "chenhua13 Kernel' in line:
+                  start_idx = i
+                  break
 
-PROFILE = "${{ github.event.inputs.PROFILE }}"
-SUSFS = "${{ github.event.inputs.SUSFS }}"
-base = "${{ env.KERNEL_NAME }}"
-tag = f"{base}-{PROFILE}-Ox1d3x3"
-if SUSFS == "On":
-    tag += "-SUSFS"
-KERNEL_NAME = tag
+          if start_idx is not None:
+              for j in range(start_idx, len(s)):
+                  if 'ksu_supported' in s[j] and 'ui_print' in s[j]:
+                      end_idx = j
+                      break
 
-RUNNUM = "${{ github.run_number }}"
-SHA = "${{ github.sha }}"
-BUILD = f"{RUNNUM}-{SHA[:7]}"
+          PROFILE = "${{ github.event.inputs.PROFILE }}".strip() or "optimal"
+          SUSFS = "${{ github.event.inputs.SUSFS }}".strip()
+          base = "${{ env.KERNEL_NAME }}".strip() or "kernel"
+          tag = f"{base}-{PROFILE}-Ox1d3x3"
+          if SUSFS == "On":
+              tag += "-SUSFS"
 
-# Small clean ASCII at top (monospace-safe)
-ascii_lines = [
-    r'  __  __      _     _  ____   ___',
-    r' |  \/  |__ _| |__ | ||  _ \ / _ \',
-    r' | |\/| / _` | '_ \| || |_) | | | |',
-    r' | |  | | (_| | | | | ||  _ <| |_| |',
-    r' |_|  |_|\__,_|_| |_|_||_| \_\\___/',
-    r'            Builder: @Ox1d3x3',
-]
+          RUNNUM = "${{ github.run_number }}".strip()
+          SHA = "${{ github.sha }}".strip()
+          BUILD = f"{RUNNUM}-{SHA[:7]}" if SHA else RUNNUM
 
-banner = []
-banner.append('ui_print " "
-')
-for ln in ascii_lines:
-    banner.append(f'ui_print "{ln}"\n')
-banner.append('ui_print " "
-')
-banner.append('ui_print "================================"\n')
-banner.append('ui_print "PJZ110 | SukiSU Ultra Kernel"\n')
-banner.append('ui_print "Kernel : ' + KERNEL_NAME + '"\n')
-banner.append('ui_print "Build  : ' + BUILD + '"\n')
-banner.append('ui_print "Builder: @Ox1d3x3"\n')
-banner.append('ui_print "Credits: chenhua13 / mrcxlinux"\n')
-banner.append('ui_print "================================"\n')
-banner.append('DEVICE="$(getprop ro.product.device 2>/dev/null)"; [ -z "$DEVICE" ] && DEVICE="$(getprop ro.product.name 2>/dev/null)"\n')
-banner.append('PATCH="$(getprop ro.build.version.security_patch 2>/dev/null)"\n')
-banner.append('ANDROID="$(getprop ro.build.version.release 2>/dev/null)"\n')
-banner.append('ui_print "Device : $DEVICE"\n')
-banner.append('ui_print "Android: $ANDROID"\n')
-banner.append('ui_print "Patch  : $PATCH"\n')
-banner.append('ui_print "Slot   : $SLOT"\n')
-banner.append('ui_print "================================"\n')
+          ascii_block = 'ui_print "===================================================="\nui_print "                   __   __  __ "\nui_print "                  \\\\ \\\\ / //_ |"\nui_print "                   \\\\ V /   | |"\nui_print "                     > <    | |"\nui_print "                   / . \\\\   | |"\nui_print "                 /_/ \\\\_\\\\  |_|"\nui_print "===================================================="\n'
 
-# Open GitHub page after flash (only works in Android/bootmode; safe no-op in recovery)
-banner.append('if [ -n "$(command -v cmd 2>/dev/null)" ]; then\n')
-banner.append('  (cmd activity start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true\n')
-banner.append('elif [ -n "$(command -v am 2>/dev/null)" ]; then\n')
-banner.append('  (am start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true\n')
-banner.append('fi\n')
+          banner = []
+          banner.append('ui_print " "\n')
+          banner.append(ascii_block)
+          banner.append('ui_print " "\n')
+          banner.append('ui_print "PJZ110 | SukiSU Ultra Kernel"\n')
+          banner.append(f'ui_print "Kernel : {tag}"\n')
+          banner.append(f'ui_print "Build  : {BUILD}"\n')
+          banner.append('ui_print "Builder: @Ox1d3x3"\n')
+          banner.append('ui_print "Credits: chenhua13 / mrcxlinux"\n')
+          banner.append('ui_print " "\n')
+          banner.append('DEVICE="$(getprop ro.product.device 2>/dev/null)"; [ -z "$DEVICE" ] && DEVICE="$(getprop ro.product.name 2>/dev/null)"\n')
+          banner.append('PATCH="$(getprop ro.build.version.security_patch 2>/dev/null)"\n')
+          banner.append('ANDROID="$(getprop ro.build.version.release 2>/dev/null)"\n')
+          banner.append('ui_print "Device : $DEVICE"\n')
+          banner.append('ui_print "Android: $ANDROID"\n')
+          banner.append('ui_print "Patch  : $PATCH"\n')
+          banner.append('ui_print "Slot   : $SLOT"\n')
 
-banner_text = "".join(banner)
+          # Open GitHub page after flash (works when flashing in Android; safe no-op elsewhere)
+          banner.append('if [ -n "$(command -v cmd 2>/dev/null)" ]; then\n')
+          banner.append('  (cmd activity start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true\n')
+          banner.append('elif [ -n "$(command -v am 2>/dev/null)" ]; then\n')
+          banner.append('  (am start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true\n')
+          banner.append('fi\n')
 
-if start_idx is not None and end_idx is not None and end_idx >= start_idx:
-    s[start_idx:end_idx+1] = [banner_text]
-else:
-    # Fallback insertion point: before the common abort line if found
-    inserted = False
-    for i, line in enumerate(s):
-        if 'abort "  -> Non-GKI device, abort."' in line:
-            s.insert(i, banner_text)
-            inserted = True
-            break
-    if not inserted:
-        # Last resort: prepend
-        s.insert(0, banner_text)
+          banner_text = "".join(banner)
 
-ak_path.write_text("".join(s), encoding="utf-8")
-print("✅ anykernel.sh banner updated (ASCII top + clean)")
-PY
+          if start_idx is not None and end_idx is not None and end_idx >= start_idx:
+              s[start_idx:end_idx+1] = [banner_text]
+          else:
+              inserted = False
+              for i, line in enumerate(s):
+                  if 'abort "  -> Non-GKI device, abort."' in line:
+                      s.insert(i, banner_text)
+                      inserted = True
+                      break
+              if not inserted:
+                  s.insert(0, banner_text)
+
+          ak_path.write_text("".join(s), encoding="utf-8")
+          PY
 
 
       - name: 🧠 Set Artifact Name
