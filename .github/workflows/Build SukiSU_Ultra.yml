@@ -4,7 +4,7 @@ env:
   TZ: Australia/Perth
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
-  KERNEL_NAME: android15-8-16-GKI10022026-4k@Ox1d3x3_SUS
+  KERNEL_NAME: android15-16-GKI-Build10022026-4k@Ox1d3x3_SUS
 on:
   workflow_dispatch:
     inputs:
@@ -832,7 +832,8 @@ jobs:
           
           echo "✅ KPM patch applied"
           
-      - name: 🏷️ Customize AnyKernel Banner (with credits)
+
+      - name: 🏷️ Customize AnyKernel Banner (ASCII top + clean)
         run: |
           set -e
           AK="$GITHUB_WORKSPACE/AnyKernel3/anykernel.sh"
@@ -842,80 +843,99 @@ jobs:
           fi
 
           python3 - <<'PY'
-          from pathlib import Path
+from pathlib import Path
 
-          ak_path = Path("AnyKernel3/anykernel.sh")
-          s = ak_path.read_text(encoding="utf-8", errors="ignore").splitlines(True)
+ak_path = Path("AnyKernel3/anykernel.sh")
+s = ak_path.read_text(encoding="utf-8", errors="ignore").splitlines(True)
 
-          start_idx = None
-          end_idx = None
+start_idx = None
+end_idx = None
 
-          # Locate original author banner block (chenhua13)
-          for i, line in enumerate(s):
-              if 'ui_print "chenhua13 Kernel' in line:
-                  start_idx = i
-                  break
+# Locate original author banner block (chenhua13)
+for i, line in enumerate(s):
+    if 'ui_print "chenhua13 Kernel' in line:
+        start_idx = i
+        break
 
-          if start_idx is not None:
-              for j in range(start_idx, len(s)):
-                  if 'ksu_supported' in s[j] and 'ui_print' in s[j]:
-                      end_idx = j
-                      break
+if start_idx is not None:
+    for j in range(start_idx, len(s)):
+        # end marker used by many WildKernels anykernel.sh variants
+        if 'ksu_supported' in s[j] and 'ui_print' in s[j]:
+            end_idx = j
+            break
 
-          PROFILE = "${{ github.event.inputs.PROFILE }}"
-          SUSFS = "${{ github.event.inputs.SUSFS }}"
-          base = "${{ env.KERNEL_NAME }}"
-          tag = f"{base}-{PROFILE}-Ox1d3x3"
-          if SUSFS == "On":
-              tag += "-SUSFS"
-          KERNEL_NAME = tag
-          KSUVER = "${{ env.KSUVER }}"
+PROFILE = "${{ github.event.inputs.PROFILE }}"
+SUSFS = "${{ github.event.inputs.SUSFS }}"
+base = "${{ env.KERNEL_NAME }}"
+tag = f"{base}-{PROFILE}-Ox1d3x3"
+if SUSFS == "On":
+    tag += "-SUSFS"
+KERNEL_NAME = tag
 
+RUNNUM = "${{ github.run_number }}"
+SHA = "${{ github.sha }}"
+BUILD = f"{RUNNUM}-{SHA[:7]}"
 
-          banner = []
-          banner.append('ui_print " "\n')
-          banner.append('MODEL="$(getprop ro.product.model 2>/dev/null)"; [ -z "$MODEL" ] && MODEL="$(getprop ro.product.marketname 2>/dev/null)"\n')
-          banner.append('DEVICE="$(getprop ro.product.device 2>/dev/null)"\n')
-          banner.append('ANDROID="$(getprop ro.build.version.release 2>/dev/null)"\n')
-          banner.append('PATCH="$(getprop ro.build.version.security_patch 2>/dev/null)"\n')
-          banner.append('SLOT="$(getprop ro.boot.slot_suffix 2>/dev/null)"; [ -z "$SLOT" ] && SLOT="$(getprop ro.boot.slot 2>/dev/null)"\n')
-          banner.append('ui_print "===================================================="\n')
-          banner.append('ui_print "  ${MODEL:-Unknown Model} | SukiSU Ultra Kernel"\n')
-          banner.append(f'ui_print "  Kernel  : {KERNEL_NAME}"\n')
-          banner.append(f'ui_print "  Build   : {KSUVER}"\n')
-          banner.append('ui_print "  Builder : Ox1d3x3 (@ox1d3x3)"\n')
-          banner.append('ui_print "  Credits : chenhua13 / mrcxlinux"\n')
-          banner.append('ui_print "===================================================="\n')
-          banner.append('ui_print "  Device  : ${DEVICE:-unknown}"\n')
-          banner.append('ui_print "  Android : ${ANDROID:-unknown}"\n')
-          banner.append('ui_print "  Patch   : ${PATCH:-unknown}"\n')
-          banner.append('ui_print "  Slot    : ${SLOT:-unknown}"\n')
-          banner.append('ui_print "===================================================="\n')
-          banner.append('ui_print "  ⚠️ No warranty. Flash at your own risk."\n')
-          banner.append('ui_print "  ⚠️ Backup boot / init_boot / recovery via OFOX first."\n')
-          banner.append('ui_print "===================================================="\n')
-          banner.append('ui_print "                   __   __  __"\n')
-          banner.append('ui_print "                  \\ \\ / / /_ |"\n')
-          banner.append('ui_print "                   \\ V /   | |"\n')
-          banner.append('ui_print "                    > <    | |"\n')
-          banner.append('ui_print "                   / . \\   | |"\n')
-          banner.append('ui_print "                  /_/ \\_\\  |_|"\n')
-          banner.append('ui_print "===================================================="\n')
-          banner.append('ui_print "  -> ksu_supported: $ksu_supported"\n')
+# Small clean ASCII at top (monospace-safe)
+ascii_lines = [
+    r'  __  __      _     _  ____   ___',
+    r' |  \/  |__ _| |__ | ||  _ \ / _ \',
+    r' | |\/| / _` | '_ \| || |_) | | | |',
+    r' | |  | | (_| | | | | ||  _ <| |_| |',
+    r' |_|  |_|\__,_|_| |_|_||_| \_\\___/',
+    r'            Builder: @Ox1d3x3',
+]
 
-          banner_text = "".join(banner)
+banner = []
+banner.append('ui_print " "
+')
+for ln in ascii_lines:
+    banner.append(f'ui_print "{ln}"\n')
+banner.append('ui_print " "
+')
+banner.append('ui_print "================================"\n')
+banner.append('ui_print "PJZ110 | SukiSU Ultra Kernel"\n')
+banner.append('ui_print "Kernel : ' + KERNEL_NAME + '"\n')
+banner.append('ui_print "Build  : ' + BUILD + '"\n')
+banner.append('ui_print "Builder: @Ox1d3x3"\n')
+banner.append('ui_print "Credits: chenhua13 / mrcxlinux"\n')
+banner.append('ui_print "================================"\n')
+banner.append('DEVICE="$(getprop ro.product.device 2>/dev/null)"; [ -z "$DEVICE" ] && DEVICE="$(getprop ro.product.name 2>/dev/null)"\n')
+banner.append('PATCH="$(getprop ro.build.version.security_patch 2>/dev/null)"\n')
+banner.append('ANDROID="$(getprop ro.build.version.release 2>/dev/null)"\n')
+banner.append('ui_print "Device : $DEVICE"\n')
+banner.append('ui_print "Android: $ANDROID"\n')
+banner.append('ui_print "Patch  : $PATCH"\n')
+banner.append('ui_print "Slot   : $SLOT"\n')
+banner.append('ui_print "================================"\n')
 
-          if start_idx is not None and end_idx is not None and end_idx >= start_idx:
-              s[start_idx:end_idx+1] = [banner_text]
-          else:
-              for i, line in enumerate(s):
-                  if 'abort "  -> Non-GKI device, abort."' in line:
-                      s.insert(i, banner_text)
-                      break
+# Open GitHub page after flash (only works in Android/bootmode; safe no-op in recovery)
+banner.append('if [ -n "$(command -v cmd 2>/dev/null)" ]; then\n')
+banner.append('  (cmd activity start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true\n')
+banner.append('elif [ -n "$(command -v am 2>/dev/null)" ]; then\n')
+banner.append('  (am start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true\n')
+banner.append('fi\n')
 
-          ak_path.write_text("".join(s), encoding="utf-8")
-          print("✅ anykernel.sh banner updated (with credits)")
-          PY
+banner_text = "".join(banner)
+
+if start_idx is not None and end_idx is not None and end_idx >= start_idx:
+    s[start_idx:end_idx+1] = [banner_text]
+else:
+    # Fallback insertion point: before the common abort line if found
+    inserted = False
+    for i, line in enumerate(s):
+        if 'abort "  -> Non-GKI device, abort."' in line:
+            s.insert(i, banner_text)
+            inserted = True
+            break
+    if not inserted:
+        # Last resort: prepend
+        s.insert(0, banner_text)
+
+ak_path.write_text("".join(s), encoding="utf-8")
+print("✅ anykernel.sh banner updated (ASCII top + clean)")
+PY
+
 
       - name: 🧠 Set Artifact Name
         id: set_name
