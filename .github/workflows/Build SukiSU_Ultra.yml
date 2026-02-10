@@ -4,7 +4,7 @@ env:
   TZ: Australia/Perth
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
-  KERNEL_NAME: android15-16-GKI11022026-optimal-4k@Ox1d3x3_SUS
+  KERNEL_NAME: android15-16-GKI11022026-4k@Ox1d3x3_SUS
 on:
   workflow_dispatch:
     inputs:
@@ -883,10 +883,8 @@ jobs:
           PROFILE = "${{ github.event.inputs.PROFILE }}".strip() or "optimal"
           SUSFS = "${{ github.event.inputs.SUSFS }}".strip()
           base = "${{ env.KERNEL_NAME }}".strip() or "kernel"
-          tag = f"{base}-{PROFILE}-Ox1d3x3"
-          if SUSFS == "On":
-              tag += "-SUSFS"
-
+          # Display kernel name exactly as provided by KERNEL_NAME
+          tag = base
           RUNNUM = "${{ github.run_number }}".strip()
           SHA = "${{ github.sha }}".strip()
           BUILD = f"{RUNNUM}-{SHA[:7]}" if SHA else RUNNUM
@@ -898,7 +896,7 @@ jobs:
           banner.append(ascii_block)
           banner.append('ui_print " "\n')
           banner.append('ui_print "PJZ110 | SukiSU Ultra Kernel"\n')
-          banner.append(f'ui_print "Kernel : {tag}"\n')
+          banner.append(f'ui_print "Kernel:{tag}"\n')
           banner.append(f'ui_print "Build  : {BUILD}"\n')
           banner.append('ui_print "Builder: @Ox1d3x3"\n')
           banner.append('ui_print "Credits: chenhua13 / mrcxlinux"\n')
