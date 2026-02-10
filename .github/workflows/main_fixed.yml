@@ -1,5 +1,5 @@
 ---
-name: Main_build
+name: _build_test
 env:
   TZ: Australia/Perth
   ANDROID_VERSION: android15
