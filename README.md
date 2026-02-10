@@ -24,7 +24,7 @@
 
 ### 📝 Features
 
-➜ ccache (builds after initial one will be much faster!)
+➜ ccache (builds after the initial one will be much faster!)
 
 ➜ **mountify** support
 
@@ -32,7 +32,7 @@
 
 ➜ BetterNET
 
-➜ **KPM** support `(SukiSU Ultra & ReSukiSU)`
+➜ **KPM** support `(SukiSU Ultra)`
 
 ➜ **lz4** and **zstd** patches
 
@@ -47,16 +47,6 @@
 ➜ multimanager support (ReSukiSU & KernelSU Next only!): `Official KSU, 5ec1cff KSU, rsuntk KSU, KowSU, MamboSU, KernelSU NEXT, WildKSU`
 
 ➜ Unicode Bypass (you can use an **LSPosed module** to fix this painlessly)
-
-### 🤖 Compiler changes
-
-➜ Neutron Clang
-
-➜ Merge assembler with compiler
-
-➜ Enable POLLY in compiler
-
-➜ O2 compiler flag
 
 ---
 ### ✨ How to compile!
