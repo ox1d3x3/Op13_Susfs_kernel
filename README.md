@@ -48,20 +48,6 @@
 
 ➜ Unicode Bypass (you can use an **LSPosed module** to fix this painlessly)
 
----
-### ✨ How to compile!
-
-➜ **fork** the project
-
-➜ actions ➜ enable workflows
-
-➜ choose your preferred variant
-
-➜ choose your **language** (only for **configuring** the kernel) ➜ branch: **english** | **zh**
-
-➜ configure it according to your **preferences**
-
-➜ run workflow
 
 ---
 ### ⚠️ Warning / No Warranty (Read Before Flashing)
@@ -91,16 +77,6 @@ If got bootloop, restore the backup.
 ### 📱 Supported devices
 
 > OnePlus 13
-> 
-> OnePlus 13S/T
-> 
-> OnePlus Ace 5 Pro
-> 
-> OnePlus Ace 6
-> 
-> OnePlus Pad 2 Pro
-> 
-> OnePlus Pad 3
 
 ---
 ### Credits
