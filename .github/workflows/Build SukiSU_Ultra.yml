@@ -4,10 +4,19 @@ env:
   TZ: Australia/Perth
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
-  KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
+  KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k@Ox1d3x3_SUS
 on:
   workflow_dispatch:
     inputs:
+      PROFILE:
+        description: "⚡ Performance profile (artifact naming)"
+        required: true
+        type: choice
+        options:
+          - "optimal"
+          - "highest"
+          - "lowest"
+        default: "optimal"
       SUSFS:
         description: "📦 SuSFS Support"
         required: true
@@ -680,6 +689,35 @@ jobs:
             fi
           done
           
+      - name: 🗜️ Default ZRAM compression to LZ4
+        run: |
+          set -e
+          echo "🗜️ Forcing ZRAM default compressor to LZ4 (kernel-side default)..."
+          DEFCONFIG="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig"
+          if [ ! -f "$DEFCONFIG" ]; then
+            echo "❌ gki_defconfig not found at $DEFCONFIG"
+            exit 1
+          fi
+
+          # Remove any previous defaults to avoid conflicts/duplicates
+          sed -i '/^CONFIG_ZRAM_DEF_COMP_/d;/^CONFIG_ZRAM_DEF_COMP=/d' "$DEFCONFIG" || true
+
+          # Ensure LZ4 support is enabled (usually already enabled in GKI)
+          grep -q '^CONFIG_LZ4_COMPRESS=' "$DEFCONFIG"   || echo 'CONFIG_LZ4_COMPRESS=y' >> "$DEFCONFIG"
+          grep -q '^CONFIG_LZ4_DECOMPRESS=' "$DEFCONFIG" || echo 'CONFIG_LZ4_DECOMPRESS=y' >> "$DEFCONFIG"
+          grep -q '^CONFIG_DECOMPRESS_LZ4=' "$DEFCONFIG" || echo 'CONFIG_DECOMPRESS_LZ4=y' >> "$DEFCONFIG"
+          grep -q '^CONFIG_RD_LZ4=' "$DEFCONFIG"         || echo 'CONFIG_RD_LZ4=y' >> "$DEFCONFIG"
+
+          # Set ZRAM default compressor to lz4
+          echo 'CONFIG_ZRAM_DEF_COMP_LZ4=y' >> "$DEFCONFIG"
+          echo '# CONFIG_ZRAM_DEF_COMP_LZORLE is not set' >> "$DEFCONFIG"
+          echo '# CONFIG_ZRAM_DEF_COMP_ZSTD is not set' >> "$DEFCONFIG"
+          echo '# CONFIG_ZRAM_DEF_COMP_LZO is not set' >> "$DEFCONFIG"
+          echo 'CONFIG_ZRAM_DEF_COMP="lz4"' >> "$DEFCONFIG"
+
+          echo "✅ ZRAM default compressor set to lz4"
+          grep -E '^(CONFIG_ZRAM_DEF_COMP|CONFIG_(LZ4|RD_LZ4|DECOMPRESS_LZ4))' "$DEFCONFIG" | tail -n 50 || true
+
       - name: 🔨 Build Kernel
         run: |
           echo "🏗️ Starting kernel build..."
@@ -824,8 +862,15 @@ jobs:
                       end_idx = j
                       break
 
-          KERNEL_NAME = "android15-8-g29d86c5fc9dd-abogki428889875-4k-Ox1d3x3-SUS"
+                    PROFILE = "${{ github.event.inputs.PROFILE }}"
+          SUSFS = "${{ github.event.inputs.SUSFS }}"
+          base = "${{ env.KERNEL_NAME }}"
+          tag = f"{base}-{PROFILE}-Ox1d3x3"
+          if SUSFS == "On":
+              tag += "-SUSFS"
+          KERNEL_NAME = tag
           KSUVER = "${{ env.KSUVER }}"
+
 
           banner = []
           banner.append('ui_print " "\n')
@@ -835,7 +880,7 @@ jobs:
           banner.append('PATCH="$(getprop ro.build.version.security_patch 2>/dev/null)"\n')
           banner.append('SLOT="$(getprop ro.boot.slot_suffix 2>/dev/null)"; [ -z "$SLOT" ] && SLOT="$(getprop ro.boot.slot 2>/dev/null)"\n')
           banner.append('ui_print "===================================================="\n')
-          banner.append('ui_print "  ${MODEL:-Unknown Model} | SukiSU_SUS Kernel"\n')
+          banner.append('ui_print "  ${MODEL:-Unknown Model} | SukiSU Ultra Kernel"\n')
           banner.append(f'ui_print "  Kernel  : {KERNEL_NAME}"\n')
           banner.append(f'ui_print "  Build   : {KSUVER}"\n')
           banner.append('ui_print "  Builder : Ox1d3x3 (@ox1d3x3)"\n')
@@ -875,7 +920,7 @@ jobs:
       - name: 🧠 Set Artifact Name
         id: set_name
         run: |
-          BASE_NAME="SukiSU_Ultra_lz4_${{ env.KSUVER }}"
+          BASE_NAME="SukiSU_Ultra_lz4_${{ env.KSUVER }}_${{ github.event.inputs.PROFILE }}"
           
           if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
             FINAL_NAME="${BASE_NAME}_SUSFS"
