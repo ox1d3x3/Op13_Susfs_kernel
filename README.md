@@ -44,8 +44,6 @@
 
 ➜ **custom** kernel build date (by default, mimicks **stock** identification)
 
-➜ multimanager support (ReSukiSU & KernelSU Next only!): `Official KSU, 5ec1cff KSU, rsuntk KSU, KowSU, MamboSU, KernelSU NEXT, WildKSU`
-
 ➜ Unicode Bypass (you can use an **LSPosed module** to fix this painlessly)
 
 
