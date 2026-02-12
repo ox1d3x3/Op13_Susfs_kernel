@@ -1,10 +1,10 @@
 ---
 name: Build SukiSU Ultra
 env:
-  TZ: Australia/Perth
+  TZ: Asia/Shanghai
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
-  KERNEL_NAME: android15-16-GKI11022026-4k@Ox1d3x3_SUS
+  KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
 on:
   workflow_dispatch:
     inputs:
