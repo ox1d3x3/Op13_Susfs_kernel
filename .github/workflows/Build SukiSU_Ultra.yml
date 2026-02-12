@@ -34,15 +34,15 @@ env:
           - "Off"
         default: "Off"
       bbg:
-        description: "🛡️ BBG baseband protection"
+        description: "🛡️ BBG baseband protection (safe mode applied)"
         required: true
         type: choice
         options:
           - "On"
           - "Off"
-        default: "Off"
+        default: "On"
       bbr:
-        description: "📶 BBR algorithm (Has little practical benefit for everyday phone use and may even result in negative optimization)"
+        description: "🌐 Enable BBR support (optional; not set as default)"
         required: true
         type: choice
         options:
@@ -67,6 +67,38 @@ env:
           - "On"
           - "Off"
         default: "Off"
+      HMBIRD:
+        description: "🐦 HMBird support (enable if present in tree)"
+        required: true
+        type: choice
+        options:
+          - "On"
+          - "Off"
+        default: "On"
+      IP_SET:
+        description: "🧱 IP_SET netfilter support"
+        required: true
+        type: choice
+        options:
+          - "On"
+          - "Off"
+        default: "On"
+      TTL:
+        description: "⏱️ TTL/HL netfilter targets (tethering QoL)"
+        required: true
+        type: choice
+        options:
+          - "On"
+          - "Off"
+        default: "On"
+      TERMUX_COMPAT:
+        description: "📱 Termux/Proot compatibility (userns, binfmt_misc, seccomp)"
+        required: true
+        type: choice
+        options:
+          - "On"
+          - "Off"
+        default: "On"
       UNICODE_BYPASS:
         description: "🚀 Unicode zero-width bypass fix patch (Not recommended for higher kernel versions; it is suggested to use https://t.me/real5ec1cff/271 for a painless fix)"
         required: true
@@ -659,13 +691,10 @@ jobs:
           
           
           if [ "${{ github.event.inputs.bbr }}" == "On" ]; then
-            echo "🌐 Enabling BBR congestion control..."
+            echo "🌐 Enabling BBR support (not setting it as default)..."
             echo "CONFIG_TCP_CONG_ADVANCED=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_TCP_CONG_BBR=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_NET_SCH_FQ=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_TCP_CONG_BIC=n" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_TCP_CONG_WESTWOOD=n" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_TCP_CONG_HTCP=n" >> ./common/arch/arm64/configs/gki_defconfig
           fi
           
           # Add O2 config
@@ -673,9 +702,14 @@ jobs:
           echo "📦 Setting O2..."
           echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> ./common/arch/arm64/configs/gki_defconfig
           
-          # Enable POLLY in LLVM
-          echo "📦 Setting POLLY..."
-          echo "CONFIG_LLVM_POLLY=y" >> ./common/arch/arm64/configs/gki_defconfig
+          # Optional: Enable POLLY in LLVM (experimental)
+          if [ "${{ github.event.inputs.LLVM_POLLY }}" == "On" ]; then
+            echo "📦 Enabling LLVM POLLY..."
+            echo "CONFIG_LLVM_POLLY=y" >> ./common/arch/arm64/configs/gki_defconfig
+          else
+            echo "📦 LLVM POLLY disabled (stable default)"
+            echo "# CONFIG_LLVM_POLLY is not set" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
           echo "CONFIG_LD_DEAD_CODE_DATA_ELIMINATION=y" >> ./common/arch/arm64/configs/gki_defconfig
           
           if [ "${{ github.event.inputs.proxy }}" == "On" ]; then
@@ -724,6 +758,48 @@ jobs:
           # Remove check_defconfig
           sed -i 's/check_defconfig//' ./common/build.config.gki
           
+          # ✅ Normalize defconfig (remove duplicate CONFIG_ lines; keep last occurrence)
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, os
+          
+          p = Path(os.environ["GITHUB_WORKSPACE"]) / "kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig"
+          lines = p.read_text(errors="ignore").splitlines()
+          
+          sym_re_set = re.compile(r'^(CONFIG_[A-Za-z0-9_]+)=')
+          sym_re_unset = re.compile(r'^#\s*(CONFIG_[A-Za-z0-9_]+)\s+is\s+not\s+set\s*$')
+          
+          order = []
+          last = {}
+          header = []
+          found_first_cfg = False
+          
+          for ln in lines:
+              ms = sym_re_set.match(ln)
+              mu = sym_re_unset.match(ln)
+              if ms:
+                  sym = ms.group(1)
+                  last[sym] = ln
+                  if sym not in order:
+                      order.append(sym)
+                  found_first_cfg = True
+              elif mu:
+                  sym = mu.group(1)
+                  last[sym] = f"# {sym} is not set"
+                  if sym not in order:
+                      order.append(sym)
+                  found_first_cfg = True
+              else:
+                  if not found_first_cfg:
+                      header.append(ln)
+          
+          out = header[:]
+          for sym in order:
+              out.append(last[sym])
+          
+          p.write_text("\n".join(out).rstrip() + "\n")
+          print("✅ Normalized defconfig:", p)
+          PY
           echo "✅ Kernel config updated"
           
       - name: 🔎 Verify KSU/SUSFS config (pre-build)
