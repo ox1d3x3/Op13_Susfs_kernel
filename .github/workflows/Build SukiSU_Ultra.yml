@@ -560,6 +560,23 @@ jobs:
           echo "📦 Adding support for Mountify (backslashxx/mountify) module"
           echo "CONFIG_TMPFS_XATTR=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> ./common/arch/arm64/configs/gki_defconfig
+
+          # 📱 Termux / terminal compatibility (PTY + namespaces etc.)
+          if [ "${{ github.event.inputs.TERMUX_COMPAT }}" == "On" ]; then
+            echo "📱 Enabling Termux terminal compatibility (PTY/devpts + userns/binfmt/seccomp)..."
+            echo "CONFIG_TTY=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_UNIX98_PTYS=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_LEGACY_PTYS=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_DEVPTS_FS=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_DEVPTS_MULTIPLE_INSTANCES=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_BINFMT_MISC=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_USER_NS=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_SECCOMP=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_SECCOMP_FILTER=y" >> ./common/arch/arm64/configs/gki_defconfig
+          else
+            echo "📵 TERMUX_COMPAT is Off — leaving PTY/userns/binfmt defaults as-is"
+          fi
+
           
           
           if [ "${{ github.event.inputs.bbg }}" == "On" ]; then
@@ -809,6 +826,10 @@ jobs:
           make O=out ARCH=arm64 gki_defconfig
 
           echo "---- Effective config (KSU/KPM/SUSFS) ----"
+
+          echo "---- Effective config (Termux/PTTY) ----"
+          grep -nE '^CONFIG_(TTY|UNIX98_PTYS|DEVPTS_FS|DEVPTS_MULTIPLE_INSTANCES|BINFMT_MISC|USER_NS|SECCOMP|SECCOMP_FILTER)=y' out/.config || true
+
           grep -nE '^CONFIG_KSU(=|_)|^CONFIG_KPM(=|_)' out/.config || true
 
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
@@ -984,6 +1005,25 @@ jobs:
           
           echo "✅ Kernel build complete"
           
+      - name: "✅ Sanity check: PTY/devpts (Termux requirement)"
+        run: |
+          set -e
+          CFG="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/out/.config"
+          if [ ! -f "$CFG" ]; then
+            echo "❌ .config not found at $CFG"
+            exit 1
+          fi
+          echo "Checking kernel config for PTY/devpts…"
+          for opt in CONFIG_TTY CONFIG_UNIX98_PTYS CONFIG_DEVPTS_FS CONFIG_DEVPTS_MULTIPLE_INSTANCES; do
+            if ! grep -q "^${opt}=y" "$CFG"; then
+              echo "❌ Missing required ${opt}=y in final .config"
+              echo "--- Relevant lines ---"
+              grep -n "^${opt}=" "$CFG" || true
+              exit 1
+            fi
+          done
+          echo "✅ PTY/devpts options look good."
+
       - name: 📤 Upload build log
         if: always()
         uses: actions/upload-artifact@v4
