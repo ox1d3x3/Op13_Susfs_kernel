@@ -531,10 +531,131 @@ jobs:
           
           
           if [ "${{ github.event.inputs.bbg }}" == "On" ]; then
-            echo "⚡ Configuring BBG..."
-            echo 'CONFIG_BBG=y' >> ./common/arch/arm64/configs/gki_defconfig
-            echo 'CONFIG_LSM="landlock,lockdown,yama,integrity,selinux,bpf,baseband_guard"' >> ./common/arch/arm64/configs/gki_defconfig
-          fi          
+            echo "⚡ Configuring BBG (Baseband Guard) — safe mode..."
+            python3 - <<'PY'
+from pathlib import Path
+import os, re
+
+ws = Path(os.environ["GITHUB_WORKSPACE"])
+defconfig = ws / "kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig"
+common_root = defconfig.parents[3]  # .../kernel_platform/common
+security_dir = common_root / "security"
+
+# ---------- helpers ----------
+def read_text(p: Path) -> str:
+    try:
+        return p.read_text(errors="ignore")
+    except Exception:
+        return ""
+
+def ensure_cfg(lines, key, val):
+    # remove duplicates and '# ... is not set'
+    out = []
+    for l in lines:
+        if l.startswith(f"CONFIG_{key}=") or l.startswith(f"# CONFIG_{key} is not set"):
+            continue
+        out.append(l)
+    if val in ("y", "m", "n"):
+        if val == "n":
+            out.append(f"# CONFIG_{key} is not set")
+        else:
+            out.append(f"CONFIG_{key}={val}")
+    else:
+        out.append(f"CONFIG_{key}=" + val)
+    return out
+
+# ---------- detect BBG config symbol (varies by patch) ----------
+candidates = ["BBG", "SECURITY_BASEBAND_GUARD", "BASEBAND_GUARD"]
+found_syms = set()
+if security_dir.exists():
+    for kcfg in security_dir.rglob("Kconfig"):
+        txt = read_text(kcfg)
+        for sym in candidates:
+            if re.search(rf"^\s*config\s+{re.escape(sym)}\b", txt, flags=re.M):
+                found_syms.add(sym)
+
+bbg_sym = next((s for s in candidates if s in found_syms), "BBG")
+
+# ---------- detect LSM name (the string must match DEFINE_LSM(<name>)) ----------
+lsm_name = None
+if security_dir.exists():
+    for cfile in security_dir.rglob("*.c"):
+        txt = read_text(cfile)
+        for name in re.findall(r"DEFINE_LSM\(\s*([A-Za-z0-9_]+)\s*\)", txt):
+            if "baseband" in name.lower() or name.lower() == "bbg" or name.lower().startswith("bbg_"):
+                lsm_name = name
+                break
+        if lsm_name:
+            break
+
+if not lsm_name:
+    # fallback: most patches use 'baseband_guard'
+    lsm_name = "baseband_guard"
+
+# ---------- apply edits ----------
+lines = defconfig.read_text(errors="ignore").splitlines()
+
+# Ensure core security knobs exist
+lines = ensure_cfg(lines, "SECURITY", "y")
+lines = ensure_cfg(lines, "SECURITYFS", "y")
+
+# Enable BBG
+lines = ensure_cfg(lines, bbg_sym, "y")
+
+# Update CONFIG_LSM ordering: insert after selinux (recommended), keep de-dup
+lsm_vals = []
+for l in lines:
+    if l.startswith('CONFIG_LSM="'):
+        m = re.match(r'CONFIG_LSM="([^"]*)"', l)
+        if m:
+            lsm_vals = [x.strip() for x in m.group(1).split(',') if x.strip()]
+
+if not lsm_vals:
+    lsm_vals = ["landlock","lockdown","yama","integrity","selinux","bpf"]
+
+# de-dup
+seen=set(); dedup=[]
+for x in lsm_vals:
+    if x not in seen:
+        dedup.append(x); seen.add(x)
+lsm_vals = dedup
+
+# ensure LSM name exists after selinux
+if lsm_name not in lsm_vals:
+    if "selinux" in lsm_vals:
+        lsm_vals.insert(lsm_vals.index("selinux")+1, lsm_name)
+    else:
+        lsm_vals.append(lsm_name)
+
+# if it's before selinux, fix ordering
+if "selinux" in lsm_vals and lsm_name in lsm_vals and lsm_vals.index(lsm_name) < lsm_vals.index("selinux"):
+    lsm_vals.remove(lsm_name)
+    lsm_vals.insert(lsm_vals.index("selinux")+1, lsm_name)
+
+lsm_line = 'CONFIG_LSM="' + ','.join(lsm_vals) + '"'
+lines = [l for l in lines if not l.startswith('CONFIG_LSM="')]
+lines.append(lsm_line)
+
+# Safe-mode: disable BBG_* options that can break SELinux domain/service transitions
+symbols=set()
+if security_dir.exists():
+    for kcfg in security_dir.rglob("Kconfig"):
+        txt = read_text(kcfg)
+        for sym in re.findall(r"^\s*config\s+(BBG_[A-Za-z0-9_]+)\b", txt, flags=re.M):
+            symbols.add(sym)
+
+susp = sorted([s for s in symbols if re.search(r"(SELINUX|DOMAIN|TRANSITION|CONTEXT|TRUST)", s)])
+for sym in susp:
+    lines = ensure_cfg(lines, sym, "n")
+
+defconfig.write_text("\n".join(lines).rstrip()+"\n")
+
+print('BBG enabled symbol :', bbg_sym)
+print('BBG LSM name       :', lsm_name)
+print('CONFIG_LSM         :', lsm_line)
+print('BBG safe disabled  :', ', '.join(susp) if susp else 'none')
+          PY
+          fi
           
           
           if [ "${{ github.event.inputs.bbr }}" == "On" ]; then
