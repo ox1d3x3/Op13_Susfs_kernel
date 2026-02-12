@@ -1,7 +1,7 @@
 ---
 name: Build SukiSU Ultra
 env:
-  TZ: Asia/Shanghai
+  TZ: Australia/Perth
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
   KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
@@ -40,7 +40,7 @@ on:
         options:
           - "On"
           - "Off"
-        default: "On"
+        default: "Off"
       bbr:
         description: "📶 BBR algorithm (Has little practical benefit for everyday phone use and may even result in negative optimization)"
         required: true
@@ -533,7 +533,7 @@ jobs:
           if [ "${{ github.event.inputs.bbg }}" == "On" ]; then
             echo "⚡ Configuring BBG..."
             echo 'CONFIG_BBG=y' >> ./common/arch/arm64/configs/gki_defconfig
-            echo 'CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf,baseband_guard"' >> ./common/arch/arm64/configs/gki_defconfig
+            echo 'CONFIG_LSM="landlock,lockdown,yama,integrity,selinux,bpf,baseband_guard"' >> ./common/arch/arm64/configs/gki_defconfig
           fi          
           
           
@@ -897,9 +897,9 @@ jobs:
           banner.append('ui_print " "\n')
           banner.append('ui_print "PJZ110 | SukiSU Ultra Kernel"\n')
           banner.append(f'ui_print "Kernel:{tag}"\n')
-          banner.append(f'ui_print "Build:{BUILD}"\n')
-          banner.append('ui_print "Builder:@Ox1d3x3"\n')
-          banner.append('ui_print "Credits:mrcxlinux"\n')
+          banner.append(f'ui_print "Build  : {BUILD}"\n')
+          banner.append('ui_print "Builder: @Ox1d3x3"\n')
+          banner.append('ui_print "Credits: chenhua13 / mrcxlinux"\n')
           banner.append('ui_print " "\n')
           banner.append('DEVICE="$(getprop ro.product.device 2>/dev/null)"; [ -z "$DEVICE" ] && DEVICE="$(getprop ro.product.name 2>/dev/null)"\n')
           banner.append('PATCH="$(getprop ro.build.version.security_patch 2>/dev/null)"\n')
@@ -908,9 +908,9 @@ jobs:
           banner.append('if [ -z "$SLOT_SUFFIX" ]; then SLOT="$(getprop ro.boot.slot 2>/dev/null)"; [ -n "$SLOT" ] && SLOT_SUFFIX="_$SLOT"; fi\n')
           banner.append('if [ -z "$SLOT_SUFFIX" ]; then SLOT_SUFFIX="$(grep -oE "androidboot.slot_suffix=[^ ]+" /proc/cmdline 2>/dev/null | head -n1 | cut -d= -f2)"; fi\n')
           banner.append('if [ -z "$SLOT_SUFFIX" ]; then SLOT="$(grep -oE "androidboot.slot=[^ ]+" /proc/cmdline 2>/dev/null | head -n1 | cut -d= -f2)"; [ -n "$SLOT" ] && SLOT_SUFFIX="_$SLOT"; fi\n')
-          banner.append('ui_print "Device:$DEVICE "\n')
-          banner.append('ui_print "Android:$ANDROID "\n')
-          banner.append('ui_print "Patch:$PATCH "\n')
+          banner.append('ui_print "Device : $DEVICE"\n')
+          banner.append('ui_print "Android: $ANDROID"\n')
+          banner.append('ui_print "Patch  : $PATCH"\n')
           banner.append('if [ -n "$SLOT_SUFFIX" ]; then ui_print "Slot   : $SLOT_SUFFIX"; fi\n')
 
           # Open GitHub page after flash (works when flashing in Android; safe no-op elsewhere)
