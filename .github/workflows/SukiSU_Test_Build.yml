@@ -1,4 +1,4 @@
-name: "🧬 OP13 GKI | SukiSU Ultra -Test "
+name: "🧬 OP13 GKI | SukiSU Ultra - Test"
 
 permissions:
   contents: write
@@ -123,7 +123,7 @@ jobs:
           rm -f kernel_platform/common/android/abi_gki_protected_exports_* || true
           rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || true
 
-      - name: 🧰 Toolchain: use in-tree AOSP clang (NO glibc mismatch)
+      - name: "🧰 Toolchain: use in-tree AOSP clang (NO glibc mismatch)"
         run: |
           set -e
           cd "$KERNEL_DIR"
