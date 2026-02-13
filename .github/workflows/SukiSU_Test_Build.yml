@@ -5,7 +5,6 @@ env:
   TZ: Australia/Perth
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
-  # This is only used for naming (does not affect the build)
   KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
 
 on:
@@ -410,7 +409,16 @@ jobs:
           set -e
           cd "$GITHUB_WORKSPACE"
           rm -rf AnyKernel3
-          git clone --depth=1 -b "$ANYKERNEL_BRANCH" "$ANYKERNEL_REPO" AnyKernel3
+
+          echo "Cloning AnyKernel3…"
+          if git ls-remote --exit-code --heads "$ANYKERNEL_REPO" "$ANYKERNEL_BRANCH" >/dev/null 2>&1; then
+            echo "✅ Using branch: $ANYKERNEL_BRANCH"
+            git clone --depth=1 -b "$ANYKERNEL_BRANCH" "$ANYKERNEL_REPO" AnyKernel3
+          else
+            echo "⚠️ Branch '$ANYKERNEL_BRANCH' not found. Cloning default branch instead."
+            git clone --depth=1 "$ANYKERNEL_REPO" AnyKernel3
+          fi
+
           cp "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image" AnyKernel3/Image
 
           SUFFIX="${{ github.event.inputs.kernel_suffix }}"
