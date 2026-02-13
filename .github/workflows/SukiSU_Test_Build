@@ -1,0 +1,275 @@
+name: "🧬 OP13 GKI | SukiSU Ultra"
+
+permissions:
+  contents: write
+
+"on":
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Build label (naming only)"
+        required: true
+        type: choice
+        options: [optimal, balanced, performance]
+        default: optimal
+      susfs:
+        description: "SUSFS (only if you need it)"
+        required: true
+        type: choice
+        options: ["On", "Off"]
+        default: "Off"
+      kpm:
+        description: "KPM (only if you need it)"
+        required: true
+        type: choice
+        options: ["On", "Off"]
+        default: "Off"
+      hmbird:
+        description: "HMBird (OnePlus compat, optional)"
+        required: true
+        type: choice
+        options: ["On", "Off"]
+        default: "On"
+      bbr_support:
+        description: "Enable BBR support (NOT default)"
+        required: true
+        type: choice
+        options: ["On", "Off"]
+        default: "Off"
+      zip_suffix:
+        description: "Optional ZIP suffix (no spaces)"
+        required: false
+        default: ""
+
+concurrency:
+  group: op13-kernel-${{ github.ref }}-${{ github.event.inputs.profile }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      CCACHE_DIR: /home/runner/.ccache_op13
+      CCACHE_MAXSIZE: 12G
+
+      MANIFEST_URL: https://github.com/mrcxlinux/actions_oplus_sm8750
+      MANIFEST_BRANCH: zh
+      MANIFEST_NAME: oneplus.xml
+
+      WORKDIR: kernel_workspace
+      KERNEL_DIR: kernel_workspace/kernel_platform
+      DEFCONFIG: kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig
+
+      ANYKERNEL_REPO: https://github.com/mrcxlinux/AnyKernel3
+      ANYKERNEL_BRANCH: gki
+
+      SUSFS_REPO: https://gitlab.com/simonpunk/susfs4ksu.git
+      WILDKERNEL_PATCHES: https://github.com/WildKernels/kernel_patches.git
+
+    steps:
+      - name: 🧾 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🧹 Maximize disk space
+        uses: easimon/maximize-build-space@v10
+        with:
+          root-reserve-mb: 4096
+          temp-reserve-mb: 4096
+          remove-dotnet: true
+          remove-android: true
+          remove-haskell: true
+
+      - name: 🔧 Dependencies
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends             bc bison flex git git-lfs curl wget rsync zip unzip jq             python3 python3-pip             build-essential libssl-dev libelf-dev dwarves             ccache
+          git lfs install
+
+      - name: ⚡ ccache
+        run: |
+          set -e
+          mkdir -p "$CCACHE_DIR"
+          ccache -M "$CCACHE_MAXSIZE" || true
+          ccache -s || true
+
+      - name: 💾 Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-op13-${{ github.ref }}-${{ github.event.inputs.profile }}
+          restore-keys: |
+            ccache-${{ runner.os }}-op13-
+
+      - name: 📥 repo tool
+        run: |
+          set -e
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: 📦 Sync kernel sources
+        run: |
+          set -e
+          mkdir -p "$WORKDIR"
+          cd "$WORKDIR"
+          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" -m "$MANIFEST_NAME" --depth=1
+          repo sync -c -j"$(nproc)" --force-sync --no-tags --no-clone-bundle
+
+      - name: 🧩 SukiSU Ultra (builtin)
+        run: |
+          set -e
+          cd "$KERNEL_DIR"
+          curl -fsSL https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
+
+      - name: 🧩 SUSFS (optional)
+        if: ${{ github.event.inputs.susfs == 'On' }}
+        run: |
+          set -e
+          cd "$KERNEL_DIR"
+          rm -rf susfs4ksu
+          git clone --depth=1 "$SUSFS_REPO" susfs4ksu
+          bash susfs4ksu/kernel_patches.sh "$(pwd)/common" || true
+          bash susfs4ksu/kernel_patches_ksu.sh "$(pwd)/common" || true
+
+      - name: 🧩 HMBird (optional)
+        if: ${{ github.event.inputs.hmbird == 'On' }}
+        run: |
+          set -e
+          cd "$KERNEL_DIR"
+          rm -rf wild_patches
+          git clone --depth=1 "$WILDKERNEL_PATCHES" wild_patches
+          PATCH_DIR="wild_patches/oneplus/hmbird"
+          if [ -d "$PATCH_DIR" ]; then
+            echo "Applying HMBird patches…"
+            for p in $(find "$PATCH_DIR" -maxdepth 1 -type f \( -name "*.patch" -o -name "*.diff" \) | sort); do
+              echo "  -> $p"
+              git -C common apply --whitespace=nowarn "$p" || (echo "❌ failed: $p" && exit 1)
+            done
+          else
+            echo "No HMBird patches found; skipping."
+          fi
+
+      - name: ⚙️ Kernel config (daily stable + terminal emulators)
+        run: |
+          set -e
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          cfg = Path("kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig")
+          lines = cfg.read_text(encoding="utf-8", errors="ignore").splitlines()
+
+          def set_opt(lines, key, val):
+              if not key.startswith("CONFIG_"):
+                  key = "CONFIG_" + key
+              pat_set = re.compile(rf"^{re.escape(key)}=")
+              pat_unset = re.compile(rf"^#\s*{re.escape(key)}\s+is\s+not\s+set\s*$")
+              out, seen = [], False
+              for ln in lines:
+                  if pat_set.match(ln) or pat_unset.match(ln):
+                      if not seen:
+                          out.append(f"# {key} is not set" if val == "n" else f"{key}={val}")
+                          seen = True
+                      continue
+                  out.append(ln)
+              if not seen:
+                  out.append(f"# {key} is not set" if val == "n" else f"{key}={val}")
+              return out
+
+          # Terminal emulator essentials
+          for k,v in [
+              ("TTY","y"),
+              ("PTY","y"),
+              ("UNIX98_PTYS","y"),
+              ("DEVPTS_FS","y"),
+              ("DEVPTS_MULTIPLE_INSTANCES","y"),
+          ]:
+              lines = set_opt(lines, k, v)
+
+          # Termux/proot compatibility (safe)
+          for k,v in [
+              ("BINFMT_MISC","y"),
+              ("USER_NS","y"),
+              ("SECCOMP","y"),
+              ("SECCOMP_FILTER","y"),
+          ]:
+              lines = set_opt(lines, k, v)
+
+          # ZRAM LZ4 (common QoL)
+          for k,v in [
+              ("ZRAM","y"),
+              ("ZRAM_DEF_COMP_LZ4","y"),
+          ]:
+              lines = set_opt(lines, k, v)
+
+          cfg.write_text("\n".join(lines).rstrip()+"\n", encoding="utf-8")
+          print("✅ gki_defconfig updated")
+          PY
+
+          if [ "${{ github.event.inputs.bbr_support }}" = "On" ]; then
+            echo "CONFIG_TCP_CONG_ADVANCED=y" >> "$DEFCONFIG"
+            echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"
+            echo "CONFIG_NET_SCH_FQ=y" >> "$DEFCONFIG"
+          fi
+
+          if [ "${{ github.event.inputs.kpm }}" = "On" ]; then
+            echo "CONFIG_KPM=y" >> "$DEFCONFIG"
+          fi
+
+      - name: 🔨 Build (GKI)
+        run: |
+          set -e
+          cd "$KERNEL_DIR"
+
+          CLANG_DIR="$(find prebuilts/clang/host/linux-x86 -maxdepth 1 -type d -name 'clang-*' | sort | tail -n1)"
+          echo "$CLANG_DIR/bin" >> $GITHUB_PATH
+
+          export ARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CC="ccache clang"
+
+          make -C common O=out gki_defconfig
+
+          # Force the essentials into final .config (defconfig sometimes overrides)
+          if [ -x "./common/scripts/config" ]; then
+            ./common/scripts/config --file "./common/out/.config" \
+              -e TTY -e PTY -e UNIX98_PTYS -e DEVPTS_FS -e DEVPTS_MULTIPLE_INSTANCES || true
+          fi
+          make -C common O=out olddefconfig
+
+          echo "---- final terminal options ----"
+          grep -E "^(CONFIG_TTY=|CONFIG_PTY=|CONFIG_UNIX98_PTYS=|CONFIG_DEVPTS_FS=|CONFIG_DEVPTS_MULTIPLE_INSTANCES=)" common/out/.config || true
+          echo "-------------------------------"
+
+          make -C common O=out -j"$(nproc)" Image modules
+          test -f common/out/arch/arm64/boot/Image
+
+      - name: 📦 Package AnyKernel3
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          rm -rf AnyKernel3
+          git clone --depth=1 -b "$ANYKERNEL_BRANCH" "$ANYKERNEL_REPO" AnyKernel3
+          cp "$KERNEL_DIR/common/out/arch/arm64/boot/Image" AnyKernel3/Image
+
+          ZIP="OP13-SukiSUUltra-${{ github.event.inputs.profile }}"
+          if [ -n "${{ github.event.inputs.zip_suffix }}" ]; then
+            ZIP="${ZIP}-${{ github.event.inputs.zip_suffix }}"
+          fi
+          ZIP="${ZIP// /_}"
+
+          cd AnyKernel3
+          zip -r9 "../${ZIP}.zip" . -x ".git/*" ".github/*"
+          cd ..
+
+          echo "ZIP_NAME=${ZIP}.zip" >> "$GITHUB_ENV"
+
+      - name: ⬆️ Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_NAME }}
