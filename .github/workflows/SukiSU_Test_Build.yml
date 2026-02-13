@@ -1,5 +1,5 @@
 ---
-name: 🧬 Build SukiSU Ultra -TEST
+name: Build SukiSU Ultra-Test
 
 env:
   TZ: Australia/Perth
@@ -220,58 +220,21 @@ jobs:
           echo "✅ Kernel setup complete"
 
       # ✅ Fix: NO Neutron clang (glibc mismatch). Use in-tree AOSP clang and make sure `clang` exists.
-      - name: "🧰 Toolchain: Use in-tree AOSP clang (stable)"
+      - name: "🧰 Toolchain: Neutron clang (AntMan, stable)"
         run: |
           set -e
-          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+          mkdir -p "$HOME/toolchains/neutron-clang"
+          cd "$HOME/toolchains/neutron-clang"
+          curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman" -o antman
+          chmod +x antman
+          ./antman -S
+          # Patch toolchain for runner glibc if needed (safe no-op if not required)
+          ./antman --patch=glibc || true
 
-          CLANG_DIR="$(find prebuilts/clang/host/linux-x86 -maxdepth 1 -type d -name 'clang-*' | sort | tail -n1)"
-          if [ -z "$CLANG_DIR" ]; then
-            echo "❌ No in-tree clang found under prebuilts/clang/host/linux-x86"
-            ls -la prebuilts/clang/host/linux-x86 || true
-            exit 1
-          fi
-
-          CLANG_BIN="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/$CLANG_DIR/bin"
-          echo "Using clang bin: $CLANG_BIN"
-          ls -la "$CLANG_BIN" | head -n 50 || true
-
-          # Some trees ship clang as clang.real or clang-XX only.
-          if [ ! -x "$CLANG_BIN/clang" ]; then
-            if [ -x "$CLANG_BIN/clang.real" ]; then
-              ln -sf "clang.real" "$CLANG_BIN/clang"
-            else
-              CAND="$(ls -1 "$CLANG_BIN"/clang-[0-9]* 2>/dev/null | head -n1 || true)"
-              if [ -z "$CAND" ]; then
-                CAND="$(ls -1 "$CLANG_BIN"/clang-* 2>/dev/null | grep -v 'clang\+\+' | head -n1 || true)"
-              fi
-              if [ -n "$CAND" ]; then
-                ln -sf "$(basename "$CAND")" "$CLANG_BIN/clang"
-              fi
-            fi
-          fi
-
-          if [ ! -x "$CLANG_BIN/clang" ]; then
-            echo "❌ clang executable not found in $CLANG_BIN"
-            exit 1
-          fi
-
-          # Persist PATH across steps (more reliable than only export)
-          echo "$CLANG_BIN" >> "$GITHUB_PATH"
-          echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
-
-          # Optional tools (tree-dependent)
-          RUSTC_BIN="$(find prebuilts/rust/linux-x86 -type f -path '*/bin/rustc' 2>/dev/null | sort | tail -n1 || true)"
-          if [ -n "$RUSTC_BIN" ]; then
-            echo "RUSTC_BIN=$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/$RUSTC_BIN" >> "$GITHUB_ENV"
-          fi
-
-          if [ -x "prebuilts/kernel-build-tools/linux-x86/bin/pahole" ]; then
-            echo "PAHOLE_BIN=$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/pahole" >> "$GITHUB_ENV"
-          fi
-
-          # Verify it runs (if this fails, the error will be visible in logs)
-          "$CLANG_BIN/clang" --version
+          echo "$HOME/toolchains/neutron-clang/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/toolchains/neutron-clang/bin:$PATH"
+          command -v clang
+          clang --version
 
       - name: "🧩 Setup SukiSU Ultra (builtin)"
         run: |
@@ -398,7 +361,7 @@ jobs:
         run: |
           set -e
           echo "🏗️ Starting kernel build..."
-          export PATH="/usr/lib/ccache:${CLANG_BIN}:$PATH"
+          export PATH="/usr/lib/ccache:$HOME/toolchains/neutron-clang/bin:$PATH"
           export ARCH=arm64
           export LLVM=1
           export LLVM_IAS=1
