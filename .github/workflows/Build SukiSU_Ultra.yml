@@ -91,14 +91,6 @@ env:
           - "On"
           - "Off"
         default: "On"
-      TERMUX_COMPAT:
-        description: "📱 Termux/Proot compatibility (userns, binfmt_misc, seccomp)"
-        required: true
-        type: choice
-        options:
-          - "On"
-          - "Off"
-        default: "On"
       UNICODE_BYPASS:
         description: "🚀 Unicode zero-width bypass fix patch (Not recommended for higher kernel versions; it is suggested to use https://t.me/real5ec1cff/271 for a painless fix)"
         required: true
@@ -561,21 +553,14 @@ jobs:
           echo "CONFIG_TMPFS_XATTR=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> ./common/arch/arm64/configs/gki_defconfig
 
-          # 📱 Termux / terminal compatibility (PTY + namespaces etc.)
-          if [ "${{ github.event.inputs.TERMUX_COMPAT }}" == "On" ]; then
-            echo "📱 Enabling Termux terminal compatibility (PTY/devpts + userns/binfmt/seccomp)..."
-            echo "CONFIG_TTY=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_UNIX98_PTYS=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_LEGACY_PTYS=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_DEVPTS_FS=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_DEVPTS_MULTIPLE_INSTANCES=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_BINFMT_MISC=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_USER_NS=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_SECCOMP=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_SECCOMP_FILTER=y" >> ./common/arch/arm64/configs/gki_defconfig
-          else
-            echo "📵 TERMUX_COMPAT is Off — leaving PTY/userns/binfmt defaults as-is"
-          fi
+          # 📱 Termux / terminal compatibility (PTY/devpts)
+          # Termux is a terminal emulator; without PTY + devpts, it can crash or instantly exit on some ROMs.
+          echo "📱 Forcing Termux PTY/devpts support (safe + required on some ROMs)..."
+          echo "CONFIG_TTY=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_PTY=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_UNIX98_PTYS=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_DEVPTS_FS=y" >> ./common/arch/arm64/configs/gki_defconfig
+
 
           
           
@@ -828,7 +813,7 @@ jobs:
           echo "---- Effective config (KSU/KPM/SUSFS) ----"
 
           echo "---- Effective config (Termux/PTTY) ----"
-          grep -nE '^CONFIG_(TTY|UNIX98_PTYS|DEVPTS_FS|DEVPTS_MULTIPLE_INSTANCES|BINFMT_MISC|USER_NS|SECCOMP|SECCOMP_FILTER)=y' out/.config || true
+          grep -nE '^CONFIG_(TTY|PTY|UNIX98_PTYS|DEVPTS_FS)=y' out/.config || true
 
           grep -nE '^CONFIG_KSU(=|_)|^CONFIG_KPM(=|_)' out/.config || true
 
