@@ -98,6 +98,7 @@ jobs:
     steps:
       - name: 🚀 Maximize Build Space
         uses: easimon/maximize-build-space@v9
+        continue-on-error: true
         with:
           root-reserve-mb: 8192
           temp-reserve-mb: 4096
@@ -200,6 +201,21 @@ jobs:
           sudo mv ~/repo /usr/local/bin/repo
           echo "✅ repo tool installed"
           
+      - name: 📥 Install Neutron Clang Tool
+        run: |
+          set -e
+          echo "⬇️ Installing Neutron clang (AntMan)…"
+          mkdir -p "$HOME/toolchains/neutron-clang"
+          cd "$HOME/toolchains/neutron-clang"
+          curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman" -o antman
+          chmod +x antman
+          ./antman -S
+          ./antman --patch=glibc || true
+          echo "$HOME/toolchains/neutron-clang/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/toolchains/neutron-clang/bin:$PATH"
+          command -v clang
+          clang --version
+          echo "✅ Neutron clang installed"
       - name: "⬇️ Clone Kernel Source"
         run: |
           mkdir -p "$GITHUB_WORKSPACE/kernel_workspace" && cd "$GITHUB_WORKSPACE/kernel_workspace"
@@ -223,34 +239,6 @@ jobs:
           
           echo "✅ Kernel setup complete"
           
-      - name: "🧰 Toolchain: use in-tree AOSP clang (no glibc mismatch)"
-        run: |
-          set -e
-          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
-
-          CLANG_DIR="$(find prebuilts/clang/host/linux-x86 -maxdepth 1 -type d -name 'clang-*' | sort | tail -n 1)"
-          if [ -z "$CLANG_DIR" ]; then
-            echo "❌ No clang dir found under prebuilts/clang/host/linux-x86"
-            ls -la prebuilts/clang/host/linux-x86 || true
-            exit 1
-          fi
-
-          CLANG_BIN="$PWD/$CLANG_DIR/bin"
-          echo "✅ Using clang: $CLANG_BIN"
-
-          # Some trees ship clang-XX only; create 'clang' symlink if needed
-          if [ ! -x "$CLANG_BIN/clang" ]; then
-            CAND="$(ls -1 "$CLANG_BIN"/clang-* 2>/dev/null | grep -v 'clang\+\+' | head -n 1 || true)"
-            if [ -n "$CAND" ]; then
-              ln -sf "$(basename "$CAND")" "$CLANG_BIN/clang"
-            fi
-          fi
-
-          echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
-          echo "$CLANG_BIN" >> "$GITHUB_PATH"
-          command -v clang
-          clang --version
-
       - name: ⚡ Setup Baseband-guard
         if: ${{ github.event.inputs.bbg == 'On' }}
         run: |
@@ -301,14 +289,17 @@ jobs:
           while IFS= read -r line; do
             echo "$line" >> "$TMP_FILE"
             if echo "$line" | grep -q 'REPO_OWNER :='; then
-              cat >> "$TMP_FILE" <<EOF
-              define get_ksu_version_full
-              v\\$\$1-${KSU_COMMIT_HASH}@Ox1d3x3_SUS
-              endef
+              printf "%s\\n" 'define get_ksu_version_full' >> "$TMP_FILE"
 
-              KSU_VERSION_API := ${KSU_API_VERSION}
-              KSU_VERSION_FULL := ${KSU_VERSION_FULL}
-              EOF
+              printf "%s\\n" 'v\\$\\$1-${KSU_COMMIT_HASH}@Ox1d3x3_SUS' >> "$TMP_FILE"
+
+              printf "%s\\n" 'endef' >> "$TMP_FILE"
+
+              printf "%s\\n" "" >> "$TMP_FILE"
+
+              printf "%s\\n" 'KSU_VERSION_API := ${KSU_API_VERSION}' >> "$TMP_FILE"
+
+              printf "%s\\n" 'KSU_VERSION_FULL := ${KSU_VERSION_FULL}' >> "$TMP_FILE"
             fi
           done < kernel/Kbuild
           mv "$TMP_FILE" kernel/Kbuild
@@ -523,39 +514,24 @@ jobs:
           
           echo "📦 Enabling KSU support..."
           
+          # ✅ Terminal emulators (Termux/MT Manager/etc) need PTY + devpts
           DEFCONFIG_PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig"
-          # ✅ Terminal emulators need PTY + devpts (Termux / MT Manager / others)
-          grep -q '^CONFIG_TTY=' "$DEFCONFIG_PATH" || echo 'CONFIG_TTY=y' >> "$DEFCONFIG_PATH"
-          grep -q '^CONFIG_PTY=' "$DEFCONFIG_PATH" || echo 'CONFIG_PTY=y' >> "$DEFCONFIG_PATH"
-          grep -q '^CONFIG_UNIX98_PTYS=' "$DEFCONFIG_PATH" || echo 'CONFIG_UNIX98_PTYS=y' >> "$DEFCONFIG_PATH"
-          grep -q '^CONFIG_DEVPTS_FS=' "$DEFCONFIG_PATH" || echo 'CONFIG_DEVPTS_FS=y' >> "$DEFCONFIG_PATH"
-          grep -q '^CONFIG_DEVPTS_MULTIPLE_INSTANCES=' "$DEFCONFIG_PATH" || echo 'CONFIG_DEVPTS_MULTIPLE_INSTANCES=y' >> "$DEFCONFIG_PATH"
-
-          # ✅ If BBG is OFF, force-remove baseband_guard from LSM list (prevents terminal instant exit)
+          grep -q "^CONFIG_TTY=" "$DEFCONFIG_PATH" || echo "CONFIG_TTY=y" >> "$DEFCONFIG_PATH"
+          grep -q "^CONFIG_PTY=" "$DEFCONFIG_PATH" || echo "CONFIG_PTY=y" >> "$DEFCONFIG_PATH"
+          grep -q "^CONFIG_UNIX98_PTYS=" "$DEFCONFIG_PATH" || echo "CONFIG_UNIX98_PTYS=y" >> "$DEFCONFIG_PATH"
+          grep -q "^CONFIG_DEVPTS_FS=" "$DEFCONFIG_PATH" || echo "CONFIG_DEVPTS_FS=y" >> "$DEFCONFIG_PATH"
+          grep -q "^CONFIG_DEVTMPFS=" "$DEFCONFIG_PATH" || echo "CONFIG_DEVTMPFS=y" >> "$DEFCONFIG_PATH"
+          grep -q "^CONFIG_DEVTMPFS_MOUNT=" "$DEFCONFIG_PATH" || echo "CONFIG_DEVTMPFS_MOUNT=y" >> "$DEFCONFIG_PATH"
+          # ✅ If BBG is OFF, remove baseband_guard from CONFIG_LSM to avoid terminal/pty regressions
           if [ "${{ github.event.inputs.bbg }}" == "Off" ]; then
-            python3 - <<'PY'
-            from pathlib import Path
-            import os, re
-            p = Path(os.environ['GITHUB_WORKSPACE']) / 'kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig'
-            txt = p.read_text(errors='ignore').splitlines()
-            out=[]
-            for l in txt:
-              if l.startswith('CONFIG_BBG=') or l.startswith('# CONFIG_BBG is not set'):
-                  continue
-              if l.startswith('CONFIG_SECURITY_BASEBAND_GUARD=') or l.startswith('# CONFIG_SECURITY_BASEBAND_GUARD is not set'):
-                  continue
-              # Clean CONFIG_LSM string if present
-              if l.startswith('CONFIG_LSM="'):
-                  m = re.match(r'CONFIG_LSM="([^"]*)"', l)
-                  if m:
-                      parts=[x.strip() for x in m.group(1).split(',') if x.strip() and x.strip()!='baseband_guard']
-                      l='CONFIG_LSM="' + ','.join(parts) + '"'
-              out.append(l)
-            p.write_text('\n'.join(out)+'\n')
-            print('BBG/baseband_guard forced OFF in gki_defconfig')
-            PY
+            perl -pi -e 's/^CONFIG_LSM="([^"]*)"/my $v=$1; my @p=grep {$_ ne "baseband_guard" && $_ ne ""} map {s/^\s+|\s+$//gr} split(/,/, $v); "CONFIG_LSM=\"".join(",",@p)."\""/e' "$DEFCONFIG_PATH" || true
+            sed -i '/^CONFIG_SECURITY_BASEBAND_GUARD=/d' "$DEFCONFIG_PATH" || true
+            sed -i '/^CONFIG_BBG=/d' "$DEFCONFIG_PATH" || true
+            echo "# CONFIG_SECURITY_BASEBAND_GUARD is not set" >> "$DEFCONFIG_PATH"
           fi
 
+          
+          DEFCONFIG_PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig"
           
           echo "CONFIG_KSU=y" >> "$DEFCONFIG_PATH"
           
@@ -583,130 +559,9 @@ jobs:
           
           
           if [ "${{ github.event.inputs.bbg }}" == "On" ]; then
-            echo "⚡ Configuring BBG (Baseband Guard) — safe mode..."
-            python3 - <<'PY'
-            from pathlib import Path
-            import os, re
-
-            ws = Path(os.environ["GITHUB_WORKSPACE"])
-            defconfig = ws / "kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig"
-            common_root = defconfig.parents[3]  # .../kernel_platform/common
-            security_dir = common_root / "security"
-
-            # ---------- helpers ----------
-            def read_text(p: Path) -> str:
-            try:
-            return p.read_text(errors="ignore")
-            except Exception:
-            return ""
-
-            def ensure_cfg(lines, key, val):
-            # remove duplicates and '# ... is not set'
-            out = []
-            for l in lines:
-            if l.startswith(f"CONFIG_{key}=") or l.startswith(f"# CONFIG_{key} is not set"):
-            continue
-            out.append(l)
-            if val in ("y", "m", "n"):
-            if val == "n":
-            out.append(f"# CONFIG_{key} is not set")
-            else:
-            out.append(f"CONFIG_{key}={val}")
-            else:
-            out.append(f"CONFIG_{key}=" + val)
-            return out
-
-            # ---------- detect BBG config symbol (varies by patch) ----------
-            candidates = ["BBG", "SECURITY_BASEBAND_GUARD", "BASEBAND_GUARD"]
-            found_syms = set()
-            if security_dir.exists():
-            for kcfg in security_dir.rglob("Kconfig"):
-            txt = read_text(kcfg)
-            for sym in candidates:
-            if re.search(rf"^\s*config\s+{re.escape(sym)}\b", txt, flags=re.M):
-                found_syms.add(sym)
-
-            bbg_sym = next((s for s in candidates if s in found_syms), "BBG")
-
-            # ---------- detect LSM name (the string must match DEFINE_LSM(<name>)) ----------
-            lsm_name = None
-            if security_dir.exists():
-            for cfile in security_dir.rglob("*.c"):
-            txt = read_text(cfile)
-            for name in re.findall(r"DEFINE_LSM\(\s*([A-Za-z0-9_]+)\s*\)", txt):
-            if "baseband" in name.lower() or name.lower() == "bbg" or name.lower().startswith("bbg_"):
-                lsm_name = name
-                break
-            if lsm_name:
-            break
-
-            if not lsm_name:
-            # fallback: most patches use 'baseband_guard'
-            lsm_name = "baseband_guard"
-
-            # ---------- apply edits ----------
-            lines = defconfig.read_text(errors="ignore").splitlines()
-
-            # Ensure core security knobs exist
-            lines = ensure_cfg(lines, "SECURITY", "y")
-            lines = ensure_cfg(lines, "SECURITYFS", "y")
-
-            # Enable BBG
-            lines = ensure_cfg(lines, bbg_sym, "y")
-
-            # Update CONFIG_LSM ordering: insert after selinux (recommended), keep de-dup
-            lsm_vals = []
-            for l in lines:
-            if l.startswith('CONFIG_LSM="'):
-            m = re.match(r'CONFIG_LSM="([^"]*)"', l)
-            if m:
-            lsm_vals = [x.strip() for x in m.group(1).split(',') if x.strip()]
-
-            if not lsm_vals:
-            lsm_vals = ["landlock","lockdown","yama","integrity","selinux","bpf"]
-
-            # de-dup
-            seen=set(); dedup=[]
-            for x in lsm_vals:
-            if x not in seen:
-            dedup.append(x); seen.add(x)
-            lsm_vals = dedup
-
-            # ensure LSM name exists after selinux
-            if lsm_name not in lsm_vals:
-            if "selinux" in lsm_vals:
-            lsm_vals.insert(lsm_vals.index("selinux")+1, lsm_name)
-            else:
-            lsm_vals.append(lsm_name)
-
-            # if it's before selinux, fix ordering
-            if "selinux" in lsm_vals and lsm_name in lsm_vals and lsm_vals.index(lsm_name) < lsm_vals.index("selinux"):
-            lsm_vals.remove(lsm_name)
-            lsm_vals.insert(lsm_vals.index("selinux")+1, lsm_name)
-
-            lsm_line = 'CONFIG_LSM="' + ','.join(lsm_vals) + '"'
-            lines = [l for l in lines if not l.startswith('CONFIG_LSM="')]
-            lines.append(lsm_line)
-
-            # Safe-mode: disable BBG_* options that can break SELinux domain/service transitions
-            symbols=set()
-            if security_dir.exists():
-            for kcfg in security_dir.rglob("Kconfig"):
-            txt = read_text(kcfg)
-            for sym in re.findall(r"^\s*config\s+(BBG_[A-Za-z0-9_]+)\b", txt, flags=re.M):
-            symbols.add(sym)
-
-            susp = sorted([s for s in symbols if re.search(r"(SELINUX|DOMAIN|TRANSITION|CONTEXT|TRUST)", s)])
-            for sym in susp:
-            lines = ensure_cfg(lines, sym, "n")
-
-            defconfig.write_text("\n".join(lines).rstrip()+"\n")
-
-            print('BBG enabled symbol :', bbg_sym)
-            print('BBG LSM name       :', lsm_name)
-            print('CONFIG_LSM         :', lsm_line)
-            print('BBG safe disabled  :', ', '.join(susp) if susp else 'none')
-            PY
+            echo "⚡ Enabling BBG (Baseband Guard)" 
+            echo "CONFIG_SECURITY_BASEBAND_GUARD=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_BBG=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
           
           
@@ -783,6 +638,13 @@ jobs:
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
           # Generate .config from gki_defconfig so we can verify the effective settings
           make O=out ARCH=arm64 gki_defconfig
+          echo "🔎 Verifying final .config has PTY/devpts…"
+          CFG="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/out/.config"
+          if [ ! -f "$CFG" ]; then CFG="$(find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/out" -maxdepth 2 -name .config | head -n1)"; fi
+          grep -q "^CONFIG_DEVPTS_FS=y" "$CFG" || (echo "❌ Missing CONFIG_DEVPTS_FS=y"; exit 1)
+          grep -q "^CONFIG_UNIX98_PTYS=y" "$CFG" || (echo "❌ Missing CONFIG_UNIX98_PTYS=y"; exit 1)
+          grep -q "^CONFIG_PTY=y" "$CFG" || (echo "❌ Missing CONFIG_PTY=y"; exit 1)
+          echo "✅ PTY/devpts OK"
 
           echo "---- Effective config (KSU/KPM/SUSFS) ----"
           grep -nE '^CONFIG_KSU(=|_)|^CONFIG_KPM(=|_)' out/.config || true
@@ -891,24 +753,10 @@ jobs:
           echo "✅ ZRAM default compressor set to lz4"
           grep -E '^(CONFIG_ZRAM_DEF_COMP|CONFIG_(LZ4|RD_LZ4|DECOMPRESS_LZ4))' "$DEFCONFIG" | tail -n 50 || true
 
-      - name: 🧪 Sanity check terminal + LSM config
-        run: |
-          set -e
-          CFG="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig"
-          echo "--- gki_defconfig terminal options ---"
-          grep -E "^CONFIG_(TTY|PTY|UNIX98_PTYS|DEVPTS_FS|DEVPTS_MULTIPLE_INSTANCES)=" "$CFG" || true
-          if [ "${{ github.event.inputs.bbg }}" == "Off" ]; then
-            if grep -q "baseband_guard" "$CFG"; then
-              echo "❌ baseband_guard still present in defconfig while BBG=Off"
-              exit 1
-            fi
-          fi
-
       - name: 🔨 Build Kernel
         run: |
           echo "🏗️ Starting kernel build..."
-            # Ensure clang is available (from in-tree toolchain step)
-            export PATH="/usr/lib/ccache:${CLANG_BIN}:$PATH"
+            export PATH="/usr/lib/ccache:$HOME/toolchains/neutron-clang/bin:$PATH" 
             export PATH="/usr/lib/ccache:$PATH"
             cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
             curl $CURL_OPTS -fL https://github.com/cctv18/oppo_oplus_realme_sm8750/raw/refs/heads/main/lib/libfakestat.so -o libfakestat.so
@@ -981,42 +829,19 @@ jobs:
           name: build-log
           path: kernel_workspace/kernel_platform/common/build.log
 
-      - name: 📤 Upload kernel configs (debug)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-configs
-          path: |
-            kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig
-            kernel_workspace/kernel_platform/common/out/.config
-
       - name: 📦 Package Kernel
         run: |
           echo "📦 Preparing AnyKernel3 packaging environment..."
           git clone https://github.com/mrcxlinux/AnyKernel3 --depth=1
-          # Ensure a recovery-flashable META-INF exists (some forks omit it)
-          if [ ! -f AnyKernel3/META-INF/com/google/android/update-binary ]; then
-            echo "⚠️  AnyKernel3 fork missing META-INF/update-binary — pulling template from osm0sis/AnyKernel3"
-            rm -rf AK3_template
-            git clone https://github.com/osm0sis/AnyKernel3 AK3_template --depth=1
-            rm -rf AnyKernel3/META-INF AnyKernel3/tools
-            cp -a AK3_template/META-INF AnyKernel3/
-            if [ -d AK3_template/tools ]; then
-              cp -a AK3_template/tools AnyKernel3/
-            fi
-            rm -rf AK3_template
-          fi
-
-          # Hard check
-          if [ ! -f AnyKernel3/META-INF/com/google/android/update-binary ]; then
-            echo "❌ update-binary still missing — cannot produce flashable zip"
-            find AnyKernel3 -maxdepth 4 -type f | sort | head -n 200 || true
-            exit 1
-          fi
-
-          chmod 0755 AnyKernel3/META-INF/com/google/android/update-binary || true
-          chmod 0755 AnyKernel3/META-INF/com/google/android/update-binary-installer || true
           rm -rf ./AnyKernel3/.git
+          # Ensure recovery update-binary exists (flashable ZIP)
+          if [ ! -f "AnyKernel3/META-INF/com/google/android/update-binary" ]; then
+            echo "⚠️ update-binary missing in mrcxlinux/AnyKernel3 — pulling META-INF from osm0sis/AnyKernel3"
+            rm -rf /tmp/ak3_meta && git clone --depth=1 https://github.com/osm0sis/AnyKernel3 /tmp/ak3_meta
+            mkdir -p AnyKernel3/META-INF
+            cp -a /tmp/ak3_meta/META-INF/* AnyKernel3/META-INF/ || true
+          fi
+          test -f "AnyKernel3/META-INF/com/google/android/update-binary" || (echo "❌ update-binary still missing"; ls -la AnyKernel3/META-INF/com/google/android || true; exit 1)
           mkdir -p kernel_workspace/kernel_platform/out/Final-Image-Find/
           
           dir1=""
@@ -1059,103 +884,7 @@ jobs:
             echo "❌ anykernel.sh not found at $AK"
             exit 1
           fi
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          ak_path = Path("AnyKernel3/anykernel.sh")
-          s = ak_path.read_text(encoding="utf-8", errors="ignore").splitlines(True)
-
-          # Remove noisy warnings (no value after successful flash)
-          remove_phrases = [
-              "No warranty",
-              "Flash at your own risk",
-              "Backup boot",
-              "Backup init_boot",
-              "Backup boot / init_boot",
-              "Backup boot/init_boot",
-              "Backup boot / init_boot / recovery",
-          ]
-          cleaned = []
-          for ln in s:
-              if "ui_print" in ln and any(p in ln for p in remove_phrases):
-                  continue
-              cleaned.append(ln)
-          s = cleaned
-
-          start_idx = None
-          end_idx = None
-
-          # Locate original author banner block (chenhua13) used in WildKernels scripts
-          for i, line in enumerate(s):
-              if 'ui_print "chenhua13 Kernel' in line:
-                  start_idx = i
-                  break
-
-          if start_idx is not None:
-              for j in range(start_idx, len(s)):
-                  if 'ksu_supported' in s[j] and 'ui_print' in s[j]:
-                      end_idx = j
-                      break
-
-          PROFILE = "${{ github.event.inputs.PROFILE }}".strip() or "optimal"
-          SUSFS = "${{ github.event.inputs.SUSFS }}".strip()
-          base = "${{ env.KERNEL_NAME }}".strip() or "kernel"
-          # Display kernel name exactly as provided by KERNEL_NAME
-          tag = base
-          RUNNUM = "${{ github.run_number }}".strip()
-          SHA = "${{ github.sha }}".strip()
-          BUILD = f"{RUNNUM}-{SHA[:7]}" if SHA else RUNNUM
-
-          ascii_block = 'ui_print "===================================================="\nui_print "                   __   __  __ "\nui_print "                  \\\\ \\\\ / //_ |"\nui_print "                   \\\\ V /   | |"\nui_print "                     > <    | |"\nui_print "                   / . \\\\   | |"\nui_print "                 /_/ \\\\_\\\\  |_|"\nui_print "===================================================="\n'
-
-          banner = []
-          banner.append('ui_print " "\n')
-          banner.append(ascii_block)
-          banner.append('ui_print " "\n')
-          banner.append('ui_print "PJZ110 | SukiSU Ultra Kernel"\n')
-          banner.append(f'ui_print "Kernel:{tag}"\n')
-          banner.append(f'ui_print "Build  : {BUILD}"\n')
-          banner.append('ui_print "Builder: @Ox1d3x3"\n')
-          banner.append('ui_print "Credits: chenhua13 / mrcxlinux"\n')
-          banner.append('ui_print " "\n')
-          banner.append('DEVICE="$(getprop ro.product.device 2>/dev/null)"; [ -z "$DEVICE" ] && DEVICE="$(getprop ro.product.name 2>/dev/null)"\n')
-          banner.append('PATCH="$(getprop ro.build.version.security_patch 2>/dev/null)"\n')
-          banner.append('ANDROID="$(getprop ro.build.version.release 2>/dev/null)"\n')
-          banner.append('SLOT_SUFFIX="$(getprop ro.boot.slot_suffix 2>/dev/null)"\n')
-          banner.append('if [ -z "$SLOT_SUFFIX" ]; then SLOT="$(getprop ro.boot.slot 2>/dev/null)"; [ -n "$SLOT" ] && SLOT_SUFFIX="_$SLOT"; fi\n')
-          banner.append('if [ -z "$SLOT_SUFFIX" ]; then SLOT_SUFFIX="$(grep -oE "androidboot.slot_suffix=[^ ]+" /proc/cmdline 2>/dev/null | head -n1 | cut -d= -f2)"; fi\n')
-          banner.append('if [ -z "$SLOT_SUFFIX" ]; then SLOT="$(grep -oE "androidboot.slot=[^ ]+" /proc/cmdline 2>/dev/null | head -n1 | cut -d= -f2)"; [ -n "$SLOT" ] && SLOT_SUFFIX="_$SLOT"; fi\n')
-          banner.append('ui_print "Device : $DEVICE"\n')
-          banner.append('ui_print "Android: $ANDROID"\n')
-          banner.append('ui_print "Patch  : $PATCH"\n')
-          banner.append('if [ -n "$SLOT_SUFFIX" ]; then ui_print "Slot   : $SLOT_SUFFIX"; fi\n')
-
-          # Open GitHub page after flash (works when flashing in Android; safe no-op elsewhere)
-          banner.append('if [ -n "$(command -v cmd 2>/dev/null)" ]; then\n')
-          banner.append('  (cmd activity start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true\n')
-          banner.append('elif [ -n "$(command -v am 2>/dev/null)" ]; then\n')
-          banner.append('  (am start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true\n')
-          banner.append('fi\n')
-
-          banner_text = "".join(banner)
-
-          if start_idx is not None and end_idx is not None and end_idx >= start_idx:
-              s[start_idx:end_idx+1] = [banner_text]
-          else:
-              inserted = False
-              for i, line in enumerate(s):
-                  if 'abort "  -> Non-GKI device, abort."' in line:
-                      s.insert(i, banner_text)
-                      inserted = True
-                      break
-              if not inserted:
-                  s.insert(0, banner_text)
-
-          ak_path.write_text("".join(s), encoding="utf-8")
-          PY
-
-
+          # (python customization removed for YAML safety)
       - name: 🧠 Set Artifact Name
         id: set_name
         run: |
