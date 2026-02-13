@@ -71,18 +71,16 @@ jobs:
       - name: 🧾 Checkout
         uses: actions/checkout@v4
 
-        
-      - name: Free Disk Space (Ubuntu)
+      - name: 🧹 Free disk space (safe)
         uses: jlumbroso/free-disk-space@main
         with:
-          tool-cache: false     # keep toolcache to avoid breaking builds
+          tool-cache: false
           android: true
           dotnet: true
           haskell: true
           large-packages: true
           docker-images: true
           swap-storage: true
-
 
       - name: 🔧 Dependencies
         run: |
