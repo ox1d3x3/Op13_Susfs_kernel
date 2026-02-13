@@ -71,14 +71,18 @@ jobs:
       - name: 🧾 Checkout
         uses: actions/checkout@v4
 
-      - name: 🧹 Maximize disk space
-        uses: easimon/maximize-build-space@v10
+        
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
         with:
-          root-reserve-mb: 4096
-          temp-reserve-mb: 4096
-          remove-dotnet: true
-          remove-android: true
-          remove-haskell: true
+          tool-cache: false     # keep toolcache to avoid breaking builds
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
 
       - name: 🔧 Dependencies
         run: |
