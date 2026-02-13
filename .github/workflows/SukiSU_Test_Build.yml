@@ -749,7 +749,7 @@ jobs:
           fi
 
           echo "✅ PTY/devpts OK"
-if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
+          if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
           
             if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
           
