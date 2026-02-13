@@ -1,10 +1,11 @@
 ---
-name: 🧬 Build SukiSU Ultra - Test
+name: 🧬 Build SukiSU Ultra -TEST
 
 env:
   TZ: Australia/Perth
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
+  # This is only used for naming (does not affect the build)
   KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
 
 on:
@@ -169,7 +170,7 @@ jobs:
         run: |
           set -e
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends             bc bison flex git git-lfs curl wget rsync zip unzip jq             python3 python3-pip             build-essential libssl-dev libelf-dev dwarves             ccache             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          sudo apt-get install -y --no-install-recommends             bc bison flex git git-lfs curl wget rsync zip unzip jq             python3 python3-pip             build-essential libssl-dev libelf-dev dwarves libtinfo6 libncurses6             ccache             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
           git lfs install
 
       - name: ⚡ Setup ccache
@@ -232,18 +233,34 @@ jobs:
           fi
 
           CLANG_BIN="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/$CLANG_DIR/bin"
-          echo "Using clang: $CLANG_BIN"
-          echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
+          echo "Using clang bin: $CLANG_BIN"
+          ls -la "$CLANG_BIN" | head -n 50 || true
 
-          # Some trees have only clang-XX — ensure `clang` is callable
+          # Some trees ship clang as clang.real or clang-XX only.
           if [ ! -x "$CLANG_BIN/clang" ]; then
-            CAND="$(ls -1 "$CLANG_BIN"/clang-* 2>/dev/null | grep -v 'clang\+\+' | head -n1 || true)"
-            if [ -n "$CAND" ]; then
-              ln -sf "$(basename "$CAND")" "$CLANG_BIN/clang"
+            if [ -x "$CLANG_BIN/clang.real" ]; then
+              ln -sf "clang.real" "$CLANG_BIN/clang"
+            else
+              CAND="$(ls -1 "$CLANG_BIN"/clang-[0-9]* 2>/dev/null | head -n1 || true)"
+              if [ -z "$CAND" ]; then
+                CAND="$(ls -1 "$CLANG_BIN"/clang-* 2>/dev/null | grep -v 'clang\+\+' | head -n1 || true)"
+              fi
+              if [ -n "$CAND" ]; then
+                ln -sf "$(basename "$CAND")" "$CLANG_BIN/clang"
+              fi
             fi
           fi
 
-          # Discover rustc/pahole dynamically (different trees use different versions)
+          if [ ! -x "$CLANG_BIN/clang" ]; then
+            echo "❌ clang executable not found in $CLANG_BIN"
+            exit 1
+          fi
+
+          # Persist PATH across steps (more reliable than only export)
+          echo "$CLANG_BIN" >> "$GITHUB_PATH"
+          echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
+
+          # Optional tools (tree-dependent)
           RUSTC_BIN="$(find prebuilts/rust/linux-x86 -type f -path '*/bin/rustc' 2>/dev/null | sort | tail -n1 || true)"
           if [ -n "$RUSTC_BIN" ]; then
             echo "RUSTC_BIN=$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/$RUSTC_BIN" >> "$GITHUB_ENV"
@@ -251,16 +268,10 @@ jobs:
 
           if [ -x "prebuilts/kernel-build-tools/linux-x86/bin/pahole" ]; then
             echo "PAHOLE_BIN=$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin/pahole" >> "$GITHUB_ENV"
-          else
-            PAHOLE_BIN="$(find prebuilts -type f -name pahole 2>/dev/null | head -n1 || true)"
-            if [ -n "$PAHOLE_BIN" ]; then
-              echo "PAHOLE_BIN=$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/$PAHOLE_BIN" >> "$GITHUB_ENV"
-            fi
           fi
 
-          export PATH="$CLANG_BIN:$PATH"
-          command -v clang
-          clang --version
+          # Verify it runs (if this fails, the error will be visible in logs)
+          "$CLANG_BIN/clang" --version
 
       - name: "🧩 Setup SukiSU Ultra (builtin)"
         run: |
