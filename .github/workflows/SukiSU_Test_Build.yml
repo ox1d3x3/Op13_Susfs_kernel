@@ -1,5 +1,5 @@
 ---
-name: Build SukiSU Ultra - Test
+name: Build SukiSU Ultra-Teset
 
 env:
   TZ: Australia/Perth
@@ -57,7 +57,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     steps:
       - name: 🧾 Checkout
@@ -94,15 +94,6 @@ jobs:
           chmod +x "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - name: 🔧 Install Neutron clang (recommended)
-        run: |
-          set -e
-          CURL_OPTS="--retry 5 --retry-delay 2"
-          mkdir -p "$HOME/toolchains/neutron-clang"
-          cd "$HOME/toolchains/neutron-clang"
-          bash <(curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S
-          echo "✅ Neutron clang installed"
-
       - name: ⬇️ Clone Kernel Source
         run: |
           set -e
@@ -123,6 +114,16 @@ jobs:
         run: |
           set -e
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+
+          # ✅ Use in-tree AOSP clang shipped with the manifest (no GLIBC mismatch)
+          CLANG_DIR="$(find prebuilts/clang/host/linux-x86 -maxdepth 1 -type d -name 'clang-*' | sort | tail -n1)"
+          if [ -z "$CLANG_DIR" ]; then
+            echo "❌ Could not find prebuilts clang in the tree!"
+            ls -la prebuilts/clang/host/linux-x86 || true
+            exit 1
+          fi
+          echo "Using clang: $CLANG_DIR"
+          export PATH="$PWD/$CLANG_DIR/bin:$PATH"
           curl -fsSL https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s builtin
 
       - name: 📦 Apply SUSFS (optional)
@@ -200,8 +201,7 @@ jobs:
           export ARCH=arm64
           export LLVM=1
           export LLVM_IAS=1
-          export PATH="$HOME/toolchains/neutron-clang/bin:$PATH"
-          export CC="ccache clang"
+                    export CC="ccache clang"
 
           make -C common O=out gki_defconfig
 
