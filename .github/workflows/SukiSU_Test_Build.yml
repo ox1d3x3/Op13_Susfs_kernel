@@ -1,5 +1,5 @@
 ---
-name: Build SukiSU Ultra-Test
+name: Build SukiSU Ultra-test
 env:
   TZ: Australia/Perth
   ANDROID_VERSION: android15
@@ -531,10 +531,20 @@ jobs:
           defcfg_set IKCONFIG_PROC y
 
           # Terminal/PTTY safety (prevents terminal apps failing/crashing on some builds)
+          # Some Android/GKI trees gate devpts behind PTY, and some may rename/inline symbols.
           defcfg_set TTY y
+          defcfg_set PTY y
           defcfg_set UNIX98_PTYS y
-          defcfg_set DEVPTS_FS y
-          defcfg_set DEVPTS_MULTIPLE_INSTANCES y
+
+          # DEVPTS symbol detection (fallback if tree differs)
+          if grep -Rqs --include='Kconfig*' '^\s*config\s\+DEVPTS_FS\b' ./common; then
+            defcfg_set DEVPTS_FS y
+            defcfg_set DEVPTS_MULTIPLE_INSTANCES y
+          elif grep -Rqs --include='Kconfig*' '^\s*config\s\+DEVPTS\b' ./common; then
+            defcfg_set DEVPTS y
+          else
+            echo "⚠️  DEVPTS config symbol not found in Kconfig (tree-specific). Skipping explicit DEVPTS enable."
+          fi
 
           # KPM
           if [ "${{ github.event.inputs.KPM }}" = "On" ]; then
@@ -702,29 +712,44 @@ jobs:
           
           echo "---- Effective config (KSU/KPM/SUSFS) ----"
           
-          grep -nE '^CONFIG_KSU(=|_)|^CONFIG_KPM(=|_)|^CONFIG_KSU_SUSFS(=|_)' out/.config || true
-
-          
-          # Terminal apps sanity (PTY/devpts)
-          
+          grep -nE '^CONFIG_KSU(=|_)|^CONFIG_KPM(=|_)|^CONFIG_KSU_SUSFS(=|_)' out/.config || true          # Terminal apps sanity (PTY/devpts)
           echo "---- Terminal/PTTY sanity ----"
-          
-          for sym in CONFIG_TTY CONFIG_UNIX98_PTYS CONFIG_DEVPTS_FS CONFIG_DEVPTS_MULTIPLE_INSTANCES; do
-          
-            if ! grep -q "^${sym}=y" out/.config; then
-          
-              echo "❌ Missing ${sym}=y in out/.config — terminal emulators may crash or fail to start."
-          
-              exit 1
-          
-            fi
-          
-          done
-          
-          echo "✅ PTY/devpts OK"
 
-          
-          if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
+          must_y() {
+            local sym="$1"
+            if ! grep -q "^${sym}=y" out/.config; then
+              echo "❌ Missing ${sym}=y in out/.config — terminal emulators may crash or fail to start."
+              exit 1
+            fi
+          }
+
+          must_y CONFIG_TTY
+          must_y CONFIG_PTY
+          must_y CONFIG_UNIX98_PTYS
+
+          # DEVPTS symbol may differ by tree; validate if present/known
+          if grep -q "^CONFIG_DEVPTS_FS=" out/.config; then
+            must_y CONFIG_DEVPTS_FS
+            if grep -q "^CONFIG_DEVPTS_MULTIPLE_INSTANCES=" out/.config; then
+              must_y CONFIG_DEVPTS_MULTIPLE_INSTANCES
+            fi
+          elif grep -q "^CONFIG_DEVPTS=" out/.config; then
+            must_y CONFIG_DEVPTS
+          else
+            # If the symbol exists in Kconfig but isn't in .config, that's a real issue.
+            if grep -Rqs --include='Kconfig*' '^\s*config\s\+DEVPTS_FS\b' .; then
+              echo "❌ Kconfig contains DEVPTS_FS but it didn't land in out/.config. Check dependencies (PTY/UNIX98_PTYS) and defconfig edits."
+              exit 1
+            elif grep -Rqs --include='Kconfig*' '^\s*config\s\+DEVPTS\b' .; then
+              echo "❌ Kconfig contains DEVPTS but it didn't land in out/.config. Check dependencies and defconfig edits."
+              exit 1
+            else
+              echo "⚠️  DEVPTS symbol not present in this tree's Kconfig; skipping strict DEVPTS check."
+            fi
+          fi
+
+          echo "✅ PTY/devpts OK"
+if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
           
             if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
           
