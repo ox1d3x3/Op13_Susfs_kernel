@@ -5,7 +5,6 @@ env:
   TZ: Australia/Perth
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
-  # This is only used for naming (does not affect the build)
   KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
 
 on:
