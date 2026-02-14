@@ -409,20 +409,32 @@ jobs:
 
           # ---------- helpers ----------
           apply_patch_multi() {
-          local patch_file="$1"
-          local target_dir="$2"
+            local patch_file="$1"
+            local target_dir="$2"
 
-          # try a few strip levels, but NEVER with fuzz (prevents 'random' broken builds)
-          for p in 0 1 2 3; do
-          if (cd "${target_dir}" && patch -p${p} --fuzz=0 --dry-run -f < "${patch_file}" >/dev/null 2>&1); then
-          echo "✅ Applying $(basename "${patch_file}") in ${target_dir} with -p${p}"
-          (cd "${target_dir}" && patch -p${p} --fuzz=0 --forward --batch < "${patch_file}")
-          return 0
-          fi
-          done
-          return 1
+            # IMPORTANT: patch_file can be relative to the caller. We cd into target_dir,
+            # so we must resolve to an absolute path first (otherwise "No such file" happens).
+            local patch_file_abs=""
+            if command -v realpath >/dev/null 2>&1; then
+              patch_file_abs="$(realpath -m "${patch_file}" 2>/dev/null || true)"
+            fi
+            if [ -z "${patch_file_abs}" ] && command -v readlink >/dev/null 2>&1; then
+              patch_file_abs="$(readlink -f "${patch_file}" 2>/dev/null || true)"
+            fi
+            if [ -z "${patch_file_abs}" ]; then
+              patch_file_abs="${patch_file}"
+            fi
+
+            # try a few strip levels, but NEVER with fuzz (prevents 'random' broken builds)
+            for p in 0 1 2 3; do
+              if (cd "${target_dir}" && patch -p${p} --fuzz=0 --dry-run -f < "${patch_file_abs}" >/dev/null 2>&1); then
+                echo "✅ Applying $(basename "${patch_file_abs}") in ${target_dir} with -p${p}"
+                (cd "${target_dir}" && patch -p${p} --fuzz=0 --forward --batch < "${patch_file_abs}")
+                return 0
+              fi
+            done
+            return 1
           }
-
           apply_all_patches_best_effort() {
           local patch_root="$1"
           local target_dir="$2"
