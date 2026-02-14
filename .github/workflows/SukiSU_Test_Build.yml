@@ -1,5 +1,5 @@
 ---
-name: Build Greatest Kernel (OP13 GKI)
+name: BUILD_TEST
 permissions:
   contents: write
 env:
