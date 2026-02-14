@@ -1,217 +1,211 @@
-name: ⚡ SukiSU Ultra-TEST
+name: ⚡ SukiSU Ultra - OnePlus 13 (Auto-Fix)
 
 permissions:
   contents: write
   actions: write
 
 env:
+  # 🌍 Global Settings
   TZ: Asia/Shanghai
-  # Ultra Branding
-  RELEASE_PREFIX: "SukiSU Ultra"
-  # Target Specifics
-  TARGET_DEVICE: "OnePlus 13"
-  TARGET_ANDROID: "android15"
-  TARGET_KERNEL: "6.6"
+  RELEASE_NAME: "SukiSU Ultra: OnePlus 13"
+  
+  # 📱 Device Specifics (Hardcoded for OP13)
+  DEVICE_MODEL: "OnePlus 13"
+  ANDROID_VER: "android15"
+  KERNEL_VER: "6.6"
+  # The exact kernel tag you provided
+  KERNEL_TAG: "android15-8-g29d86c5fc9dd-abogki428889875-4k"
 
 on:
   workflow_dispatch:
     inputs:
-      make_release:
-        description: '📦 Create SukiSU Ultra Release?'
-        required: true
-        type: boolean
-        default: true
       clean_build:
-        description: '🧹 Clean Build (No ccache for max stability)'
+        description: '🧹 Wipe Cache (Clean Build)'
         type: boolean
         default: false
       susfs_version:
-        description: '🛡️ SUSFS Version/Hash (Leave empty for auto)'
+        description: '🛡️ SUSFS Version (Leave empty for auto)'
         type: string
         default: ''
 
 jobs:
-  configure-ultra:
+  # -----------------------------------------------------------------------
+  # JOB 1: CONFIGURATION & SETUP
+  # -----------------------------------------------------------------------
+  setup-ultra:
+    name: ⚙️ Initialize Ultra Build
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-      device_count: ${{ steps.set-matrix.outputs.count }}
+      matrix: ${{ steps.gen-matrix.outputs.matrix }}
     steps:
-      - name: 📥 Checkout Code
+      - name: 📥 Checkout Source (Full)
         uses: actions/checkout@v4
         with:
-          sparse-checkout: |
-            configs/
-          sparse-checkout-cone-mode: false
+          fetch-depth: 1 # Get everything to avoid "file not found" errors
 
-      - name: 💎 Generate Ultra Configuration
-        id: set-matrix
+      - name: 💎 Generate SukiSU Ultra Config
+        id: gen-matrix
         shell: bash
         run: |
-          set -euo pipefail
-          echo "::group::🔍 Locating OnePlus 13 Config"
+          echo "::group::🔍 SukiSU Intelligence: Config Search"
           
-          # 1. Find the Config File for OnePlus 13 / Android 15 / Kernel 6.6
-          # We look for files containing "OnePlus 13" and "android15"
-          
-          TARGET_FILE=""
-          mapfile -t all_json_files < <(find configs/ -name "*.json" -print0 | xargs -0 -n1)
-          
-          for file in "${all_json_files[@]}"; do
-            if [ -f "$file" ]; then
-              # Check if this file matches our Target Specs
-              if jq -e ".model == \"${{ env.TARGET_DEVICE }}\" and .android_version == \"${{ env.TARGET_ANDROID }}\" and .kernel_version == \"${{ env.TARGET_KERNEL }}\"" "$file" > /dev/null; then
-                TARGET_FILE="$file"
-                echo "✅ Found Base Config: $file"
-                break
-              fi
-            fi
-          done
-          
-          if [ -z "$TARGET_FILE" ]; then
-            echo "::error::❌ Could not find a config file for ${{ env.TARGET_DEVICE }} ${{ env.TARGET_ANDROID }} ${{ env.TARGET_KERNEL }}"
-            exit 1
+          # 1. Search for an existing config file recursively
+          CONFIG_FILE=""
+          if [ -d "configs" ]; then
+             FOUND=$(find configs -name "*.json" -print0 | xargs -0 grep -l "\"model\": \"${{ env.DEVICE_MODEL }}\"" || true)
+             if [ ! -z "$FOUND" ]; then
+                CONFIG_FILE=$(echo "$FOUND" | head -n 1)
+                echo "✅ Found existing config: $CONFIG_FILE"
+             fi
+          fi
+
+          # 2. FAIL-SAFE: If no config exists, create the "Ultra" config manually
+          if [ -z "$CONFIG_FILE" ]; then
+            echo "⚠️ No config found. Generating SukiSU Ultra Config from scratch..."
+            
+            # Create a temporary config structure based on your requirements
+            cat <<EOF > sukisu_ultra_config.json
+            {
+              "model": "${{ env.DEVICE_MODEL }}",
+              "android_version": "${{ env.ANDROID_VER }}",
+              "kernel_version": "${{ env.KERNEL_VER }}",
+              "repo": "https://github.com/OnePlusOSS/android_kernel_oneplus_sm8750.git",
+              "branch": "${{ env.KERNEL_TAG }}",
+              "boot_img": "vendor_boot.img" 
+            }
+          EOF
+            CONFIG_FILE="sukisu_ultra_config.json"
+            echo "✅ Created fail-safe config: $CONFIG_FILE"
           fi
           
-          # 2. Inject "Ultra" Settings
-          # We force: KSUN (Next), Dev branch, SusFS=true, HMBIRD=true, O3 optimization hints
+          # 3. Read the base config
+          BASE_JSON=$(jq -c '.' "$CONFIG_FILE")
           
-          echo "::group::⚙️  Injecting SukiSU Ultra Features"
+          # 4. Inject ULTRA Features (SusFS, KSU Next, HMBIRD, LZ4)
+          # We force these settings regardless of what the file says
+          ULTRA_JSON=$(echo "$BASE_JSON" | jq -c '
+            . + {
+              "ksu_type": "KSUN",
+              "ksu_hash": "dev",
+              "susfs": true,
+              "hmbird": true,
+              "lz4_ramdisk": true,
+              "lto": true
+            }
+          ')
           
-          # Base config
-          BASE_JSON=$(jq -c '.' "$TARGET_FILE")
+          echo "📝 Final Configuration:"
+          echo "$ULTRA_JSON" | jq .
           
-          # The Ultra Matrix Object
-          # We merge the base config with our hardcoded overrides
-          ULTRA_MATRIX=$(jq -n \
-            --argjson base "$BASE_JSON" \
-            --arg ksu_type "KSUN" \
-            --arg ksu_hash "dev" \
-            --argjson susfs true \
-            --argjson hmbird true \
-            --argjson lz4 true \
-            '$base + {
-              ksu_type: $ksu_type, 
-              ksu_hash: $ksu_hash, 
-              susfs: $susfs,
-              hmbird: $hmbird,
-              lz4_ramdisk: $lz4
-            }' \
-          )
+          # 5. Output for Matrix
+          # We wrap it in an array so the matrix strategy can read it
+          MATRIX_JSON="[$ULTRA_JSON]"
+          WRAPPED=$(jq -n --argjson items "$MATRIX_JSON" '{ include: $items }')
+          echo "matrix=$(jq -c . <<< "$WRAPPED")" >> "$GITHUB_OUTPUT"
           
-          # Wrap it for the matrix strategy (array of 1)
-          FINAL_JSON="[$ULTRA_MATRIX]"
-          
-          echo "📝 Ultra Config Generated:"
-          echo "$FINAL_JSON" | jq .
-          
-          WRAPPED=$(jq -n --argjson items "$FINAL_JSON" '{ include: $items }')
-          
-          echo "matrix=$(jq -c . <<< "$wrapped")" >> "$GITHUB_OUTPUT"
-          echo "count=1" >> "$GITHUB_OUTPUT"
           echo "::endgroup::"
 
+  # -----------------------------------------------------------------------
+  # JOB 2: BUILD KERNEL
+  # -----------------------------------------------------------------------
   build-ultra:
-    name: 🚀 Build SukiSU Ultra
-    needs: configure-ultra
+    name: 🚀 Build (OnePlus 13)
+    needs: setup-ultra
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.configure-ultra.outputs.matrix) }}
-    outputs:
-      ksun_ver: ${{ steps.build-stat.outputs.ksu_version }}
+      matrix: ${{ fromJSON(needs.setup-ultra.outputs.matrix) }}
+    
     steps:
-      # --- CLEANUP PHASE (CRITICAL FOR STABILITY) ---
-      - name: 🧹 Deep Space Cleanup
+      # --- SPACE CLEANUP (PREVENT DISK FULL) ---
+      - name: 🧹 Deep Clean (Pre-Build)
+        uses: docker://alpine:latest
+        with:
+          args: /bin/sh -c "rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true"
+      
+      - name: 🧹 Apt Clean
         run: |
-          echo "::group::Removing Unnecessary Software"
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo apt-get clean
           docker rmi $(docker images -q) 2>/dev/null || true
-          echo "✅ Disk Space Optimized"
-          echo "::endgroup::"
 
-      - name: 📥 Checkout Source
+      # --- CHECKOUT & TOOLS ---
+      - name: 📥 Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      # --- DEPENDENCY PHASE ---
-      - name: 🛠️ Install Build Tools
+      - name: 🛠️ Install Ultra Dependencies
         run: |
-          sudo apt-get -o Acquire::Retries=3 update -qq
+          sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            git curl ca-certificates build-essential clang lld flex bison \
-            libelf-dev libssl-dev libncurses-dev zlib1g-dev liblz4-tool \
-            libxml2-utils rsync unzip dwarves file python3 ccache jq bc dos2unix kmod libdw-dev elfutils
-          echo "✅ Build Environment Ready"
-
-      # --- CACHE PHASE ---
-      - name: ⚡ Configure Ultra CCache
+            git curl build-essential clang lld flex bison libelf-dev \
+            libssl-dev libncurses-dev zlib1g-dev liblz4-tool libxml2-utils \
+            rsync unzip dwarves file python3 ccache jq bc dos2unix kmod
+          
+      # --- CACHE ---
+      - name: ⚡ CCache Setup
         if: ${{ inputs.clean_build != true }}
-        run: |
-          if command -v ccache >/dev/null 2>&1; then
-            # Use lower compression for speed (1) or higher for space (3-5). 
-            # For "Ultra" speed, we use 1.
-            ccache -o max_size=3.0G
-            ccache -o compression=true
-            ccache -o compression_level=1
-            ccache -s
-          fi
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.ccache
+          key: ${{ runner.os }}-ccache-${{ env.KERNEL_VER }}-${{ env.DEVICE_MODEL }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-${{ env.KERNEL_VER }}-
 
-      # --- CONFIG PREP ---
-      - name: 📝 Prepare Config
-        id: prepare_config
+      - name: ⚙️ Configure CCache
+        run: |
+          mkdir -p /home/runner/.ccache
+          export USE_CCACHE=1
+          export CCACHE_EXEC=/usr/bin/ccache
+          ccache -M 5G
+          ccache -o compression=true
+          ccache -z
+
+      # --- BUILD ---
+      - name: 📝 Prepare Config Object
+        id: prep_config
         shell: bash
         run: |
-          # The local action expects op_config_json WITHOUT ksu fields usually, 
-          # as it handles them via inputs. We strip them here just in case.
+          # The local action needs the config without KSU keys to avoid conflicts
           echo "config_json=$(jq -nc --argjson m '${{ toJSON(matrix) }}' '$m | del(.ksu_type, .ksu_hash)')" >> "$GITHUB_OUTPUT"
 
-      # --- BUILD EXECUTION ---
-      - name: 🔨 Compile SukiSU Kernel
+      - name: 🔨 Execute SukiSU Build Action
         id: build
         uses: ./.github/actions
         with:
-          op_config_json: ${{ steps.prepare_config.outputs.config_json }}
+          op_config_json: ${{ steps.prep_config.outputs.config_json }}
           ksu_type: ${{ matrix.ksu_type }}
           ksu_branch_or_hash: ${{ matrix.ksu_hash }}
           susfs_commit_hash_or_branch: ${{ inputs.susfs_version }}
-          optimize_level: O3  # FORCED ULTRA OPTIMIZATION
+          optimize_level: O3
           clean: ${{ inputs.clean_build }}
 
-      # --- STATS & VERIFICATION ---
-      - name: 📊 Build Verification
-        id: build-stat
+      # --- VERIFY & SUMMARY ---
+      - name: 📊 Verify Build
         if: always()
         run: |
-          if [ "${{ steps.build.outcome }}" = "success" ]; then
-            echo "✅ Build SUCCESS"
-            echo "ksu_version=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
-            
-            # Write Summary
-            echo "### ⚡ SukiSU Ultra Build Complete" >> $GITHUB_STEP_SUMMARY
-            echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
-            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
-            echo "| **Device** | ${{ matrix.model }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| **Optimization** | O3 (Max) |" >> $GITHUB_STEP_SUMMARY
-            echo "| **KernelSU** | Next v${{ steps.build.outputs.ksu_version }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| **SusFS** | Enabled |" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.build.outcome }}" == "success" ]; then
+            echo "✅ Build Passed!"
+            echo "::notice title=SukiSU Ultra::Build Successful for OnePlus 13"
           else
-            echo "❌ Build FAILED"
+            echo "❌ Build Failed"
             exit 1
           fi
 
-      # --- CLEANUP (Preserve CCache) ---
-      - name: 🧹 Post-Build Cleanup
+      # --- POST-BUILD CLEANUP ---
+      - name: 🧹 Cleanup Workspace
+        if: always()
         run: |
-          sudo rm -rf "$GITHUB_WORKSPACE/out" "$GITHUB_WORKSPACE/build" "$GITHUB_WORKSPACE/kernel/out"
-          if command -v ccache >/dev/null 2>&1; then ccache -s; fi
+          sudo rm -rf kernel out build
+          ccache -s
 
+  # -----------------------------------------------------------------------
+  # JOB 3: RELEASE
+  # -----------------------------------------------------------------------
   release-ultra:
-    needs: [build-ultra]
+    name: 📦 Publish Release
+    needs: build-ultra
     runs-on: ubuntu-latest
-    if: ${{ inputs.make_release }}
     permissions:
       contents: write
     steps:
@@ -220,38 +214,34 @@ jobs:
         with:
           path: ./artifacts
 
-      - name: 🏷️ Generate Release Tag
+      - name: 🏷️ Create Tag
         id: tag
         run: |
-          DATE_TAG="$(date +'%Y.%m.%d-Ultra')"
-          echo "tag_name=SukiSU-${DATE_TAG}" >> "$GITHUB_OUTPUT"
+          TAG="SukiSU-Ultra-OP13-$(date +'%Y%m%d-%H%M')"
+          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: 📦 Publish SukiSU Ultra Release
+      - name: 🚀 Publish to GitHub
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.tag.outputs.tag_name }}
-          name: "⚡ SukiSU Ultra: OnePlus 13 (A15/6.6) - ${{ steps.tag.outputs.tag_name }}"
+          name: "⚡ ${{ env.RELEASE_NAME }} - ${{ steps.tag.outputs.tag_name }}"
           body: |
-            # ⚡ SukiSU Ultra Kernel Release
+            # ⚡ SukiSU Ultra: OnePlus 13 Edition
             
             **The World's Best OnePlus 13 Kernel Build**
             
-            > **Build Date:** $(date)
-            > **Target:** OnePlus 13 (Android 15 / Kernel 6.6)
+            - **Device:** OnePlus 13 (SM8750)
+            - **Android:** 15
+            - **Kernel Base:** 6.6
+            - **Base Tag:** `${{ env.KERNEL_TAG }}`
             
-            ### 🔥 Ultra Features
-            - **Performance:** O3 Optimization + ThinLTO
-            - **Root:** KernelSU Next (Latest Dev)
-            - **Stealth:** SUSFS v2.0 Enabled
-            - **Scheduler:** HMBIRD Optimized
-            - **Compression:** LZ4 (Fast Boot)
+            ### 🛡️ Ultra Features
+            - ✅ **KernelSU Next:** Latest `dev` branch
+            - ✅ **SusFS v2.0:** Enabled & Optimized
+            - ✅ **Performance:** O3 Optimization + ThinLTO
+            - ✅ **Boot:** LZ4 Compression
             
-            ### 📥 Installation
-            1. Ensure you are on OxygenOS/ColorOS 15.
-            2. Flash via Kernel Flasher or FKM.
-            3. Enjoy balanced performance and battery life.
-            
-            *Built with ❤️ by SukiSU Workflow*
+            *Flash using Kernel Flasher or FKM.*
           files: |
             artifacts/**/*.zip
             artifacts/**/*.img
