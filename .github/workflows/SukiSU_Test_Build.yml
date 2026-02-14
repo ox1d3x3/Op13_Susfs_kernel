@@ -1,5 +1,5 @@
 ---
-name: SukiSU/KSU_Kernel_Builder
+name: KSU/SUki_Kernel
 permissions:
   contents: write
 env:
@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       make_release:
-        description: "🏷️ Create GitHub Release"
+        description: "🏷️ Create GitHub Release (WildKernel style)"
         required: true
         type: boolean
         default: false
@@ -35,7 +35,7 @@ on:
         type: boolean
         default: false
       optimize_level:
-        description: "🧠 Compiler optimization level"
+        description: "🧠 Compiler optimization level (WildKernel option)"
         required: true
         type: choice
         options: [O2, O3]
@@ -211,7 +211,7 @@ jobs:
       - name: ⚙️ Initialize ccache
         run: |
           echo "🔧 Initializing ccache..."
-          
+          # WildKernel option: clean build disables ccache usage
           if [ "${{ github.event.inputs.clean_build }}" = "true" ]; then
             export CCACHE_DISABLE=1
             echo "🧼 clean_build=true -> CCACHE_DISABLE=1"
@@ -294,15 +294,25 @@ jobs:
           case "${ROOT_SOL}" in
             sukisu-ultra)
               cd common
-              curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s "${ROOT_REF}"
+              if [ -n "${ROOT_REF}" ]; then
+                curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s "${ROOT_REF}"
+              else
+                curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash
+              fi
               cd ..
-              KSU_DIR="./KernelSU"
+              # setup.sh clones under common/
+              KSU_DIR="./common/KernelSU"
               ;;
             ksu-next)
               cd common
-              curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "${ROOT_REF}"
+              # KernelSU-Next doesn't always have a "next"/"builtin" branch; treat those as "use default"
+              if [ -z "${ROOT_REF}" ] || [ "${ROOT_REF}" = "next" ] || [ "${ROOT_REF}" = "builtin" ]; then
+                curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash
+              else
+                curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "${ROOT_REF}"
+              fi
               cd ..
-              KSU_DIR="./KernelSU-Next"
+              KSU_DIR="./common/KernelSU-Next"
               ;;
             none)
               echo "Skipping root integration."
@@ -321,6 +331,8 @@ jobs:
           if [ "${ROOT_SOL}" != "none" ]; then
             if [ -z "${KSU_DIR}" ] || [ ! -d "${KSU_DIR}" ]; then
               echo "::error::Root integration failed: expected ${KSU_DIR} to exist."
+              echo "Debug: searching for KernelSU directories under kernel_platform..."
+              find . -maxdepth 3 -type d -name "KernelSU*" -print || true
               exit 1
             fi
             if [ -d "${KSU_DIR}/.git" ]; then
@@ -338,9 +350,10 @@ jobs:
           cd "$GITHUB_WORKSPACE/kernel_workspace"
 
 
+
           echo "⬇️ Cloning required patches..."
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-            
+            # WildKernel option: allow overriding SusFS ref (branch or commit)
             SUSFS_REF="${{ github.event.inputs.susfs_branch_or_commit }}"
             if [ -z "${SUSFS_REF}" ]; then
               SUSFS_REF="gki-${ANDROID_VERSION}-${KERNEL_VERSION}"
@@ -1009,14 +1022,14 @@ jobs:
 
 
           echo "---- Build (LLVM_IAS=1) ----"
-          
+          # WildKernel option: clean build wipes out/ and ccache stats
           if [ "${{ github.event.inputs.clean_build }}" = "true" ]; then
             echo "🧼 clean_build=true -> removing out/ and resetting ccache..."
             rm -rf out build.log || true
             ccache -C || true
           fi
 
-          
+          # Optimization level (WildKernel option) + PROFILE naming
           # - If PROFILE=lowest -> -Os (size/battery bias)
           # - Else use optimize_level (O2 or O3)
           if [ "${{ github.event.inputs.PROFILE }}" = "lowest" ]; then
@@ -1139,7 +1152,7 @@ jobs:
           start_idx = None
           end_idx = None
 
-          
+          # Locate original author banner block (chenhua13) used in WildKernels scripts
           for i, line in enumerate(s):
               if 'ui_print "chenhua13 Kernel' in line:
                   start_idx = i
@@ -1260,7 +1273,7 @@ jobs:
         run: |
           set -euo pipefail
           DATE_TAG="$(date -u +%Y%m%d)"
-          # Keep it simple 
+          # Keep it simple and deterministic (WildKernel-style)
           TAG="OP13-${DATE_TAG}-r${GITHUB_RUN_NUMBER}-${{ github.event.inputs.PROFILE }}"
           echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
 
