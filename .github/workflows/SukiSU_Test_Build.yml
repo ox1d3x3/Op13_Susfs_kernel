@@ -1,5 +1,5 @@
 ---
-name: Build SukiSU Ultra
+name: Build SukiSU Ultra-Test
 env:
   TZ: Asia/Shanghai
   ANDROID_VERSION: android15
