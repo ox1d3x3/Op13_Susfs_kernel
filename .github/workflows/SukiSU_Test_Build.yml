@@ -1,5 +1,5 @@
 ---
-name: Build SukiSU Ultra-test
+name: Build SukiSU Ultra-Test
 env:
   TZ: Australia/Perth
   ANDROID_VERSION: android15
@@ -531,10 +531,17 @@ jobs:
           defcfg_set IKCONFIG_PROC y
 
           # Terminal/PTTY safety (prevents terminal apps failing/crashing on some builds)
-          # Some Android/GKI trees gate devpts behind PTY, and some may rename/inline symbols.
+          # Terminals rely on UNIX98 PTYs + devpts (/dev/ptmx). Some trees also expose LEGACY_PTYS or PTY.
           defcfg_set TTY y
-          defcfg_set PTY y
           defcfg_set UNIX98_PTYS y
+
+          # Only set PTY/LEGACY_PTYS if this tree actually defines them (avoid unknown-symbol noise)
+          if grep -Rqs --include='Kconfig*' '^\s*config\s\+PTY\b' ./common; then
+            defcfg_set PTY y
+          elif grep -Rqs --include='Kconfig*' '^\s*config\s\+LEGACY_PTYS\b' ./common; then
+            # Not required for Termux, but harmless
+            defcfg_set LEGACY_PTYS y
+          fi
 
           # DEVPTS symbol detection (fallback if tree differs)
           if grep -Rqs --include='Kconfig*' '^\s*config\s\+DEVPTS_FS\b' ./common; then
@@ -724,7 +731,10 @@ jobs:
           }
 
           must_y CONFIG_TTY
-          must_y CONFIG_PTY
+          # CONFIG_PTY is not present on all trees; only enforce if it exists.
+          if grep -q "^CONFIG_PTY=" out/.config; then
+            must_y CONFIG_PTY
+          fi
           must_y CONFIG_UNIX98_PTYS
 
           # DEVPTS symbol may differ by tree; validate if present/known
