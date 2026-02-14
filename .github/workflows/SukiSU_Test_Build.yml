@@ -1,4 +1,4 @@
-name: KSU/SUKI-TEST
+name: SUKI/KSU-TEST
 permissions:
   contents: write
 env:
@@ -453,6 +453,30 @@ jobs:
           fi
           done < <(find "${patch_root}" -type f \( -name "*.patch" -o -name "*.diff" \) -print0 | sort -z)
           }
+          apply_patches_with_grep_best_effort() {
+            local needle="$1"
+            local patch_root="$2"
+            local target_dir="$3"
+
+            if [ ! -d "${patch_root}" ]; then
+              echo "ℹ️ Patches dir not present (${patch_root}); skip grep-scan."
+              return 0
+            fi
+
+            mapfile -t PATCH_FILES < <(grep -RIl --include="*.patch" --include="*.diff" "${needle}" "${patch_root}" 2>/dev/null | sort -V -r || true)
+            if [ ${#PATCH_FILES[@]} -eq 0 ]; then
+              echo "ℹ️ No patches containing '${needle}' found under ${patch_root}"
+              return 0
+            fi
+
+            for patch_file in "${PATCH_FILES[@]}"; do
+              local abs_patch_file="$(pwd)/${patch_file}"
+              if [ -f "${abs_patch_file}" ]; then
+                apply_patch_multi "${abs_patch_file}" "${target_dir}" || true
+              fi
+            done
+          }
+
 
           # ---------- locate KernelSU sources ----------
           # Prefer KSU_DIR from previous step if set
@@ -491,12 +515,42 @@ jobs:
           (cd susfs4ksu && git checkout "${SUSFS_REF}")
           fi
 
-          KSU_ENABLE_PATCH="susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-          if [ ! -f "${KSU_ENABLE_PATCH}" ]; then
-          echo "::error::Missing expected KSU patch: ${KSU_ENABLE_PATCH}"
-          find susfs4ksu -maxdepth 5 -type f -name "*enable*susfs*.patch" -print || true
-          exit 1
+          pick_susfs_ksu_enable_patch() {
+            local ksu_dir="$1"
+            local want_next=0
+            if [[ "${ksu_dir}" == *"KernelSU-Next"* ]] || [[ "${ksu_dir}" == *"KernelSU_Next"* ]]; then
+              want_next=1
+            fi
+
+            local files=()
+            if [ "${want_next}" -eq 1 ]; then
+              mapfile -t files < <(find susfs4ksu/kernel_patches -maxdepth 4 -type f -name "*.patch" 2>/dev/null | grep -Ei 'enable.*susfs|susfs.*enable' | grep -Ei 'next|KernelSU-Next|KernelSU_Next' || true)
+            else
+              mapfile -t files < <(find susfs4ksu/kernel_patches -maxdepth 4 -type f -name "*.patch" 2>/dev/null | grep -Ei 'enable.*susfs|susfs.*enable' | grep -Ev -Ei 'next|KernelSU-Next|KernelSU_Next' || true)
+            fi
+
+            if [ ${#files[@]} -eq 0 ]; then
+              mapfile -t files < <(grep -RIl --include="*.patch" "KSU_SUSFS" susfs4ksu/kernel_patches 2>/dev/null || true)
+            fi
+
+            for f in "${files[@]}"; do
+              [ -f "${f}" ] || continue
+              if grep -q "KSU_SUSFS" "${f}"; then
+                echo "${f}"
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          KSU_ENABLE_PATCH="$(pick_susfs_ksu_enable_patch "${KSU_DIR}" || true)"
+          if [ -n "${KSU_ENABLE_PATCH}" ] && [ -f "${KSU_ENABLE_PATCH}" ]; then
+            echo "KernelSU enable patch (auto): ${KSU_ENABLE_PATCH}"
+          else
+            echo "⚠️ Could not find a suitable susfs4ksu KernelSU enable patch for this tree."
+            KSU_ENABLE_PATCH=""
           fi
+
 
           # Select the correct kernel patch for this tree
           KERNEL_PATCH_FILE="$(ls -1 susfs4ksu/kernel_patches 2>/dev/null | grep -E '^50_add_susfs_in_.*\.patch$' | grep -E "android15-6\.6|android15|6\.6" | head -n 1 || true)"
@@ -511,7 +565,11 @@ jobs:
           KERNEL_PATCH="susfs4ksu/kernel_patches/${KERNEL_PATCH_FILE}"
           echo "Kernel patch: ${KERNEL_PATCH}"
 
-          KSU_ENABLE_PATCH_ABS="$(pwd)/${KSU_ENABLE_PATCH}"
+          if [ -n "${KSU_ENABLE_PATCH}" ]; then
+            KSU_ENABLE_PATCH_ABS="$(pwd)/${KSU_ENABLE_PATCH}"
+          else
+            KSU_ENABLE_PATCH_ABS=""
+          fi
           KERNEL_PATCH_ABS="$(pwd)/${KERNEL_PATCH}"
 
           # Copy helper sources/headers (safe + idempotent)
@@ -530,25 +588,50 @@ jobs:
           apply_all_patches_best_effort "wk_patches/experimental/susfs" "${COMMON_DIR}"
           fi
           fi
-
           # ---------- KernelSU-side SUSFS ----------
-          if grep -Rqs --include='Kconfig*' '^\s*config\s\+KSU_SUSFS\b' "${KSU_DIR}"; then
-          echo "✅ KernelSU already contains KSU_SUSFS Kconfig; skipping KernelSU patch."
+          if [ -d "${KSU_DIR}" ]; then
+            echo "KernelSU dir: ${KSU_DIR}"
+            if git -C "${KSU_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+              echo "KernelSU git HEAD: $(git -C "${KSU_DIR}" rev-parse --short HEAD)"
+            fi
+
+            SIMON_KSU_OK=0
+            if [ -n "${KSU_ENABLE_PATCH_ABS}" ] && [ -f "${KSU_ENABLE_PATCH_ABS}" ]; then
+              echo "Applying KernelSU SUSFS enable patch (strict)…"
+              if apply_patch_multi "${KSU_ENABLE_PATCH_ABS}" "${KSU_DIR}"; then
+                SIMON_KSU_OK=1
+              fi
+            else
+              echo "ℹ️ No susfs4ksu KernelSU enable patch selected; skipping direct apply."
+            fi
+
+            if [ "${SIMON_KSU_OK}" -eq 0 ]; then
+              echo "⚠️ susfs4ksu KernelSU patch did not apply cleanly (or not found)."
+              echo "   Pulling WildKernels SUSFS patches for KernelSU / KernelSU-Next (best-effort)…"
+
+              if [ ! -d wk_patches ]; then
+                git clone --depth=1 https://github.com/WildKernels/kernel_patches wk_patches
+              fi
+
+              echo "🔧 Applying WildKernels base patches that introduce KSU_SUSFS (newest-first)…"
+              apply_patches_with_grep_best_effort "KSU_SUSFS" "wk_patches" "${KSU_DIR}"
+
+              echo "🔧 Trying WildKernels fix patches under: wk_patches/next/susfs_fix_patches"
+              apply_all_patches_best_effort "wk_patches/next/susfs_fix_patches" "${KSU_DIR}" || true
+
+              echo "🔧 Trying WildKernels fix patches under: wk_patches/ksu/susfs_fix_patches"
+              apply_all_patches_best_effort "wk_patches/ksu/susfs_fix_patches" "${KSU_DIR}" || true
+
+              if [ -n "${KSU_ENABLE_PATCH_ABS}" ] && [ -f "${KSU_ENABLE_PATCH_ABS}" ]; then
+                echo "🔁 Retrying susfs4ksu KernelSU enable patch after WildKernels patches…"
+                apply_patch_multi "${KSU_ENABLE_PATCH_ABS}" "${KSU_DIR}" || true
+              fi
+            fi
           else
-          echo "Applying KernelSU SUSFS enable patch (strict)…"
-          if ! apply_patch_multi "${KSU_ENABLE_PATCH_ABS}" "${KSU_DIR}"; then
-          echo "⚠️ simonpunk KernelSU patch did not apply cleanly to this KernelSU revision."
-          echo "   Pulling WildKernels SUSFS fix patches for KernelSU-Next (best-effort)…"
-          [ -d wk_patches ] || git clone --depth 1 https://github.com/WildKernels/kernel_patches.git wk_patches
-
-          # These folders are referenced by KernelSU-Next community for SUSFS compatibility.
-          apply_all_patches_best_effort "wk_patches/next/susfs_fix_patches" "${KSU_DIR}"
-          apply_all_patches_best_effort "wk_patches/ksu/susfs_fix_patches" "${KSU_DIR}"
-
-          # Retry once after fixes
-          apply_patch_multi "${KSU_ENABLE_PATCH_ABS}" "${KSU_DIR}" || true
+            echo "::error::KernelSU directory not found at ${KSU_DIR}"
+            exit 1
           fi
-          fi
+
 
           # ---------- final hard checks ----------
           if ! grep -Rqs --include='Kconfig*' '^\s*config\s\+KSU_SUSFS\b' "${KSU_DIR}"; then
