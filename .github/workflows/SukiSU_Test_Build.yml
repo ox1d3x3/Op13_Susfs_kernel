@@ -1,4 +1,4 @@
-name: SUKI/KSU-TEST
+name: KSU/SUKI
 permissions:
   contents: write
 env:
@@ -130,20 +130,37 @@ env:
         required: false
         default: ""
         
+  push:
+    branches:
+      - main
+      - master
 jobs:
   build:
-    name: Root ${{ matrix.root_solution }} | SUSFS ${{ github.event.inputs.SUSFS }} | BBG ${{ github.event.inputs.bbg }} | ADIOS/Re-Kernel ${{ github.event.inputs.adios_rekernel_enable }}
+    name: Root ${{ matrix.root_solution }} | SUSFS ${{ env.SUSFS }} | BBG ${{ env.BBG }} | ADIOS/Re-Kernel ${{ github.event.inputs.adios_rekernel_enable }}
     strategy:
       fail-fast: false
       matrix:
-        root_solution: >-
-          ${{ fromJson(github.event.inputs.build_roots == 'all' && '["none","sukisu-ultra","ksu-next"]' || format('["{0}"]', github.event.inputs.root_solution)) }}
+        root_solution: ${{ fromJson((github.event_name == 'workflow_dispatch' && github.event.inputs.build_roots == 'all' && '["none","sukisu-ultra","ksu-next"]') || (github.event_name == 'workflow_dispatch' && format('["{0}"]', github.event.inputs.root_solution || 'none')) || '["none","sukisu-ultra","ksu-next"]') }}
     runs-on: ubuntu-latest
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
       CCACHE_MAXSIZE: 8G
+      # ---- Input defaults (also used for push runs) ----
+      ANDROID_VERSION: ${{ github.event.inputs.ANDROID_VERSION || 'android15' }}
+      KERNEL_VERSION:  ${{ github.event.inputs.KERNEL_VERSION  || '6.6' }}
+      KERNEL_NAME:     ${{ github.event.inputs.KERNEL_NAME     || 'android15-6.6' }}
+      PROFILE:         ${{ github.event.inputs.PROFILE         || 'balanced' }}
+      SUSFS:           ${{ github.event.inputs.SUSFS           || 'On' }}
+      SUSFS_REF:       ${{ github.event.inputs.susfs_branch_or_commit || 'gki-android15-6.6' }}
+      BBR:             ${{ github.event.inputs.bbr             || 'Off' }}
+      BBG:             ${{ github.event.inputs.bbg             || 'Off' }}
+      KPM:             ${{ github.event.inputs.kpm             || 'Off' }}
+      LZ4:             ${{ github.event.inputs.lz4             || 'Off' }}
+      CUSTOM_DEFCONFIG: ${{ github.event.inputs.custom_defconfig || '' }}
+      MAKE_TARGET:     ${{ github.event.inputs.make_target     || 'all' }}
+      ROOT_REF:        ${{ github.event.inputs.root_ref        || 'builtin' }}
     steps:
       - name: 🚀 Maximize Build Space
         uses: easimon/maximize-build-space@v9
@@ -199,7 +216,7 @@ jobs:
           execute_install_scripts: true
           
       - name: 💾 Restore ccache (With SUSFS)
-        if: "${{ github.event.inputs.SUSFS == 'On' && github.event.inputs.clean_build != 'true' }}"
+        if: "${{ env.SUSFS == 'On' && github.event.inputs.clean_build != 'true' }}"
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
@@ -210,7 +227,7 @@ jobs:
             ccache-${{ runner.os }}-SukiSU-SUSFS
             
       - name: 💾 Restore ccache (Without SUSFS)
-        if: "${{ github.event.inputs.SUSFS == 'Off' }}"
+        if: "${{ env.SUSFS == 'Off' }}"
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
@@ -286,7 +303,7 @@ jobs:
           echo "✅ Kernel setup complete"
           
       - name: ⚡ Setup Baseband-guard
-        if: "${{ github.event.inputs.bbg == 'On' }}"
+        if: "${{ env.BBG == 'On' }}"
         run: |
           set -e
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
@@ -301,7 +318,7 @@ jobs:
           
           ROOT_SOL="${{ matrix.root_solution }}"
           # root_ref exists only for workflow_dispatch; for push it will be empty
-          ROOT_REF="${{ github.event.inputs.root_ref }}"
+          ROOT_REF="${{ env.ROOT_REF }}"
           echo "🧩 Root selection: ${ROOT_SOL} (${ROOT_REF})"
           
           # If the kernel tree already contains KernelSU (common/drivers/kernelsu),
@@ -344,11 +361,22 @@ jobs:
                 ;;
               ksu-next)
                 cd common
-                # KernelSU-Next: treat empty/next/builtin as default
-                if [ -z "${ROOT_REF}" ] || [ "${ROOT_REF}" = "next" ] || [ "${ROOT_REF}" = "builtin" ]; then
-                  curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash
+                # KernelSU-Next: auto-pick a SUSFS-capable ref when SUSFS=On (push-safe via env.SUSFS).
+                KSU_NEXT_REF="${ROOT_REF}"
+                if [ -z "${KSU_NEXT_REF}" ] || [ "${KSU_NEXT_REF}" = "next" ] || [ "${KSU_NEXT_REF}" = "builtin" ]; then
+                  if [ "${SUSFS}" = "On" ]; then
+                    KSU_NEXT_REF="next-susfs"
+                  else
+                    KSU_NEXT_REF=""
+                  fi
+                fi
+
+                if [ -n "${KSU_NEXT_REF}" ]; then
+                  echo "🔧 KernelSU-Next ref: ${KSU_NEXT_REF}"
+                  curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "${KSU_NEXT_REF}"
                 else
-                  curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "${ROOT_REF}"
+                  echo "🔧 KernelSU-Next ref: (default)"
+                  curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash
                 fi
                 cd ..
                 # Detect where setup.sh placed the repo
@@ -393,7 +421,7 @@ jobs:
           
           cd "$GITHUB_WORKSPACE/kernel_workspace"
       - name: 🧬 Integrate SUSFS (strict + auto-fix for KernelSU-Next)
-        if: ${{ (inputs.SUSFS || 'Off') == 'On' && matrix.root_solution != 'none' }}
+        if: ${{ (env.SUSFS || 'Off') == 'On' && matrix.root_solution != 'none' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -499,7 +527,7 @@ jobs:
           echo "KernelSU dir: ${KSU_DIR}"
 
           # ---------- clone susfs4ksu ----------
-          SUSFS_REF="${{ inputs.susfs_branch_or_commit }}"
+          SUSFS_REF="${{ env.SUSFS_REF }}"
           if [ -z "${SUSFS_REF}" ]; then
           SUSFS_REF="gki-${ANDROID_VERSION}-${KERNEL_VERSION}"
           fi
@@ -516,41 +544,34 @@ jobs:
           fi
 
           pick_susfs_ksu_enable_patch() {
-            local ksu_dir="$1"
-            local want_next=0
-            if [[ "${ksu_dir}" == *"KernelSU-Next"* ]] || [[ "${ksu_dir}" == *"KernelSU_Next"* ]]; then
-              want_next=1
-            fi
-
-            local files=()
-            if [ "${want_next}" -eq 1 ]; then
-              mapfile -t files < <(find susfs4ksu/kernel_patches -maxdepth 4 -type f -name "*.patch" 2>/dev/null | grep -Ei 'enable.*susfs|susfs.*enable' | grep -Ei 'next|KernelSU-Next|KernelSU_Next' || true)
-            else
-              mapfile -t files < <(find susfs4ksu/kernel_patches -maxdepth 4 -type f -name "*.patch" 2>/dev/null | grep -Ei 'enable.*susfs|susfs.*enable' | grep -Ev -Ei 'next|KernelSU-Next|KernelSU_Next' || true)
-            fi
-
-            if [ ${#files[@]} -eq 0 ]; then
-              mapfile -t files < <(grep -RIl --include="*.patch" "KSU_SUSFS" susfs4ksu/kernel_patches 2>/dev/null || true)
-            fi
-
-            for f in "${files[@]}"; do
-              [ -f "${f}" ] || continue
-              if grep -q "KSU_SUSFS" "${f}"; then
-                echo "${f}"
-                return 0
-              fi
-            done
-            return 1
-          }
-
-          KSU_ENABLE_PATCH="$(pick_susfs_ksu_enable_patch "${KSU_DIR}" || true)"
-          if [ -n "${KSU_ENABLE_PATCH}" ] && [ -f "${KSU_ENABLE_PATCH}" ]; then
-            echo "KernelSU enable patch (auto): ${KSU_ENABLE_PATCH}"
-          else
-            echo "⚠️ Could not find a suitable susfs4ksu KernelSU enable patch for this tree."
-            KSU_ENABLE_PATCH=""
+          # Find the KernelSU-side "enable SUSFS" patch inside susfs4ksu.
+          # IMPORTANT: restrict to kernel_patches/KernelSU* so we never pick the kernel patch (50_add_*).
+          local kind="${1:-KernelSU}"
+          local base="susfs4ksu/kernel_patches"
+          local p=""
+          
+          for d in "${base}/${kind}" "${base}/KernelSU"; do
+          [ -d "$d" ] || continue
+          p="$(find "$d" -maxdepth 3 -type f -name '*.patch' 2>/dev/null | grep -iE 'enable.*susfs|susfs.*enable' | head -n1 || true)"
+          if [ -n "$p" ]; then
+          echo "$p"
+          return 0
           fi
-
+          done
+          
+          for d in "${base}/${kind}" "${base}/KernelSU"; do
+          [ -d "$d" ] || continue
+          p="$(grep -RIl 'KSU_SUSFS' "$d" --include='*.patch' 2>/dev/null | while read -r f; do
+          if grep -q 'kernel/Kconfig' "$f" 2>/dev/null; then echo "$f"; break; fi
+          done | head -n1 || true)"
+          if [ -n "$p" ]; then
+          echo "$p"
+          return 0
+          fi
+          done
+          
+          echo ""
+          }
 
           # Select the correct kernel patch for this tree
           KERNEL_PATCH_FILE="$(ls -1 susfs4ksu/kernel_patches 2>/dev/null | grep -E '^50_add_susfs_in_.*\.patch$' | grep -E "android15-6\.6|android15|6\.6" | head -n 1 || true)"
@@ -595,44 +616,31 @@ jobs:
               echo "KernelSU git HEAD: $(git -C "${KSU_DIR}" rev-parse --short HEAD)"
             fi
 
-            SIMON_KSU_OK=0
-            if [ -n "${KSU_ENABLE_PATCH_ABS}" ] && [ -f "${KSU_ENABLE_PATCH_ABS}" ]; then
-              echo "Applying KernelSU SUSFS enable patch (strict)…"
-              if apply_patch_multi "${KSU_ENABLE_PATCH_ABS}" "${KSU_DIR}"; then
-                SIMON_KSU_OK=1
-              fi
-            else
-              echo "ℹ️ No susfs4ksu KernelSU enable patch selected; skipping direct apply."
-            fi
-
-            if [ "${SIMON_KSU_OK}" -eq 0 ]; then
-              echo "⚠️ susfs4ksu KernelSU patch did not apply cleanly (or not found)."
-              echo "   Pulling WildKernels SUSFS patches for KernelSU / KernelSU-Next (best-effort)…"
-
-              if [ ! -d wk_patches ]; then
-                git clone --depth=1 https://github.com/WildKernels/kernel_patches wk_patches
-              fi
-
-              echo "🔧 Applying WildKernels base patches that introduce KSU_SUSFS (newest-first)…"
-              apply_patches_with_grep_best_effort "KSU_SUSFS" "wk_patches" "${KSU_DIR}"
-
-              echo "🔧 Trying WildKernels fix patches under: wk_patches/next/susfs_fix_patches"
-              apply_all_patches_best_effort "wk_patches/next/susfs_fix_patches" "${KSU_DIR}" || true
-
-              echo "🔧 Trying WildKernels fix patches under: wk_patches/ksu/susfs_fix_patches"
-              apply_all_patches_best_effort "wk_patches/ksu/susfs_fix_patches" "${KSU_DIR}" || true
-
-              if [ -n "${KSU_ENABLE_PATCH_ABS}" ] && [ -f "${KSU_ENABLE_PATCH_ABS}" ]; then
-                echo "🔁 Retrying susfs4ksu KernelSU enable patch after WildKernels patches…"
-                apply_patch_multi "${KSU_ENABLE_PATCH_ABS}" "${KSU_DIR}" || true
-              fi
-            fi
+          # --- KernelSU-side enable: ensure KSU_SUSFS exists in Kconfig ---
+          if grep -q "KSU_SUSFS" "${KSU_DIR}/kernel/Kconfig" 2>/dev/null; then
+            echo "✅ ${KSU_DIR} already exposes KSU_SUSFS in Kconfig."
           else
-            echo "::error::KernelSU directory not found at ${KSU_DIR}"
-            exit 1
+            KSU_ENABLE_PATCH="$(pick_susfs_ksu_enable_patch "${KSU_KIND}")"
+            echo "KernelSU enable patch (auto): ${KSU_ENABLE_PATCH}"
+            if [ -n "${KSU_ENABLE_PATCH}" ] && [ -f "${KSU_ENABLE_PATCH}" ]; then
+              echo "Applying KernelSU SUSFS enable patch (strict)…"
+              apply_patch_strict "${KSU_ENABLE_PATCH}" "${KSU_DIR}" || true
+            else
+              echo "::warning::No suitable KernelSU enable patch found in susfs4ksu for ${KSU_KIND}."
+            fi
+
+            # KernelSU-Next fallback: switch to next-susfs branch (it carries KSU_SUSFS in Kconfig).
+            if ! grep -q "KSU_SUSFS" "${KSU_DIR}/kernel/Kconfig" 2>/dev/null && [ "${KSU_KIND}" = "KernelSU-Next" ]; then
+              echo "🔁 Trying KernelSU-Next next-susfs branch (best-effort)…"
+              ( cd "${KSU_DIR}" && git fetch --depth=1 origin next-susfs && git checkout -f FETCH_HEAD ) || true
+            fi
+
+            if ! grep -q "KSU_SUSFS" "${KSU_DIR}/kernel/Kconfig" 2>/dev/null; then
+              echo "::error::SUSFS requested, but KernelSU still does not expose KSU_SUSFS in Kconfig."
+              echo "Fix: for ksu-next set ROOT_REF=next-susfs (or keep builtin with SUSFS=On; workflow auto-picks next-susfs)."
+              exit 1
+            fi
           fi
-
-
           # ---------- final hard checks ----------
           if ! grep -Rqs --include='Kconfig*' '^\s*config\s\+KSU_SUSFS\b' "${KSU_DIR}"; then
           echo "::error::SUSFS requested, but KernelSU still does not expose KSU_SUSFS in Kconfig."
@@ -711,7 +719,7 @@ jobs:
           fi
 
           # KPM
-          if [ "${{ github.event.inputs.KPM }}" = "On" ]; then
+          if [ "${{ env.KPM }}" = "On" ]; then
             echo "🧩 Enabling KPM..."
             defcfg_set KPM y
           fi
@@ -721,7 +729,7 @@ jobs:
             echo "📦 Root disabled → forcing SUSFS Off"
             defcfg_set KSU_SUSFS n
             defcfg_set KSU_MANUAL_HOOK n
-          elif [ "${ROOT_SOL}" != "none" ] && [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
+          elif [ "${ROOT_SOL}" != "none" ] && [ "${{ env.SUSFS }}" = "On" ]; then
             echo "📦 Enabling SUSFS features..."
             defcfg_set KSU_SUSFS y
             defcfg_set KSU_SUSFS_SUS_PATH y
@@ -746,21 +754,21 @@ jobs:
           }
 
           # Optional: keep a sane default TCP congestion control if user didn't enable BBR
-          if [ "${{ github.event.inputs.bbr }}" != "On" ]; then
+          if [ "${{ env.BBR }}" != "On" ]; then
             # Ensure CUBIC exists (nearly universal)
             defcfg_set TCP_CONG_CUBIC y
           fi
 
 
           # Polly is great for benchmark builds, but can cause rare miscompiles; keep it for "highest" only.
-          if [ "${{ github.event.inputs.PROFILE }}" = "highest" ]; then
+          if [ "${{ env.PROFILE }}" = "highest" ]; then
             defcfg_set LLVM_POLLY y
           else
             defcfg_set LLVM_POLLY n
           fi
 
           # Optional BBR (mostly for Wi-Fi/5G throughput tests; can be negative for daily use)
-          if [ "${{ github.event.inputs.bbr }}" = "On" ]; then
+          if [ "${{ env.BBR }}" = "On" ]; then
             echo "📶 Enabling BBR..."
             defcfg_set TCP_CONG_CUBIC y
             defcfg_set TCP_CONG_BBR y
@@ -769,7 +777,7 @@ jobs:
           fi
 
           # Optional BBG (safe-mode) — auto-detect symbol + LSM name and patch defconfig cleanly
-          if [ "${{ github.event.inputs.bbg }}" = "On" ]; then
+          if [ "${{ env.BBG }}" = "On" ]; then
             echo "🛡️ Configuring BBG (Baseband Guard) — safe mode..."
             python3 - <<'PY'
           from pathlib import Path
@@ -935,7 +943,7 @@ jobs:
           fi
 
           echo "✅ PTY/devpts OK"
-          if [ "${ROOT_SOL}" != "none" ] && [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
+          if [ "${ROOT_SOL}" != "none" ] && [ "${{ env.SUSFS }}" = "On" ]; then
           
             if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
           
@@ -1127,7 +1135,7 @@ jobs:
           # Optimization level ( option) + PROFILE naming
           # - If PROFILE=lowest -> -Os (size/battery bias)
           # - Else use optimize_level (O2 or O3)
-          if [ "${{ github.event.inputs.PROFILE }}" = "lowest" ]; then
+          if [ "${{ env.PROFILE }}" = "lowest" ]; then
             KOPT="-Os"
           else
             case "${{ github.event.inputs.optimize_level }}" in
@@ -1197,7 +1205,7 @@ jobs:
           fi
           
       - name: 🧩 Patch Kernel Image (KPM)
-        if: "${{ github.event.inputs.KPM == 'On' }}"
+        if: "${{ env.KPM == 'On' }}"
         run: |
           echo "🔧 Applying KPM patch..."
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"/out/Final-Image-Find
@@ -1259,8 +1267,8 @@ jobs:
                       end_idx = j
                       break
 
-          PROFILE = "${{ github.event.inputs.PROFILE }}".strip() or "optimal"
-          SUSFS = "${{ github.event.inputs.SUSFS }}".strip()
+          PROFILE = "${{ env.PROFILE }}".strip() or "optimal"
+          SUSFS = "${{ env.SUSFS }}".strip()
           base = "${{ env.KERNEL_NAME }}".strip() or "kernel"
           # Display kernel name exactly as provided by KERNEL_NAME
           tag = base
@@ -1321,9 +1329,9 @@ jobs:
         id: set_name
         run: |
           ROOT_SOL="${ROOT_SOL:-${{ matrix.root_solution }}}"
-          BASE_NAME="GREATEST_KERNEL_${ROOT_SOL}_lz4_${KSU_VERSION_FULL}_${{ github.event.inputs.PROFILE }}"
+          BASE_NAME="GREATEST_KERNEL_${ROOT_SOL}_lz4_${KSU_VERSION_FULL}_${{ env.PROFILE }}"
           
-          if [ "${ROOT_SOL}" != "none" ] && [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
+          if [ "${ROOT_SOL}" != "none" ] && [ "${{ env.SUSFS }}" = "On" ]; then
             FINAL_NAME="${BASE_NAME}_SUSFS"
           else
             FINAL_NAME="${BASE_NAME}"
@@ -1369,19 +1377,19 @@ jobs:
           set -euo pipefail
           DATE_TAG="$(date -u +%Y%m%d)"
           # Keep it simple and deterministic (-style)
-          TAG="OP13-${DATE_TAG}-r${GITHUB_RUN_NUMBER}-${{ github.event.inputs.PROFILE }}-${{ matrix.root_solution }}"
+          TAG="OP13-${DATE_TAG}-r${GITHUB_RUN_NUMBER}-${{ env.PROFILE }}-${{ matrix.root_solution }}"
           echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
 
           # Minimal release notes (you can expand later)
           {
             echo "## Build"
             echo "- Device: OnePlus 13 (PJZ110)"
-            echo "- Profile: ${{ github.event.inputs.PROFILE }}"
+            echo "- Profile: ${{ env.PROFILE }}"
             echo "- optimize_level: ${{ github.event.inputs.optimize_level }}"
-            echo "- SUSFS: ${{ github.event.inputs.SUSFS }}"
-            echo "- KPM: ${{ github.event.inputs.KPM }}"
-            echo "- BBG: ${{ github.event.inputs.bbg }}"
-            echo "- BBR: ${{ github.event.inputs.bbr }}"
+            echo "- SUSFS: ${{ env.SUSFS }}"
+            echo "- KPM: ${{ env.KPM }}"
+            echo "- BBG: ${{ env.BBG }}"
+            echo "- BBR: ${{ env.BBR }}"
             echo ""
             echo "## Assets"
             echo "- AnyKernel3 flashable zip"
