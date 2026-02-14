@@ -1,5 +1,5 @@
 ---
-name: KSU/SUki_Kernel
+name: KSU/SUKI-Build
 permissions:
   contents: write
 env:
@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       make_release:
-        description: "🏷️ Create GitHub Release (WildKernel style)"
+        description: "🏷️ Create GitHub Release (tagged build)"
         required: true
         type: boolean
         default: false
@@ -35,7 +35,7 @@ on:
         type: boolean
         default: false
       optimize_level:
-        description: "🧠 Compiler optimization level (WildKernel option)"
+        description: "🧠 Compiler optimization level"
         required: true
         type: choice
         options: [O2, O3]
@@ -211,7 +211,7 @@ jobs:
       - name: ⚙️ Initialize ccache
         run: |
           echo "🔧 Initializing ccache..."
-          # WildKernel option: clean build disables ccache usage
+          # option: clean build disables ccache usage
           if [ "${{ github.event.inputs.clean_build }}" = "true" ]; then
             export CCACHE_DISABLE=1
             echo "🧼 clean_build=true -> CCACHE_DISABLE=1"
@@ -281,7 +281,7 @@ jobs:
           
           echo "🛠️ Setting up BBG..."
           curl $CURL_OPTS -fsSL https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh -o setup.sh
-          bash setup.sh     
+          bash setup.sh 
           
       - name: ⚡ Integrate Root (SukiSU Ultra / KernelSU-Next)
         run: |
@@ -312,7 +312,15 @@ jobs:
                 curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "${ROOT_REF}"
               fi
               cd ..
-              KSU_DIR="./common/KernelSU-Next"
+              # Detect where setup.sh placed the repo (upstream differs)
+              if [ -d "./common/KernelSU-Next" ]; then
+                KSU_DIR="./common/KernelSU-Next"
+              elif [ -d "./common/KernelSU" ]; then
+                KSU_DIR="./common/KernelSU"
+              else
+                KSU_DIR="$(find ./common -maxdepth 2 -type d \( -name 'KernelSU*' -o -name 'SukiSU*' \) 2>/dev/null | head -n 1)"
+              fi
+              [ -n "${KSU_DIR:-}" ] && [ -d "${KSU_DIR:-}" ] || die "Root integration failed: could not locate root repo under ./common"
               ;;
             none)
               echo "Skipping root integration."
@@ -353,7 +361,7 @@ jobs:
 
           echo "⬇️ Cloning required patches..."
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-            # WildKernel option: allow overriding SusFS ref (branch or commit)
+            # option: allow overriding SusFS ref (branch or commit)
             SUSFS_REF="${{ github.event.inputs.susfs_branch_or_commit }}"
             if [ -z "${SUSFS_REF}" ]; then
               SUSFS_REF="gki-${ANDROID_VERSION}-${KERNEL_VERSION}"
@@ -378,7 +386,7 @@ jobs:
           cd kernel_platform
 
           COMMON_DIR="./common"
-          KSU_DIR="${KSU_DIR}"   # set by root selection above
+          KSU_DIR="${KSU_DIR}" # set by root selection above
 
           echo "📝 Copying patch files into common tree..."
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
@@ -389,7 +397,7 @@ jobs:
             fi
             if [ -z "${CORE_PATCH}" ]; then
               echo "❌ Could not locate SUSFS core patch (50_add_susfs_in_gki-*.patch) in susfs4ksu."
-              find ../susfs4ksu/kernel_patches -maxdepth 2 -type f -name "*.patch" | sed 's|^|   - |' || true
+              find ../susfs4ksu/kernel_patches -maxdepth 2 -type f -name "*.patch" | sed 's|^| - |' || true
               exit 1
             fi
 
@@ -499,7 +507,7 @@ jobs:
             fi
 
             # If KSU_SUSFS already exists, don't force-apply the enable patch (upstream may already include it).
-            if grep -Rqs "config KSU_SUSFS" "${KSU_DIR}/kernel" "${COMMON_DIR}/drivers/kernelsu" 2>/dev/null; then
+            if grep -Rqs "config KSU_SUSFS" "${KSU_DIR}" "${COMMON_DIR}/drivers/kernelsu" 2>/dev/null; then
               echo "✅ KSU_SUSFS already present in KernelSU tree; skipping enable patch."
             else
               echo "🔧 Applying SUSFS enable patch to KernelSU (only if missing)..."
@@ -513,13 +521,21 @@ jobs:
                 exit 1
               fi
 
-              pick_enable_patch() {
+                            pick_enable_patch() {
                 local p
+                local want="${{ github.event.inputs.root_solution }}"
+                if [ "${want}" = "suki-ultra" ]; then
+                  for p in "${ENABLE_CANDIDATES[@]}"; do
+                    echo "$p" | grep -Eqi "sukisu" && { echo "$p"; return 0; }
+                  done
+                fi
+                if [ "${want}" = "ksu-next" ]; then
+                  for p in "${ENABLE_CANDIDATES[@]}"; do
+                    echo "$p" | grep -Eqi "(ksu[_-]?next|next)" && { echo "$p"; return 0; }
+                  done
+                fi
                 for p in "${ENABLE_CANDIDATES[@]}"; do
-                  echo "$p" | grep -qi "sukisu" && { echo "$p"; return 0; }
-                done
-                for p in "${ENABLE_CANDIDATES[@]}"; do
-                  echo "$p" | grep -qi "kernelsu" && { echo "$p"; return 0; }
+                  echo "$p" | grep -Eqi "kernelsu" && { echo "$p"; return 0; }
                 done
                 echo "${ENABLE_CANDIDATES[0]}"
               }
@@ -539,13 +555,20 @@ jobs:
                     break
                   fi
                 done
-                [ "$success" = "1" ] || { echo "❌ All enable patch candidates failed to apply."; exit 1; }
+                [ "$success" = "1" ] || {
+                  if grep -Rqs "^\s*config\s\+KSU_SUSFS" "${KSU_DIR}" "${COMMON_DIR}/drivers/kernelsu" 2>/dev/null; then
+                    echo "⚠️ Enable patch failed, but SUSFS symbols already exist in this tree. Continuing."
+                  else
+                    echo "❌ All enable patch candidates failed to apply, and SUSFS symbols were not found."
+                    exit 1
+                  fi
+                }
               fi
               echo "✅ Enable patch applied: ${ENABLE_PATCH}"
             fi
 
             echo "🧩 Verifying Kconfig symbol exists..."
-            if ! grep -Rqs "config KSU_SUSFS" "${KSU_DIR}/kernel" "${COMMON_DIR}/drivers/kernelsu" 2>/dev/null; then
+            if ! grep -Rqs "config KSU_SUSFS" "${KSU_DIR}" "${COMMON_DIR}/drivers/kernelsu" 2>/dev/null; then
               echo "❌ KSU_SUSFS Kconfig symbol not found (integration missing)."
               exit 1
             fi
@@ -553,17 +576,19 @@ jobs:
             # In some KernelSU/SukiSU builds, a bad sepolicy patch can label devpts nodes as ksu_file,
             # which causes terminal emulators to instantly exit due to SELinux AVC denials.
             # We sanitize any embedded policy snippet so devpts stays devpts.
-            DEVPTS_BAD_REGEX='genfscon[[:space:]]+devpts[[:space:]]+/[[:space:]]+u:object_r:ksu_file:s0|/dev/pts[^[:space:]]*[[:space:]]+u:object_r:ksu_file:s0|devpts[^[:space:]]*[[:space:]]+u:object_r:ksu_file:s0'
-            SEARCH_DIRS=("${KSU_DIR}/kernel" "${COMMON_DIR}/drivers/kernelsu")
+            DEVPTS_BAD_REGEX='genfscon[[:space:]]+devpts[[:space:]]+/[^[:space:]]*[[:space:]]+u:object_r:ksu_file:s0|genfscon[[:space:]]+devpts[[:space:]]+/[[:space:]]+u:object_r:ksu_file:s0|/dev/pts[^[:space:]]*[[:space:]]+u:object_r:ksu_file:s0'
+            SEARCH_DIRS=("${KSU_DIR}" "${COMMON_DIR}/drivers/kernelsu" "${COMMON_DIR}/security/selinux")
 
             if grep -RInqE "${DEVPTS_BAD_REGEX}" "${SEARCH_DIRS[@]}" 2>/dev/null; then
               echo "⚠️ Found devpts -> ksu_file policy snippet. Patching to devpts..."
-              while IFS= read -r -d '' f; do
-                # Replace only the devpts mapping; do not touch other KernelSU policy lines.
+              mapfile -t DEVPTS_FILES < <(grep -RIlE "${DEVPTS_BAD_REGEX}" "${SEARCH_DIRS[@]}" 2>/dev/null | sort -u || true)
+              for f in "${DEVPTS_FILES[@]}"; do
+                echo "    - patching: $f"
+                sed -i -E 's/(genfscon[[:space:]]+devpts[[:space:]]+\/[^[:space:]]*[[:space:]]+u:object_r:)ksu_file(:s0)/\1devpts\2/g' "$f"
                 sed -i -E 's/(genfscon[[:space:]]+devpts[[:space:]]+\/[[:space:]]+u:object_r:)ksu_file(:s0)/\1devpts\2/g' "$f"
                 sed -i -E 's|(/dev/pts[^[:space:]]*[[:space:]]+u:object_r:)ksu_file(:s0)|\1devpts\2|g' "$f"
                 sed -i -E 's/(devpts[^[:space:]]*[[:space:]]+u:object_r:)ksu_file(:s0)/\1devpts\2/g' "$f"
-              done < <(find "${SEARCH_DIRS[@]}" -type f -print0 2>/dev/null)
+              done
             fi
 
             if grep -RInqE "${DEVPTS_BAD_REGEX}" "${SEARCH_DIRS[@]}" 2>/dev/null; then
@@ -575,7 +600,7 @@ jobs:
 
             echo "📝 Enabling SUSFS options in gki_defconfig..."
             DEFCONFIG="${COMMON_DIR}/arch/arm64/configs/gki_defconfig"
-            mapfile -t KSU_SUSFS_SYMS < <(grep -RhoP '^\s*config\s+\K(KSU_SUSFS[0-9A-Za-z_]*)' "${KSU_DIR}/kernel" "${COMMON_DIR}/drivers/kernelsu" 2>/dev/null | sort -u)
+            mapfile -t KSU_SUSFS_SYMS < <(grep -RhoP '^\s*config\s+\K(KSU_SUSFS[0-9A-Za-z_]*)' "${KSU_DIR}" "${COMMON_DIR}/drivers/kernelsu" 2>/dev/null | sort -u)
             for sym in "${KSU_SUSFS_SYMS[@]}"; do
               grep -q "^CONFIG_${sym}=" "${DEFCONFIG}" || echo "CONFIG_${sym}=y" >> "${DEFCONFIG}"
             done
@@ -650,7 +675,7 @@ jobs:
           elif grep -Rqs --include='Kconfig*' '^\s*config\s\+DEVPTS\b' ./common; then
             defcfg_set DEVPTS y
           else
-            echo "⚠️  DEVPTS config symbol not found in Kconfig (tree-specific). Skipping explicit DEVPTS enable."
+            echo "⚠️ DEVPTS config symbol not found in Kconfig (tree-specific). Skipping explicit DEVPTS enable."
           fi
 
           # KPM
@@ -711,7 +736,7 @@ jobs:
     
           ws = Path(os.environ["GITHUB_WORKSPACE"])
           defconfig = ws / "kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig"
-          common_root = defconfig.parents[3]  # .../kernel_platform/common
+          common_root = defconfig.parents[3] # .../kernel_platform/common
           security_dir = common_root / "security"
     
           def read_text(p: Path) -> str:
@@ -804,8 +829,8 @@ jobs:
     
           defconfig.write_text("\n".join(lines).rstrip()+"\n")
           print('BBG enabled symbol :', bbg_sym)
-          print('BBG LSM name       :', lsm_name)
-          print('CONFIG_LSM         :', lsm_line)
+          print('BBG LSM name :', lsm_name)
+          print('CONFIG_LSM :', lsm_line)
           PY
           fi
 
@@ -829,7 +854,7 @@ jobs:
           
           echo "---- Effective config (KSU/KPM/SUSFS) ----"
           
-          grep -nE '^CONFIG_KSU(=|_)|^CONFIG_KPM(=|_)|^CONFIG_KSU_SUSFS(=|_)' out/.config || true          # Terminal apps sanity (PTY/devpts)
+          grep -nE '^CONFIG_KSU(=|_)|^CONFIG_KPM(=|_)|^CONFIG_KSU_SUSFS(=|_)' out/.config || true # Terminal apps sanity (PTY/devpts)
           echo "---- Terminal/PTTY sanity ----"
 
           must_y() {
@@ -864,7 +889,7 @@ jobs:
               echo "❌ Kconfig contains DEVPTS but it didn't land in out/.config. Check dependencies and defconfig edits."
               exit 1
             else
-              echo "⚠️  DEVPTS symbol not present in this tree's Kconfig; skipping strict DEVPTS check."
+              echo "⚠️ DEVPTS symbol not present in this tree's Kconfig; skipping strict DEVPTS check."
             fi
           fi
 
@@ -875,11 +900,11 @@ jobs:
           
               echo "❌ SUSFS was requested, but CONFIG_KSU_SUSFS is not enabled in out/.config"
           
-              echo "   Likely causes:"
+              echo " Likely causes:"
           
-              echo "   - SUSFS KernelSU enable patch didn't apply"
+              echo " - SUSFS KernelSU enable patch didn't apply"
           
-              echo "   - SUSFS Kconfig symbols are missing in this kernel tree"
+              echo " - SUSFS Kconfig symbols are missing in this kernel tree"
           
               echo ""
           
@@ -900,7 +925,7 @@ jobs:
           
             echo "❌ Missing lib/lz4/lz4armv8/lz4armv8.S (required by Kbuild in this tree)"
           
-            echo "   This will cause: No rule to make target 'lib/lz4/lz4armv8/lz4armv8.o'"
+            echo " This will cause: No rule to make target 'lib/lz4/lz4armv8/lz4armv8.o'"
           
             exit 1
           
@@ -978,10 +1003,10 @@ jobs:
           sed -i '/^CONFIG_ZRAM_DEF_COMP_/d;/^CONFIG_ZRAM_DEF_COMP=/d' "$DEFCONFIG" || true
 
           # Ensure LZ4 support is enabled (usually already enabled in GKI)
-          grep -q '^CONFIG_LZ4_COMPRESS=' "$DEFCONFIG"   || echo 'CONFIG_LZ4_COMPRESS=y' >> "$DEFCONFIG"
+          grep -q '^CONFIG_LZ4_COMPRESS=' "$DEFCONFIG" || echo 'CONFIG_LZ4_COMPRESS=y' >> "$DEFCONFIG"
           grep -q '^CONFIG_LZ4_DECOMPRESS=' "$DEFCONFIG" || echo 'CONFIG_LZ4_DECOMPRESS=y' >> "$DEFCONFIG"
           grep -q '^CONFIG_DECOMPRESS_LZ4=' "$DEFCONFIG" || echo 'CONFIG_DECOMPRESS_LZ4=y' >> "$DEFCONFIG"
-          grep -q '^CONFIG_RD_LZ4=' "$DEFCONFIG"         || echo 'CONFIG_RD_LZ4=y' >> "$DEFCONFIG"
+          grep -q '^CONFIG_RD_LZ4=' "$DEFCONFIG" || echo 'CONFIG_RD_LZ4=y' >> "$DEFCONFIG"
 
           # Set ZRAM default compressor to lz4
           echo 'CONFIG_ZRAM_DEF_COMP_LZ4=y' >> "$DEFCONFIG"
@@ -1022,14 +1047,14 @@ jobs:
 
 
           echo "---- Build (LLVM_IAS=1) ----"
-          # WildKernel option: clean build wipes out/ and ccache stats
+          # option: clean build wipes out/ and ccache stats
           if [ "${{ github.event.inputs.clean_build }}" = "true" ]; then
             echo "🧼 clean_build=true -> removing out/ and resetting ccache..."
             rm -rf out build.log || true
             ccache -C || true
           fi
 
-          # Optimization level (WildKernel option) + PROFILE naming
+          # Optimization level ( option) + PROFILE naming
           # - If PROFILE=lowest -> -Os (size/battery bias)
           # - Else use optimize_level (O2 or O3)
           if [ "${{ github.event.inputs.PROFILE }}" = "lowest" ]; then
@@ -1037,13 +1062,13 @@ jobs:
           else
             case "${{ github.event.inputs.optimize_level }}" in
               O3) KOPT="-O3" ;;
-              *)  KOPT="-O2" ;;
+              *) KOPT="-O2" ;;
             esac
           fi
           echo "Using KCFLAGS: ${KOPT}"
 
 
-          make -j"$(nproc --all)"       LLVM=1 LLVM_IAS=1       ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-       CC="ccache clang"       RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc       PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole       LD=ld.lld HOSTLD=ld.lld       O=out KCFLAGS+=${KOPT}       gki_defconfig all 2>&1 | tee build.log || {
+          make -j"$(nproc --all)" LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=${KOPT} gki_defconfig all 2>&1 | tee build.log || {
 
               echo "❌ Build failed (LLVM_IAS=1). Showing error summary:"
 
@@ -1051,7 +1076,7 @@ jobs:
 
               echo "🔁 Retrying with LLVM_IAS=0 (GNU as fallback)..."
 
-              make -j"$(nproc --all)"           LLVM=1 LLVM_IAS=0           ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-           CC="ccache clang"           RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc           PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole           LD=ld.lld HOSTLD=ld.lld           O=out KCFLAGS+=${KOPT}           gki_defconfig all 2>&1 | tee -a build.log || {
+              make -j"$(nproc --all)" LLVM=1 LLVM_IAS=0 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=${KOPT} gki_defconfig all 2>&1 | tee -a build.log || {
 
                   echo "❌ Build failed again (LLVM_IAS=0). Error summary:"
 
@@ -1152,7 +1177,7 @@ jobs:
           start_idx = None
           end_idx = None
 
-          # Locate original author banner block (chenhua13) used in WildKernels scripts
+          # Locate original author banner block (chenhua13) used in scripts
           for i, line in enumerate(s):
               if 'ui_print "chenhua13 Kernel' in line:
                   start_idx = i
@@ -1173,7 +1198,7 @@ jobs:
           SHA = "${{ github.sha }}".strip()
           BUILD = f"{RUNNUM}-{SHA[:7]}" if SHA else RUNNUM
 
-          ascii_block = 'ui_print "===================================================="\nui_print "                   __   __  __ "\nui_print "                  \\\\ \\\\ / //_ |"\nui_print "                   \\\\ V /   | |"\nui_print "                     > <    | |"\nui_print "                   / . \\\\   | |"\nui_print "                 /_/ \\\\_\\\\  |_|"\nui_print "===================================================="\n'
+          ascii_block = 'ui_print "===================================================="\nui_print " __ __ __ "\nui_print " \\\\ \\\\ / //_ |"\nui_print " \\\\ V / | |"\nui_print " > < | |"\nui_print " / . \\\\ | |"\nui_print " /_/ \\\\_\\\\ |_|"\nui_print "===================================================="\n'
 
           banner = []
           banner.append('ui_print " "\n')
@@ -1181,7 +1206,7 @@ jobs:
           banner.append('ui_print " "\n')
           banner.append('ui_print "PJZ110 | GREATEST KERNEL EVER"\n')
           banner.append(f'ui_print "Kernel:{tag}"\n')
-          banner.append(f'ui_print "Build  : {BUILD}"\n')
+          banner.append(f'ui_print "Build : {BUILD}"\n')
           banner.append('ui_print "Builder: @Ox1d3x3"\n')
           banner.append('ui_print "Credits: chenhua13 / mrcxlinux"\n')
           banner.append('ui_print " "\n')
@@ -1194,14 +1219,14 @@ jobs:
           banner.append('if [ -z "$SLOT_SUFFIX" ]; then SLOT="$(grep -oE "androidboot.slot=[^ ]+" /proc/cmdline 2>/dev/null | head -n1 | cut -d= -f2)"; [ -n "$SLOT" ] && SLOT_SUFFIX="_$SLOT"; fi\n')
           banner.append('ui_print "Device : $DEVICE"\n')
           banner.append('ui_print "Android: $ANDROID"\n')
-          banner.append('ui_print "Patch  : $PATCH"\n')
-          banner.append('if [ -n "$SLOT_SUFFIX" ]; then ui_print "Slot   : $SLOT_SUFFIX"; fi\n')
+          banner.append('ui_print "Patch : $PATCH"\n')
+          banner.append('if [ -n "$SLOT_SUFFIX" ]; then ui_print "Slot : $SLOT_SUFFIX"; fi\n')
 
           # Open GitHub page after flash (works when flashing in Android; safe no-op elsewhere)
           banner.append('if [ -n "$(command -v cmd 2>/dev/null)" ]; then\n')
-          banner.append('  (cmd activity start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true\n')
+          banner.append(' (cmd activity start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true\n')
           banner.append('elif [ -n "$(command -v am 2>/dev/null)" ]; then\n')
-          banner.append('  (am start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true\n')
+          banner.append(' (am start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true\n')
           banner.append('fi\n')
 
           banner_text = "".join(banner)
@@ -1211,7 +1236,7 @@ jobs:
           else:
               inserted = False
               for i, line in enumerate(s):
-                  if 'abort "  -> Non-GKI device, abort."' in line:
+                  if 'abort " -> Non-GKI device, abort."' in line:
                       s.insert(i, banner_text)
                       inserted = True
                       break
@@ -1273,7 +1298,7 @@ jobs:
         run: |
           set -euo pipefail
           DATE_TAG="$(date -u +%Y%m%d)"
-          # Keep it simple and deterministic (WildKernel-style)
+          # Keep it simple and deterministic (-style)
           TAG="OP13-${DATE_TAG}-r${GITHUB_RUN_NUMBER}-${{ github.event.inputs.PROFILE }}"
           echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
 
