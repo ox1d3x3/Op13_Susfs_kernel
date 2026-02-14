@@ -1,5 +1,5 @@
 ---
-name: BUILD_TEST
+name: KSU/SUKI-TEST
 permissions:
   contents: write
 env:
@@ -134,11 +134,10 @@ on:
 jobs:
   build:
     name: Root ${{ matrix.root_solution }} | SUSFS ${{ github.event.inputs.SUSFS }} | BBG ${{ github.event.inputs.bbg }} | ADIOS/Re-Kernel ${{ github.event.inputs.adios_rekernel_enable }}
-    if: ${{ github.event.inputs.build_roots == 'all' || matrix.root_solution == github.event.inputs.root_solution }}
     strategy:
       fail-fast: false
       matrix:
-        root_solution: ["none", "sukisu-ultra", "ksu-next"]
+        root_solution: ${{ fromJson(github.event.inputs.build_roots == 'all' && '["none","sukisu-ultra","ksu-next"]' || format('["{0}"]', github.event.inputs.root_solution)) }}
     runs-on: ubuntu-latest
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
