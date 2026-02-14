@@ -1,5 +1,5 @@
 ---
-name: Kernel_Builder
+name: SukiSU/KSU_Kernel_Builder
 permissions:
   contents: write
 env:
