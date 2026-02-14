@@ -392,108 +392,166 @@ jobs:
           fi
           
           cd "$GITHUB_WORKSPACE/kernel_workspace"
-      - name: 🧬 Apply SuSFS patchset (simonpunk) (optional)
-        if: ${{ github.event.inputs.SUSFS == 'On' && matrix.root_solution != 'none' }}
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+      - name: 🧬 Integrate SUSFS (strict + auto-fix for KernelSU-Next)
+  if: ${{ github.event.inputs.SUSFS == 'On' && matrix.root_solution != 'none' }}
+  shell: bash
+  run: |
+    set -euo pipefail
+    cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
 
-          echo "🧬 SUSFS requested → attempting to apply SUSFS patchset (simonpunk/susfs4ksu)..."
+    echo "🧬 SUSFS requested → strict patching (no fuzz) + auto-fix for KernelSU-Next…"
 
-          # Choose ref: explicit input wins; otherwise auto-map to GKI branch
-          SUSFS_REF="${{ github.event.inputs.susfs_branch_or_commit }}"
-          if [ -z "${SUSFS_REF}" ]; then
-            SUSFS_REF="gki-${ANDROID_VERSION}-${KERNEL_VERSION}"
-          fi
-          echo "SUSFS ref: ${SUSFS_REF}"
+    COMMON_DIR="./common"
+    if [ ! -d "${COMMON_DIR}" ]; then
+      echo "::error::Expected ${COMMON_DIR} folder not found under kernel_platform"
+      exit 1
+    fi
 
-          rm -rf susfs4ksu
+    # ---------- helpers ----------
+    apply_patch_multi() {
+      local patch_file="$1"
+      local target_dir="$2"
 
-          # Try shallow clone for branches/tags; fall back to full clone for commit hashes.
-          if git clone --depth 1 --branch "${SUSFS_REF}" https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu 2>/dev/null; then
-            echo "✅ cloned susfs4ksu (${SUSFS_REF}) shallow"
-          else
-            echo "ℹ️ Shallow clone failed (maybe a commit hash). Doing full clone + checkout..."
-            git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
-            (cd susfs4ksu && git checkout "${SUSFS_REF}")
-          fi
+      # try a few strip levels, but NEVER with fuzz (prevents 'random' broken builds)
+      for p in 0 1 2 3; do
+        if (cd "${target_dir}" && patch -p${p} --fuzz=0 --dry-run -f < "${patch_file}" >/dev/null 2>&1); then
+          echo "✅ Applying $(basename "${patch_file}") in ${target_dir} with -p${p}"
+          (cd "${target_dir}" && patch -p${p} --fuzz=0 --forward --batch < "${patch_file}")
+          return 0
+        fi
+      done
+      return 1
+    }
 
-          KSU_PATCH="susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-          if [ ! -f "${KSU_PATCH}" ]; then
-            echo "::error::Missing expected KSU patch: ${KSU_PATCH}"
-            find susfs4ksu -maxdepth 4 -type f -name "*enable*susfs*.patch" -print || true
-            exit 1
-          fi
+    apply_all_patches_best_effort() {
+      local patch_root="$1"
+      local target_dir="$2"
 
-          # Select the correct kernel patch for this branch (usually: 50_add_susfs_in_gki-androidXX-X.Y.patch)
-          KERNEL_PATCH_FILE="$(ls -1 susfs4ksu/kernel_patches 2>/dev/null | grep -E '^50_add_susfs_in_.*\.patch$' | grep -E "android15-6\.6|android15|6\.6" | head -n 1 || true)"
-          if [ -z "${KERNEL_PATCH_FILE}" ]; then
-            KERNEL_PATCH_FILE="$(ls -1 susfs4ksu/kernel_patches 2>/dev/null | grep -E '^50_add_susfs_in_.*\.patch$' | head -n 1 || true)"
-          fi
-          if [ -z "${KERNEL_PATCH_FILE}" ]; then
-            echo "::error::Could not locate kernel patch (50_add_susfs_in_*.patch) under susfs4ksu/kernel_patches"
-            ls -la susfs4ksu/kernel_patches || true
-            exit 1
-          fi
-          KERNEL_PATCH="susfs4ksu/kernel_patches/${KERNEL_PATCH_FILE}"
-          echo "Kernel patch: ${KERNEL_PATCH}"
+      if [ ! -d "${patch_root}" ]; then
+        return 0
+      fi
 
-          COMMON_DIR="./common"
-          if [ ! -d "${COMMON_DIR}" ]; then
-            echo "::error::Expected ./common folder not found under kernel_platform"
-            exit 1
-          fi
+      echo "🔧 Trying WildKernels patches under: ${patch_root}"
+      # Sort for determinism
+      while IFS= read -r -d '' f; do
+        if apply_patch_multi "${f}" "${target_dir}"; then
+          :
+        else
+          echo "↪️ skipped (did not apply cleanly): ${f}"
+        fi
+      done < <(find "${patch_root}" -type f \( -name "*.patch" -o -name "*.diff" \) -print0 | sort -z)
+    }
 
-          # Locate KernelSU sources in this tree
-          if [ -d "./KernelSU" ]; then
-            KSU_DIR="./KernelSU"
-          elif [ -d "./common/KernelSU" ]; then
-            KSU_DIR="./common/KernelSU"
-          elif [ -d "./common/KernelSU-Next" ]; then
-            KSU_DIR="./common/KernelSU-Next"
-          elif [ -d "./common/drivers/kernelsu" ]; then
-            KSU_DIR="./common/drivers/kernelsu"
-          else
-            echo "::error::Cannot locate KernelSU sources (KernelSU/common/KernelSU*/common/drivers/kernelsu)."
-            find . -maxdepth 3 -type d -name "KernelSU*" -o -name "kernelsu" -print || true
-            exit 1
-          fi
-          echo "KernelSU dir: ${KSU_DIR}"
+    # ---------- locate KernelSU sources ----------
+    # Prefer KSU_DIR from previous step if set
+    KSU_DIR="${KSU_DIR:-}"
+    if [ -z "${KSU_DIR}" ] || [ ! -d "${KSU_DIR}" ]; then
+      if [ -d "./KernelSU" ]; then
+        KSU_DIR="./KernelSU"
+      elif [ -d "./common/KernelSU" ]; then
+        KSU_DIR="./common/KernelSU"
+      elif [ -d "./common/KernelSU-Next" ]; then
+        KSU_DIR="./common/KernelSU-Next"
+      elif [ -d "./common/drivers/kernelsu" ]; then
+        KSU_DIR="./common/drivers/kernelsu"
+      else
+        echo "::error::Cannot locate KernelSU sources (KernelSU/common/KernelSU*/common/drivers/kernelsu)."
+        find . -maxdepth 3 -type d -name "KernelSU*" -o -name "kernelsu" -print || true
+        exit 1
+      fi
+    fi
+    echo "KernelSU dir: ${KSU_DIR}"
 
-          # Copy helper sources/headers (idempotent)
-          cp -af susfs4ksu/kernel_patches/fs/*.c "${COMMON_DIR}/fs/" || true
-          cp -af susfs4ksu/kernel_patches/include/linux/*.h "${COMMON_DIR}/include/linux/" || true
+    # ---------- clone susfs4ksu ----------
+    SUSFS_REF="${{ github.event.inputs.susfs_branch_or_commit }}"
+    if [ -z "${SUSFS_REF}" ]; then
+      SUSFS_REF="gki-${ANDROID_VERSION}-${KERNEL_VERSION}"
+    fi
+    echo "SUSFS ref: ${SUSFS_REF}"
 
-          KSU_PATCH_ABS="$(pwd)/${KSU_PATCH}"
-          KERNEL_PATCH_ABS="$(pwd)/${KERNEL_PATCH}"
+    rm -rf susfs4ksu wk_patches
 
-          # Apply the KernelSU patch.
-          # - When KernelSU is installed as a repo with ./kernel/*, use -p1
-          # - When it is vendored directly under drivers/kernelsu (no ./kernel/), use -p2 (strip 'kernel/')
-          PLEVEL=1
-          if [ -f "${KSU_DIR}/kernel/Kconfig" ]; then
-            PLEVEL=1
-          else
-            PLEVEL=2
-          fi
-          echo "Applying KSU SUSFS patch with -p${PLEVEL} ..."
-          (cd "${KSU_DIR}" && patch -p${PLEVEL} -F 3 --forward --batch < "${KSU_PATCH_ABS}")
+    if git clone --depth 1 --branch "${SUSFS_REF}" https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu 2>/dev/null; then
+      echo "✅ cloned susfs4ksu (${SUSFS_REF}) shallow"
+    else
+      echo "ℹ️ Shallow clone failed (maybe a commit hash). Doing full clone + checkout..."
+      git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+      (cd susfs4ksu && git checkout "${SUSFS_REF}")
+    fi
 
-          echo "Applying kernel SUSFS patch ..."
-          (cd "${COMMON_DIR}" && patch -p1 -F 3 --forward --batch < "${KERNEL_PATCH_ABS}")
+    KSU_ENABLE_PATCH="susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+    if [ ! -f "${KSU_ENABLE_PATCH}" ]; then
+      echo "::error::Missing expected KSU patch: ${KSU_ENABLE_PATCH}"
+      find susfs4ksu -maxdepth 5 -type f -name "*enable*susfs*.patch" -print || true
+      exit 1
+    fi
 
-          # Sanity: ensure the Kconfig symbol now exists (otherwise defconfig edits won't take effect)
-          if ! grep -Rqs --include='Kconfig*' '^\s*config\s\+KSU_SUSFS\b' "${COMMON_DIR}"; then
-            echo "::error::SUSFS patches applied, but KSU_SUSFS symbol still not found in Kconfig. Patch likely didn't match this kernel tree."
-            echo "Hints:"
-            echo " - Confirm you are building the right kernel branch for ANDROID_VERSION=${ANDROID_VERSION} KERNEL_VERSION=${KERNEL_VERSION}"
-            echo " - Try setting workflow input susfs_branch_or_commit to a matching tag/commit from susfs4ksu"
-            exit 1
-          fi
+    # Select the correct kernel patch for this tree
+    KERNEL_PATCH_FILE="$(ls -1 susfs4ksu/kernel_patches 2>/dev/null | grep -E '^50_add_susfs_in_.*\.patch$' | grep -E "android15-6\.6|android15|6\.6" | head -n 1 || true)"
+    if [ -z "${KERNEL_PATCH_FILE}" ]; then
+      KERNEL_PATCH_FILE="$(ls -1 susfs4ksu/kernel_patches 2>/dev/null | grep -E '^50_add_susfs_in_.*\.patch$' | head -n 1 || true)"
+    fi
+    if [ -z "${KERNEL_PATCH_FILE}" ]; then
+      echo "::error::Could not locate kernel patch (50_add_susfs_in_*.patch) under susfs4ksu/kernel_patches"
+      ls -la susfs4ksu/kernel_patches || true
+      exit 1
+    fi
+    KERNEL_PATCH="susfs4ksu/kernel_patches/${KERNEL_PATCH_FILE}"
+    echo "Kernel patch: ${KERNEL_PATCH}"
 
-          echo "✅ SuSFS patchset applied."
+    KSU_ENABLE_PATCH_ABS="$(pwd)/${KSU_ENABLE_PATCH}"
+    KERNEL_PATCH_ABS="$(pwd)/${KERNEL_PATCH}"
 
-      - name: ⚙️ Configure Kernel Options
+    # Copy helper sources/headers (safe + idempotent)
+    cp -af susfs4ksu/kernel_patches/fs/*.c "${COMMON_DIR}/fs/" 2>/dev/null || true
+    cp -af susfs4ksu/kernel_patches/include/linux/*.h "${COMMON_DIR}/include/linux/" 2>/dev/null || true
+
+    # ---------- kernel-side SUSFS ----------
+    if grep -Rqs --include='Kconfig*' '^\s*config\s\+SUSFS\b' "${COMMON_DIR}"; then
+      echo "✅ Kernel already contains SUSFS Kconfig; skipping kernel patch."
+    else
+      echo "Applying kernel SUSFS patch (strict)…"
+      if ! apply_patch_multi "${KERNEL_PATCH_ABS}" "${COMMON_DIR}"; then
+        echo "⚠️ simonpunk kernel patch did not apply cleanly."
+        echo "   Trying WildKernels experimental SUSFS patches (best-effort)…"
+        git clone --depth 1 https://github.com/WildKernels/kernel_patches.git wk_patches
+        apply_all_patches_best_effort "wk_patches/experimental/susfs" "${COMMON_DIR}"
+      fi
+    fi
+
+    # ---------- KernelSU-side SUSFS ----------
+    if grep -Rqs --include='Kconfig*' '^\s*config\s\+KSU_SUSFS\b' "${KSU_DIR}"; then
+      echo "✅ KernelSU already contains KSU_SUSFS Kconfig; skipping KernelSU patch."
+    else
+      echo "Applying KernelSU SUSFS enable patch (strict)…"
+      if ! apply_patch_multi "${KSU_ENABLE_PATCH_ABS}" "${KSU_DIR}"; then
+        echo "⚠️ simonpunk KernelSU patch did not apply cleanly to this KernelSU revision."
+        echo "   Pulling WildKernels SUSFS fix patches for KernelSU-Next (best-effort)…"
+        [ -d wk_patches ] || git clone --depth 1 https://github.com/WildKernels/kernel_patches.git wk_patches
+
+        # These folders are referenced by KernelSU-Next community for SUSFS compatibility.
+        apply_all_patches_best_effort "wk_patches/next/susfs_fix_patches" "${KSU_DIR}"
+        apply_all_patches_best_effort "wk_patches/ksu/susfs_fix_patches" "${KSU_DIR}"
+
+        # Retry once after fixes
+        apply_patch_multi "${KSU_ENABLE_PATCH_ABS}" "${KSU_DIR}" || true
+      fi
+    fi
+
+    # ---------- final hard checks ----------
+    if ! grep -Rqs --include='Kconfig*' '^\s*config\s\+KSU_SUSFS\b' "${KSU_DIR}"; then
+      echo "::error::SUSFS requested, but KernelSU still does not expose KSU_SUSFS in Kconfig."
+      echo "This is NOT random — it means your KernelSU source is incompatible with the SUSFS patchset/ref."
+      echo "Fix options:"
+      echo "  - Use a KernelSU revision known to work with SUSFS v2.0.0 (e.g., WildKernels OnePlus_KernelSU_SUSFS base)"
+      echo "  - Or pin susfs_branch_or_commit to a matching commit/tag for your KernelSU source."
+      exit 1
+    fi
+
+    echo "✅ SUSFS integration completed."
+
+
+- name: ⚙️ Configure Kernel Options
         run: |
           set -e
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
