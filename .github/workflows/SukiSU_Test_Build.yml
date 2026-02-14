@@ -1,5 +1,4 @@
- ---
-name: KSU/SUKI-TEST
+name: Build Greatest Kernel (OP13 GKI)
 permissions:
   contents: write
 env:
@@ -392,7 +391,7 @@ jobs:
           fi
           
           cd "$GITHUB_WORKSPACE/kernel_workspace"
-      - name: 🧬 Integrate SUSFS (strict + auto-fix for KernelSU-Next)
+      -name: 🧬 Integrate SUSFS (strict + auto-fix for KernelSU-Next)
   if: ${{ github.event.inputs.SUSFS == 'On' && matrix.root_solution != 'none' }}
   shell: bash
   run: |
@@ -551,7 +550,7 @@ jobs:
     echo "✅ SUSFS integration completed."
 
 
-- name: ⚙️ Configure Kernel Options
+      - name: ⚙️ Configure Kernel Options
         run: |
           set -e
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
