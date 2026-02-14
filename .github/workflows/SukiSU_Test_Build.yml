@@ -1,5 +1,5 @@
 ---
-name: KSU/SUKI-Build
+name: Build Greatest Kernel (OP13 GKI)
 permissions:
   contents: write
 env:
@@ -24,6 +24,14 @@ on:
           - "sukisu-ultra"
           - "ksu-next"
           - "none"
+      build_roots:
+        description: "Build root variants (single = only selected root_solution, all = build none + SukiSU Ultra + KSU Next)"
+        required: true
+        default: "single"
+        type: choice
+        options:
+          - "single"
+          - "all"
       root_ref:
         description: "Branch/tag/commit for the chosen root (sukisu: builtin/main; ksu-next: next/dev)"
         required: true
@@ -125,7 +133,12 @@ on:
         
 jobs:
   build:
-    name: SUSFS ${{ github.event.inputs.SUSFS }} | BBG ${{ github.event.inputs.bbg }} | ADIOS/Re-Kernel ${{ github.event.inputs.adios_rekernel_enable }}
+    name: Root ${{ matrix.root_solution }} | SUSFS ${{ github.event.inputs.SUSFS }} | BBG ${{ github.event.inputs.bbg }} | ADIOS/Re-Kernel ${{ github.event.inputs.adios_rekernel_enable }}
+    if: ${{ github.event.inputs.build_roots == 'all' || matrix.root_solution == github.event.inputs.root_solution }}
+    strategy:
+      fail-fast: false
+      matrix:
+        root_solution: ["none", "sukisu-ultra", "ksu-next"]
     runs-on: ubuntu-latest
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
@@ -146,10 +159,10 @@ jobs:
       - name: ⚙️ Setup Cache Env
         run: |
           echo "🔧 Setting up device-isolated cache directory..."
-          echo "CCACHE_DIR=$HOME/.ccache_SukiSU" >> $GITHUB_ENV
-          mkdir -p "$HOME/.ccache_SukiSU"
+          echo "CCACHE_DIR=$HOME/.ccache_${{ matrix.root_solution }}" >> $GITHUB_ENV
+          mkdir -p "$HOME/.ccache_${{ matrix.root_solution }}"
           
-          echo "✅ Cache directory set: $HOME/.ccache_SukiSU"
+          echo "✅ Cache directory set: $HOME/.ccache_${{ matrix.root_solution }}"
           
       - name: 🔐 Configure Git
         run: |
@@ -191,7 +204,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-${{ github.ref }}-SukiSU-SUSFS
+          key: ccache-${{ runner.os }}-${{ github.ref }}-${{ matrix.root_solution }}-SUSFS
           restore-keys: >
             ccache-${{ runner.os }}-SukiSU-SUSFS
 
@@ -202,7 +215,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-${{ github.ref }}-SukiSU-NoSUSFS
+          key: ccache-${{ runner.os }}-${{ github.ref }}-${{ matrix.root_solution }}-NoSUSFS
           restore-keys: >
             ccache-${{ runner.os }}-SukiSU-NoSUSFS
 
@@ -287,7 +300,7 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
 
-          ROOT_SOL="${{ github.event.inputs.root_solution }}"
+          ROOT_SOL="${{ matrix.root_solution }}"
           ROOT_REF="${{ github.event.inputs.root_ref }}"
           echo "🧩 Root selection: ${ROOT_SOL} (${ROOT_REF})"
 
@@ -523,7 +536,7 @@ jobs:
 
                             pick_enable_patch() {
                 local p
-                local want="${{ github.event.inputs.root_solution }}"
+                local want="${{ matrix.root_solution }}"
                 if [ "${want}" = "suki-ultra" ]; then
                   for p in "${ENABLE_CANDIDATES[@]}"; do
                     echo "$p" | grep -Eqi "sukisu" && { echo "$p"; return 0; }
@@ -642,7 +655,7 @@ jobs:
             fi
           }
 
-          ROOT_SOL="${ROOT_SOL:-${{ github.event.inputs.root_solution }}}"
+          ROOT_SOL="${ROOT_SOL:-${{ matrix.root_solution }}}"
           if [ "${ROOT_SOL}" = "none" ]; then
             echo "📦 Root disabled (root_solution=none)."
             defcfg_set KSU n
@@ -936,33 +949,62 @@ jobs:
           echo "---- LZ4 Makefile references (first 20) ----"
           
           grep -RIn --max-count=20 'lz4armv8\.o' lib/lz4 2>/dev/null || true
-
-
-      - name: 📦 Add build name
+      - name: 🏷️ Set Kernel Localversion (stable)
+        shell: bash
         run: |
-          echo "📦 Replacing kernel version suffix..."
-          
-          cd $GITHUB_WORKSPACE/kernel_workspace/kernel_platform/
-          
-          if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
-            SUFFIX="${{ github.event.inputs.kernel_suffix }}"
-            echo "Current kernel version suffix: $SUFFIX"
-            for f in ./common/scripts/setlocalversion; do
-              sed -i "\$s|echo \"\\\$res\"|echo \"-${SUFFIX}\"|" "$f"
-            done
-            sed -i "s/-4k/-${SUFFIX}/g" ./common/arch/arm64/configs/gki_defconfig
-          else
-            echo "Current kernel version suffix: ${KERNEL_NAME}"
-            for f in ./common/scripts/setlocalversion; do
-              sed -i "\$s|echo \"\\\$res\"|echo \"-${KERNEL_NAME}\"|" "$f"
-            done
-            sed -i "s/-4k/-${KERNEL_NAME}/g" ./common/arch/arm64/configs/gki_defconfig
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+
+          DEFCONFIG="$PWD/common/arch/arm64/configs/gki_defconfig"
+          if [ ! -f "$DEFCONFIG" ]; then
+            echo "❌ gki_defconfig not found: $DEFCONFIG"
+            exit 1
           fi
-          
-          sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
-          
-          sed -i -E "/^CONFIG_LOCALVERSION_AUTO=.*/d;/^# CONFIG_LOCALVERSION_AUTO is not set/d" ./common/arch/arm64/configs/gki_defconfig || true
-          echo "CONFIG_LOCALVERSION_AUTO=n" >> ./common/arch/arm64/configs/gki_defconfig
+
+          SUFFIX_INPUT="${{ github.event.inputs.kernel_suffix }}"
+          if [ -n "$SUFFIX_INPUT" ]; then
+            SUFFIX="$SUFFIX_INPUT"
+          else
+            SUFFIX="$KERNEL_NAME"
+          fi
+
+          echo "✅ Using ANDROID_VERSION=${ANDROID_VERSION} KERNEL_VERSION=${KERNEL_VERSION}"
+          echo "✅ Using KERNEL_NAME=${KERNEL_NAME}"
+          echo "✅ Kernel localversion will be: -${SUFFIX}"
+
+          export DEFCONFIG SUFFIX
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          defconfig = Path(os.environ["DEFCONFIG"])
+          suffix = os.environ["SUFFIX"].strip()
+
+          lines = defconfig.read_text(errors="ignore").splitlines()
+
+          def drop(key: str):
+              nonlocal lines
+              lines = [l for l in lines if not (l.startswith(f"CONFIG_{key}=") or l.startswith(f"# CONFIG_{key} is not set"))]
+
+          def set_kv(key: str, raw: str):
+              drop(key)
+              lines.append(f"CONFIG_{key}={raw}")
+
+          # Prevent accidental SCM/appended suffix changes
+          set_kv("LOCALVERSION_AUTO", "n")
+
+          # Embed the exact suffix into uname -r as CONFIG_LOCALVERSION="-<suffix>"
+          # Keep quotes as required by Kconfig string values.
+          lv = f"-{suffix}"
+          lv = '"' + lv.replace('"', "") + '"'
+          set_kv("LOCALVERSION", lv)
+
+          defconfig.write_text("\n".join(lines) + "\n")
+          print("Patched:", defconfig)
+          PY
+
+          echo "---- localversion lines (tail) ----"
+          tail -n 60 "$DEFCONFIG" | grep -E "LOCALVERSION" || true
           
       - name: 📅 Set up custom BUILD_TIME
         shell: bash
@@ -1100,7 +1142,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
+          name: build-log-${{ matrix.root_solution }}
           path: kernel_workspace/kernel_platform/common/build.log
 
       - name: 📦 Package Kernel
@@ -1250,7 +1292,7 @@ jobs:
       - name: 🧠 Set Artifact Name
         id: set_name
         run: |
-          ROOT_SOL="${ROOT_SOL:-${{ github.event.inputs.root_solution }}}"
+          ROOT_SOL="${ROOT_SOL:-${{ matrix.root_solution }}}"
           BASE_NAME="GREATEST_KERNEL_${ROOT_SOL}_lz4_${KSU_VERSION_FULL}_${{ github.event.inputs.PROFILE }}"
           
           if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
@@ -1289,17 +1331,17 @@ jobs:
       - name: 📤 Upload zram.zip
         uses: actions/upload-artifact@v4
         with:
-          name: zram-module.zip
+          name: zram-module-${{ matrix.root_solution }}.zip
           path: ./zram.zip
 
       - name: 🏷️ Prepare tag and release notes
-        if: ${{ github.event.inputs.make_release == 'true' }}
+        if: ${{ github.event.inputs.make_release == 'true' && github.event.inputs.build_roots == 'single' }}
         id: relmeta
         run: |
           set -euo pipefail
           DATE_TAG="$(date -u +%Y%m%d)"
           # Keep it simple and deterministic (-style)
-          TAG="OP13-${DATE_TAG}-r${GITHUB_RUN_NUMBER}-${{ github.event.inputs.PROFILE }}"
+          TAG="OP13-${DATE_TAG}-r${GITHUB_RUN_NUMBER}-${{ github.event.inputs.PROFILE }}-${{ matrix.root_solution }}"
           echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
 
           # Minimal release notes (you can expand later)
@@ -1319,7 +1361,7 @@ jobs:
           } > RELEASE_NOTES.md
 
       - name: 📦 Prepare release assets
-        if: ${{ github.event.inputs.make_release == 'true' }}
+        if: ${{ github.event.inputs.make_release == 'true' && github.event.inputs.build_roots == 'single' }}
         run: |
           set -euo pipefail
           # Create a flashable zip from AnyKernel3 folder
@@ -1328,7 +1370,7 @@ jobs:
           ls -lh "${ZIP_NAME}" zram.zip
 
       - name: 🚀 Create GitHub Release
-        if: ${{ github.event.inputs.make_release == 'true' }}
+        if: ${{ github.event.inputs.make_release == 'true' && github.event.inputs.build_roots == 'single' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.relmeta.outputs.TAG }}
