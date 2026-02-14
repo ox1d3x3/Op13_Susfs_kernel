@@ -524,6 +524,29 @@ jobs:
               echo "❌ KSU_SUSFS Kconfig symbol not found (integration missing)."
               exit 1
             fi
+            echo "🧯 Terminal fix: prevent devpts SELinux relabeling (Termux/MT terminal)"
+            # In some KernelSU/SukiSU builds, a bad sepolicy patch can label devpts nodes as ksu_file,
+            # which causes terminal emulators to instantly exit due to SELinux AVC denials.
+            # We sanitize any embedded policy snippet so devpts stays devpts.
+            DEVPTS_BAD_REGEX='genfscon[[:space:]]+devpts[[:space:]]+/[[:space:]]+u:object_r:ksu_file:s0|/dev/pts[^[:space:]]*[[:space:]]+u:object_r:ksu_file:s0|devpts[^[:space:]]*[[:space:]]+u:object_r:ksu_file:s0'
+            SEARCH_DIRS=("${KSU_DIR}/kernel" "${COMMON_DIR}/drivers/kernelsu")
+
+            if grep -RInqE "${DEVPTS_BAD_REGEX}" "${SEARCH_DIRS[@]}" 2>/dev/null; then
+              echo "⚠️ Found devpts -> ksu_file policy snippet. Patching to devpts..."
+              while IFS= read -r -d '' f; do
+                # Replace only the devpts mapping; do not touch other KernelSU policy lines.
+                sed -i -E 's/(genfscon[[:space:]]+devpts[[:space:]]+\/[[:space:]]+u:object_r:)ksu_file(:s0)/\1devpts\2/g' "$f"
+                sed -i -E 's|(/dev/pts[^[:space:]]*[[:space:]]+u:object_r:)ksu_file(:s0)|\1devpts\2|g' "$f"
+                sed -i -E 's/(devpts[^[:space:]]*[[:space:]]+u:object_r:)ksu_file(:s0)/\1devpts\2/g' "$f"
+              done < <(find "${SEARCH_DIRS[@]}" -type f -print0 2>/dev/null)
+            fi
+
+            if grep -RInqE "${DEVPTS_BAD_REGEX}" "${SEARCH_DIRS[@]}" 2>/dev/null; then
+              echo "❌ devpts relabel to ksu_file is still present after patch — terminals will break."
+              grep -RInE "${DEVPTS_BAD_REGEX}" "${SEARCH_DIRS[@]}" | head -n 20 || true
+              exit 1
+            fi
+
 
             echo "📝 Enabling SUSFS options in gki_defconfig..."
             DEFCONFIG="${COMMON_DIR}/arch/arm64/configs/gki_defconfig"
