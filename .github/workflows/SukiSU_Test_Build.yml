@@ -1,4 +1,4 @@
-name: Build Greatest Kernel (OP13 GKI)
+name: KSU/SUKI-TEST
 permissions:
   contents: write
 env:
@@ -6,7 +6,7 @@ env:
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
   KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
-on:
+'on':
   workflow_dispatch:
     inputs:
       make_release:
@@ -136,7 +136,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        root_solution: ${{ fromJson(github.event.inputs.build_roots == 'all' && '["none","sukisu-ultra","ksu-next"]' || format('["{0}"]', github.event.inputs.root_solution)) }}
+        root_solution: >-
+          ${{ fromJson(github.event.inputs.build_roots == 'all' && '["none","sukisu-ultra","ksu-next"]' || format('["{0}"]', github.event.inputs.root_solution)) }}
     runs-on: ubuntu-latest
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
@@ -198,7 +199,7 @@ jobs:
           execute_install_scripts: true
           
       - name: 💾 Restore ccache (With SUSFS)
-        if: ${{ github.event.inputs.SUSFS == 'On' && github.event.inputs.clean_build != 'true' }}
+        if: "${{ github.event.inputs.SUSFS == 'On' && github.event.inputs.clean_build != 'true' }}"
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
@@ -209,7 +210,7 @@ jobs:
             ccache-${{ runner.os }}-SukiSU-SUSFS
             
       - name: 💾 Restore ccache (Without SUSFS)
-        if: ${{ github.event.inputs.SUSFS == 'Off' }}
+        if: "${{ github.event.inputs.SUSFS == 'Off' }}"
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
@@ -285,7 +286,7 @@ jobs:
           echo "✅ Kernel setup complete"
           
       - name: ⚡ Setup Baseband-guard
-        if: ${{ github.event.inputs.bbg == 'On' }}
+        if: "${{ github.event.inputs.bbg == 'On' }}"
         run: |
           set -e
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
@@ -391,8 +392,8 @@ jobs:
           fi
           
           cd "$GITHUB_WORKSPACE/kernel_workspace"
-      -name: 🧬 Integrate SUSFS (strict + auto-fix for KernelSU-Next)
-  if: ${{ github.event.inputs.SUSFS == 'On' && matrix.root_solution != 'none' }}
+      - name: 🧬 Integrate SUSFS (strict + auto-fix for KernelSU-Next)
+  if: "${{ github.event.inputs.SUSFS == 'On' && matrix.root_solution != 'none' }}"
   shell: bash
   run: |
     set -euo pipefail
@@ -1101,7 +1102,7 @@ jobs:
           fi
           
       - name: 🧩 Patch Kernel Image (KPM)
-        if: ${{ github.event.inputs.KPM == 'On' }}
+        if: "${{ github.event.inputs.KPM == 'On' }}"
         run: |
           echo "🔧 Applying KPM patch..."
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"/out/Final-Image-Find
@@ -1267,7 +1268,7 @@ jobs:
           path: ./zram.zip
 
       - name: 🏷️ Prepare tag and release notes
-        if: ${{ github.event.inputs.make_release == 'true' && github.event.inputs.build_roots == 'single' }}
+        if: "${{ github.event.inputs.make_release == 'true' && github.event.inputs.build_roots == 'single' }}"
         id: relmeta
         run: |
           set -euo pipefail
@@ -1293,7 +1294,7 @@ jobs:
           } > RELEASE_NOTES.md
 
       - name: 📦 Prepare release assets
-        if: ${{ github.event.inputs.make_release == 'true' && github.event.inputs.build_roots == 'single' }}
+        if: "${{ github.event.inputs.make_release == 'true' && github.event.inputs.build_roots == 'single' }}"
         run: |
           set -euo pipefail
           # Create a flashable zip from AnyKernel3 folder
@@ -1302,7 +1303,7 @@ jobs:
           ls -lh "${ZIP_NAME}" zram.zip
 
       - name: 🚀 Create GitHub Release
-        if: ${{ github.event.inputs.make_release == 'true' && github.event.inputs.build_roots == 'single' }}
+        if: "${{ github.event.inputs.make_release == 'true' && github.event.inputs.build_roots == 'single' }}"
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.relmeta.outputs.TAG }}
