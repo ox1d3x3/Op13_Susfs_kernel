@@ -1,5 +1,5 @@
 ---
-name: KSU/SUKI-TEST
+name: KSU/SUKI_TEST
 permissions:
   contents: write
 env:
@@ -982,8 +982,8 @@ jobs:
           lines = defconfig.read_text(errors="ignore").splitlines()
 
           def drop(key: str):
-              nonlocal lines
-              lines = [l for l in lines if not (l.startswith(f"CONFIG_{key}=") or l.startswith(f"# CONFIG_{key} is not set"))]
+              # Mutate in-place so we don't need nonlocal/global
+              lines[:] = [l for l in lines if not (l.startswith(f"CONFIG_{key}=") or l.startswith(f"# CONFIG_{key} is not set"))]
 
           def set_kv(key: str, raw: str):
               drop(key)
