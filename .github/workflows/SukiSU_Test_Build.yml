@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       make_release:
-        description: "🏷️ Create GitHub Release (WildKernel style)"
+        description: "🏷️ Create GitHub Release"
         required: true
         type: boolean
         default: false
@@ -35,7 +35,7 @@ on:
         type: boolean
         default: false
       optimize_level:
-        description: "🧠 Compiler optimization level (WildKernel option)"
+        description: "🧠 Compiler optimization level"
         required: true
         type: choice
         options: [O2, O3]
@@ -211,7 +211,7 @@ jobs:
       - name: ⚙️ Initialize ccache
         run: |
           echo "🔧 Initializing ccache..."
-          # WildKernel option: clean build disables ccache usage
+          
           if [ "${{ github.event.inputs.clean_build }}" = "true" ]; then
             export CCACHE_DISABLE=1
             echo "🧼 clean_build=true -> CCACHE_DISABLE=1"
@@ -340,7 +340,7 @@ jobs:
 
           echo "⬇️ Cloning required patches..."
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-            # WildKernel option: allow overriding SusFS ref (branch or commit)
+            
             SUSFS_REF="${{ github.event.inputs.susfs_branch_or_commit }}"
             if [ -z "${SUSFS_REF}" ]; then
               SUSFS_REF="gki-${ANDROID_VERSION}-${KERNEL_VERSION}"
@@ -1009,14 +1009,14 @@ jobs:
 
 
           echo "---- Build (LLVM_IAS=1) ----"
-          # WildKernel option: clean build wipes out/ and ccache stats
+          
           if [ "${{ github.event.inputs.clean_build }}" = "true" ]; then
             echo "🧼 clean_build=true -> removing out/ and resetting ccache..."
             rm -rf out build.log || true
             ccache -C || true
           fi
 
-          # Optimization level (WildKernel option) + PROFILE naming
+          
           # - If PROFILE=lowest -> -Os (size/battery bias)
           # - Else use optimize_level (O2 or O3)
           if [ "${{ github.event.inputs.PROFILE }}" = "lowest" ]; then
@@ -1139,7 +1139,7 @@ jobs:
           start_idx = None
           end_idx = None
 
-          # Locate original author banner block (chenhua13) used in WildKernels scripts
+          
           for i, line in enumerate(s):
               if 'ui_print "chenhua13 Kernel' in line:
                   start_idx = i
@@ -1260,7 +1260,7 @@ jobs:
         run: |
           set -euo pipefail
           DATE_TAG="$(date -u +%Y%m%d)"
-          # Keep it simple and deterministic (WildKernel-style)
+          # Keep it simple 
           TAG="OP13-${DATE_TAG}-r${GITHUB_RUN_NUMBER}-${{ github.event.inputs.PROFILE }}"
           echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
 
