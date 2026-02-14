@@ -1,5 +1,7 @@
 ---
 name: Build SukiSU Ultra-Test
+permissions:
+  contents: write
 env:
   TZ: Asia/Shanghai
   ANDROID_VERSION: android15
@@ -8,6 +10,27 @@ env:
 on:
   workflow_dispatch:
     inputs:
+      make_release:
+        description: "🏷️ Create GitHub Release (WildKernel style)"
+        required: true
+        type: boolean
+        default: false
+      clean_build:
+        description: "🧼 Clean build (no ccache, fresh out/)"
+        required: true
+        type: boolean
+        default: false
+      optimize_level:
+        description: "🧠 Compiler optimization level (WildKernel option)"
+        required: true
+        type: choice
+        options: [O2, O3]
+        default: O2
+      susfs_branch_or_commit:
+        description: "🌿 SusFS ref (branch or commit). Leave blank to auto-select gki-android* branch."
+        required: false
+        type: string
+        default: ""
       PROFILE:
         description: "⚡ Performance profile (artifact naming)"
         required: true
@@ -150,7 +173,7 @@ jobs:
           execute_install_scripts: true
           
       - name: 💾 Restore ccache (With SUSFS)
-        if: ${{ github.event.inputs.SUSFS == 'On' }}
+        if: ${{ github.event.inputs.SUSFS == 'On' && github.event.inputs.clean_build != 'true' }}
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
@@ -174,6 +197,11 @@ jobs:
       - name: ⚙️ Initialize ccache
         run: |
           echo "🔧 Initializing ccache..."
+          # WildKernel option: clean build disables ccache usage
+          if [ "${{ github.event.inputs.clean_build }}" = "true" ]; then
+            export CCACHE_DISABLE=1
+            echo "🧼 clean_build=true -> CCACHE_DISABLE=1"
+          fi
           INIT_FLAG="${{ env.CCACHE_DIR }}/.ccache_initialized"
           
           if command -v ccache >/dev/null 2>&1; then
@@ -299,7 +327,25 @@ jobs:
 
           echo "⬇️ Cloning required patches..."
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-            git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${ANDROID_VERSION}-${KERNEL_VERSION} susfs4ksu
+            # WildKernel option: allow overriding SusFS ref (branch or commit)
+            SUSFS_REF="${{ github.event.inputs.susfs_branch_or_commit }}"
+            if [ -z "${SUSFS_REF}" ]; then
+              SUSFS_REF="gki-${ANDROID_VERSION}-${KERNEL_VERSION}"
+            fi
+
+            git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+            cd susfs4ksu
+            # Try branch/tag first, then commit hash
+            if git rev-parse --verify "origin/${SUSFS_REF}" >/dev/null 2>&1 || git ls-remote --exit-code origin "refs/heads/${SUSFS_REF}" >/dev/null 2>&1; then
+              git fetch --depth=1 origin "${SUSFS_REF}" || true
+              git checkout -B susfs_ref "origin/${SUSFS_REF}" || git checkout "${SUSFS_REF}"
+            else
+              # assume commit hash
+              git fetch --depth=1 origin "${SUSFS_REF}" || true
+              git checkout "${SUSFS_REF}"
+            fi
+            cd ..
+
           fi
           git clone --depth=1 https://github.com/mrcxlinux/kernel_patches.git kernel_patches
           git clone --depth=1 https://github.com/ShirkNeko/SukiSU_patch.git SukiSU_patch
@@ -571,12 +617,6 @@ jobs:
             defcfg_set KSU_SUSFS n
             defcfg_set KSU_MANUAL_HOOK y
           fi
-
-          # Mountify (backslashxx/mountify) helpers
-          defcfg_set TMPFS_XATTR y
-          defcfg_set TMPFS_POSIX_ACL y
-          # Daily-use extras inspired by popular community builds (safe defaults)
-          # (Only set if symbols exist in this tree.)
           defcfg_try_set() {
             local key="$1"
             local val="$2"
@@ -584,12 +624,6 @@ jobs:
               defcfg_set "${key}" "${val}"
             fi
           }
-
-          # WireGuard VPN (handy and low-risk; can be built-in or module)
-          defcfg_try_set WIREGUARD y
-
-          # OverlayFS (helps some root/module mount stacks; doesn't change stock behavior unless used)
-          defcfg_try_set OVERLAY_FS y
 
           # Optional: keep a sane default TCP congestion control if user didn't enable BBR
           if [ "${{ github.event.inputs.bbr }}" != "On" ]; then
@@ -934,12 +968,24 @@ jobs:
 
 
           echo "---- Build (LLVM_IAS=1) ----"
-          # Optimization level by profile (balanced daily defaults)
-          case "${{ github.event.inputs.PROFILE }}" in
-            highest) KOPT="-O3" ;;
-            lowest)  KOPT="-Os" ;;
-            *)       KOPT="-O2" ;;
-          esac
+          # WildKernel option: clean build wipes out/ and ccache stats
+          if [ "${{ github.event.inputs.clean_build }}" = "true" ]; then
+            echo "🧼 clean_build=true -> removing out/ and resetting ccache..."
+            rm -rf out build.log || true
+            ccache -C || true
+          fi
+
+          # Optimization level (WildKernel option) + PROFILE naming
+          # - If PROFILE=lowest -> -Os (size/battery bias)
+          # - Else use optimize_level (O2 or O3)
+          if [ "${{ github.event.inputs.PROFILE }}" = "lowest" ]; then
+            KOPT="-Os"
+          else
+            case "${{ github.event.inputs.optimize_level }}" in
+              O3) KOPT="-O3" ;;
+              *)  KOPT="-O2" ;;
+            esac
+          fi
           echo "Using KCFLAGS: ${KOPT}"
 
 
@@ -1165,3 +1211,51 @@ jobs:
         with:
           name: zram-module.zip
           path: ./zram.zip
+
+      - name: 🏷️ Prepare tag and release notes
+        if: ${{ github.event.inputs.make_release == 'true' }}
+        id: relmeta
+        run: |
+          set -euo pipefail
+          DATE_TAG="$(date -u +%Y%m%d)"
+          # Keep it simple and deterministic (WildKernel-style)
+          TAG="OP13-${DATE_TAG}-r${GITHUB_RUN_NUMBER}-${{ github.event.inputs.PROFILE }}"
+          echo "TAG=$TAG" >> "$GITHUB_OUTPUT"
+
+          # Minimal release notes (you can expand later)
+          {
+            echo "## Build"
+            echo "- Device: OnePlus 13 (PJZ110)"
+            echo "- Profile: ${{ github.event.inputs.PROFILE }}"
+            echo "- optimize_level: ${{ github.event.inputs.optimize_level }}"
+            echo "- SUSFS: ${{ github.event.inputs.SUSFS }}"
+            echo "- KPM: ${{ github.event.inputs.KPM }}"
+            echo "- BBG: ${{ github.event.inputs.bbg }}"
+            echo "- BBR: ${{ github.event.inputs.bbr }}"
+            echo ""
+            echo "## Assets"
+            echo "- AnyKernel3 flashable zip"
+            echo "- zram.zip module"
+          } > RELEASE_NOTES.md
+
+      - name: 📦 Prepare release assets
+        if: ${{ github.event.inputs.make_release == 'true' }}
+        run: |
+          set -euo pipefail
+          # Create a flashable zip from AnyKernel3 folder
+          ZIP_NAME="${{ steps.set_name.outputs.ARTIFACT_NAME }}.zip"
+          (cd AnyKernel3 && zip -qr "../${ZIP_NAME}" .)
+          ls -lh "${ZIP_NAME}" zram.zip
+
+      - name: 🚀 Create GitHub Release
+        if: ${{ github.event.inputs.make_release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.relmeta.outputs.TAG }}
+          name: ${{ steps.relmeta.outputs.TAG }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            ${{ steps.set_name.outputs.ARTIFACT_NAME }}.zip
+            zram.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
