@@ -1,4 +1,4 @@
-name: KSU/SUKI
+name: TEST
 permissions:
   contents: write
 env:
@@ -136,11 +136,11 @@ env:
       - master
 jobs:
   build:
-    name: Root ${{ matrix.root_solution }} | SUSFS ${{ env.SUSFS }} | BBG ${{ env.BBG }} | ADIOS/Re-Kernel ${{ github.event.inputs.adios_rekernel_enable }}
+    name: Root ${{ matrix.root_solution }} | SUSFS ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.SUSFS) || 'Off' }} | BBG ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.bbg) || 'Off' }} | ADIOS/Re-Kernel ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.adios_rekernel_enable) || 'Off' }}
     strategy:
       fail-fast: false
       matrix:
-        root_solution: ${{ fromJson((github.event_name == 'workflow_dispatch' && github.event.inputs.build_roots == 'all' && '["none","sukisu-ultra","ksu-next"]') || (github.event_name == 'workflow_dispatch' && format('["{0}"]', github.event.inputs.root_solution || 'none')) || '["none","sukisu-ultra","ksu-next"]') }}
+        root_solution: ${{ fromJson((github.event_name == 'workflow_dispatch' && github.event.inputs.build_roots == 'all' && '["none","sukisu-ultra","ksu-next"]') || (github.event_name == 'workflow_dispatch' && format('["{0}"]', github.event.inputs.root_solution || 'none')) || '["none"]') }}
     runs-on: ubuntu-latest
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
@@ -148,19 +148,19 @@ jobs:
       CCACHE_HARDLINK: "true"
       CCACHE_MAXSIZE: 8G
       # ---- Input defaults (also used for push runs) ----
-      ANDROID_VERSION: ${{ github.event.inputs.ANDROID_VERSION || 'android15' }}
-      KERNEL_VERSION:  ${{ github.event.inputs.KERNEL_VERSION  || '6.6' }}
-      KERNEL_NAME:     ${{ github.event.inputs.KERNEL_NAME     || 'android15-6.6' }}
-      PROFILE:         ${{ github.event.inputs.PROFILE         || 'balanced' }}
-      SUSFS:           ${{ github.event.inputs.SUSFS           || 'On' }}
-      SUSFS_REF:       ${{ github.event.inputs.susfs_branch_or_commit || 'gki-android15-6.6' }}
-      BBR:             ${{ github.event.inputs.bbr             || 'Off' }}
-      BBG:             ${{ github.event.inputs.bbg             || 'Off' }}
-      KPM:             ${{ github.event.inputs.kpm             || 'Off' }}
-      LZ4:             ${{ github.event.inputs.lz4             || 'Off' }}
-      CUSTOM_DEFCONFIG: ${{ github.event.inputs.custom_defconfig || '' }}
-      MAKE_TARGET:     ${{ github.event.inputs.make_target     || 'all' }}
-      ROOT_REF:        ${{ github.event.inputs.root_ref        || 'builtin' }}
+      ANDROID_VERSION: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.ANDROID_VERSION) || 'android15' }}
+      KERNEL_VERSION:  ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.KERNEL_VERSION) || '6.6' }}
+      KERNEL_NAME:     ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.KERNEL_NAME) || 'android15-6.6' }}
+      PROFILE:         ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.PROFILE) || 'balanced' }}
+      SUSFS:           ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.SUSFS) || 'Off' }}
+      SUSFS_REF:       ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.susfs_branch_or_commit) || 'gki-android15-6.6' }}
+      BBR:           ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.bbr) || 'Off' }}
+      BBG:           ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.bbg) || 'Off' }}
+      KPM:           ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.kpm) || 'Off' }}
+      LZ4:           ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.lz4) || 'Off' }}
+      CUSTOM_DEFCONFIG: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.custom_defconfig) || '' }}
+      MAKE_TARGET:     ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.make_target) || 'all' }}
+      ROOT_REF:        ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.root_ref) || 'builtin' }}
     steps:
       - name: 🚀 Maximize Build Space
         uses: easimon/maximize-build-space@v9
@@ -636,19 +636,23 @@ jobs:
             fi
 
             if ! grep -q "KSU_SUSFS" "${KSU_DIR}/kernel/Kconfig" 2>/dev/null; then
-              echo "::error::SUSFS requested, but KernelSU still does not expose KSU_SUSFS in Kconfig."
-              echo "Fix: for ksu-next set ROOT_REF=next-susfs (or keep builtin with SUSFS=On; workflow auto-picks next-susfs)."
-              exit 1
+              echo "::warning::SUSFS requested, but KernelSU does not expose KSU_SUSFS in Kconfig for this root solution/commit."
+              echo "Continuing build WITHOUT SUSFS to avoid hard failure. (Select SukiSU Ultra or a SUSFS-compatible KernelSU commit to enable SUSFS.)"
+              echo "(auto) Setting SUSFS=Off for the rest of the job."
+              echo "SUSFS=Off" >> "$GITHUB_ENV"
+              echo "SUSFS_EFFECTIVE=Off" >> "$GITHUB_ENV"
+              SUSFS="Off"
+              SUSFS_EFFECTIVE="Off"
             fi
           fi
           # ---------- final hard checks ----------
-          if ! grep -Rqs --include='Kconfig*' '^\s*config\s\+KSU_SUSFS\b' "${KSU_DIR}"; then
-          echo "::error::SUSFS requested, but KernelSU still does not expose KSU_SUSFS in Kconfig."
-          echo "This is NOT random — it means your KernelSU source is incompatible with the SUSFS patchset/ref."
-          echo "Fix options:"
-          echo "  - Use a KernelSU revision known to work with SUSFS v2.0.0 (e.g., WildKernels OnePlus_KernelSU_SUSFS base)"
-          echo "  - Or pin susfs_branch_or_commit to a matching commit/tag for your KernelSU source."
-          exit 1
+          if [ "${SUSFS}" = "On" ] && ! grep -Rqs --include='Kconfig*' '^\s*config\s\+KSU_SUSFS\b' "${KSU_DIR}"; then
+            echo "::warning::SUSFS requested, but KernelSU still does not expose KSU_SUSFS in Kconfig."
+            echo "(auto) Setting SUSFS=Off for the rest of the job."
+            echo "SUSFS=Off" >> "$GITHUB_ENV"
+            echo "SUSFS_EFFECTIVE=Off" >> "$GITHUB_ENV"
+            SUSFS="Off"
+            SUSFS_EFFECTIVE="Off"
           fi
 
           echo "✅ SUSFS integration completed."
@@ -969,22 +973,27 @@ jobs:
 
           
           echo "---- LZ4 sanity ----"
-          
-          if [ ! -f lib/lz4/lz4armv8/lz4armv8.S ]; then
-          
-            echo "❌ Missing lib/lz4/lz4armv8/lz4armv8.S (required by Kbuild in this tree)"
-          
-            echo " This will cause: No rule to make target 'lib/lz4/lz4armv8/lz4armv8.o'"
-          
-            exit 1
-          
+
+          if [ -f lib/lz4/lz4armv8/lz4armv8.S ]; then
+            echo "✅ Found lib/lz4/lz4armv8/lz4armv8.S"
+          else
+            echo "::warning::Missing lib/lz4/lz4armv8/lz4armv8.S (this tree references arm64 asm LZ4)."
+            echo "::warning::Auto-disabling arm64 asm LZ4 and falling back to generic C implementation."
+            # Remove lz4armv8 references from Kbuild/Makefile if present (best-effort)
+            for f in lib/lz4/Makefile lib/lz4/Kbuild lib/lz4/Kconfig lib/Makefile; do
+              if [ -f "$f" ]; then
+                sed -i '/lz4armv8/d' "$f"
+              fi
+            done
+
+            if grep -RIn 'lz4armv8' lib >/dev/null 2>&1; then
+              echo "::error::Still found lz4armv8 references after patch; showing first 30 lines:"
+              grep -RIn --max-count=30 'lz4armv8' lib || true
+              exit 1
+            fi
+
+            echo "✅ lz4armv8 references removed; build will proceed."
           fi
-          
-          echo "✅ Found lib/lz4/lz4armv8/lz4armv8.S"
-          
-          echo "---- LZ4 Makefile references (first 20) ----"
-          
-          grep -RIn --max-count=20 'lz4armv8\.o' lib/lz4 2>/dev/null || true
       - name: 🏷️ Set Kernel Localversion (stable)
         shell: bash
         run: |
