@@ -126,7 +126,7 @@ env:
 jobs:
   build:
     name: SUSFS ${{ github.event.inputs.SUSFS }} | BBG ${{ github.event.inputs.bbg }} | ADIOS ${{ github.event.inputs.adios }} | Re-Kernel ${{ github.event.inputs.rekernel }}
-    runs-on: ubuntu-22.04
+    runs-on: ${{ (github.event.inputs.toolchain == 'neutron') && 'ubuntu-24.04' || 'ubuntu-22.04' }}
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
