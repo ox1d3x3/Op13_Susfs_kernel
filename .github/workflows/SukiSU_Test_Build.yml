@@ -1,4 +1,4 @@
-name: OP13 KernelSU-Next Ultimate (OOS16/ColorOS16)
+name: OP13 KernelSU-Next
 
 env:
   TZ: UTC
@@ -381,95 +381,95 @@ jobs:
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
           DEFCONFIG="common/arch/arm64/configs/gki_defconfig"
 
-  python3 - <<'PY'
-  from pathlib import Path
-  import os, re
-
-cfg_path = Path("kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig")
-text = cfg_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-
-def set_kv(opt: str, val: str):
-    # Remove any existing occurrences of opt=...
-    prefix = opt + "="
-    new = [l for l in text if not l.startswith(prefix)]
-    new.append(f"{opt}={val}")
-    return new
-
-def ensure(opt: str):
-    # Ensure CONFIG_FOO=y exists (remove unset if present)
-    key = f"CONFIG_{opt}=y"
-    unset = f"# CONFIG_{opt} is not set"
-    new = []
-    found = False
-    for l in text:
-        if l.strip() == unset:
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, re
+          
+          cfg_path = Path("kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig")
+          text = cfg_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+          
+          def set_kv(opt: str, val: str):
+              # Remove any existing occurrences of opt=...
+              prefix = opt + "="
+              new = [l for l in text if not l.startswith(prefix)]
+              new.append(f"{opt}={val}")
+              return new
+          
+          def ensure(opt: str):
+              # Ensure CONFIG_FOO=y exists (remove unset if present)
+              key = f"CONFIG_{opt}=y"
+              unset = f"# CONFIG_{opt} is not set"
+              new = []
+              found = False
+              for l in text:
+                  if l.strip() == unset:
             continue
-        if l.strip() == key:
+                  if l.strip() == key:
             found = True
-        new.append(l)
-    if not found:
-        new.append(key)
-    return new
-
-def ensure_mod(opt: str):
-    key = f"CONFIG_{opt}=m"
-    unset = f"# CONFIG_{opt} is not set"
-    new = []
-    found = False
-    for l in text:
-        if l.strip() == unset:
+                  new.append(l)
+              if not found:
+                  new.append(key)
+              return new
+          
+          def ensure_mod(opt: str):
+              key = f"CONFIG_{opt}=m"
+              unset = f"# CONFIG_{opt} is not set"
+              new = []
+              found = False
+              for l in text:
+                  if l.strip() == unset:
             continue
-        if l.strip() == key:
+                  if l.strip() == key:
             found = True
-        new.append(l)
-    if not found:
-        new.append(key)
-    return new
-
-# Local version string (purely cosmetic; does not change ABI)
-suffix = os.environ.get("SUFFIX", "").strip()
-if suffix:
-    # Ensure LOCALVERSION is present and LOCALVERSION_AUTO disabled
-    # Use KEY=VALUE style for Kconfig defconfig parsing
-    # Note: Some trees use CONFIG_LOCALVERSION, others LOCALVERSION; we set both to be safe.
-    # These lines do not break builds if unused.
-    # Add/update:
-    #   CONFIG_LOCALVERSION="-foo"
-    #   CONFIG_LOCALVERSION_AUTO=n
-    #   LOCALVERSION="-foo"
-    #   LOCALVERSION_AUTO=n
-    def upsert(line_prefix, line_value):
-        nonlocal text
-        new = [l for l in text if not l.startswith(line_prefix)]
-        new.append(line_value)
-        text = new
-
-    upsert("CONFIG_LOCALVERSION=", f'CONFIG_LOCALVERSION="{suffix}"')
-    upsert("CONFIG_LOCALVERSION_AUTO=", "CONFIG_LOCALVERSION_AUTO=n")
-    upsert("LOCALVERSION=", f'LOCALVERSION="{suffix}"')
-    upsert("LOCALVERSION_AUTO=", "LOCALVERSION_AUTO=n")
-
-# WildKernel feature toggles (safe, module-friendly)
-# IP_SET (netfilter ipset support)
-if os.environ.get("ENABLE_IPSET", "On") == "On":
-    text = ensure("NETFILTER")
-    text = ensure("NETFILTER_XTABLES")
-    text = ensure_mod("IP_SET")
-    text = ensure_mod("IP_SET_HASH_IP")
-    text = ensure_mod("NETFILTER_XT_SET")
-
-# TTL target (match/modify TTL / hop-limit)
-if os.environ.get("ENABLE_TTL", "On") == "On":
-    text = ensure("NETFILTER")
-    text = ensure("NETFILTER_XTABLES")
-    text = ensure_mod("NETFILTER_XT_TARGET_HL")
-    text = ensure_mod("NETFILTER_XT_TARGET_TTL")
-
-# HMBird is applied via patches; no defconfig changes required here.
-
-cfg_path.write_text("\n".join(text) + "\n", encoding="utf-8")
-print("gki_defconfig updated safely.")
-PY
+                  new.append(l)
+              if not found:
+                  new.append(key)
+              return new
+          
+          # Local version string (purely cosmetic; does not change ABI)
+          suffix = os.environ.get("SUFFIX", "").strip()
+          if suffix:
+              # Ensure LOCALVERSION is present and LOCALVERSION_AUTO disabled
+              # Use KEY=VALUE style for Kconfig defconfig parsing
+              # Note: Some trees use CONFIG_LOCALVERSION, others LOCALVERSION; we set both to be safe.
+              # These lines do not break builds if unused.
+              # Add/update:
+              #   CONFIG_LOCALVERSION="-foo"
+              #   CONFIG_LOCALVERSION_AUTO=n
+              #   LOCALVERSION="-foo"
+              #   LOCALVERSION_AUTO=n
+              def upsert(line_prefix, line_value):
+                  global text
+                  new = [l for l in text if not l.startswith(line_prefix)]
+                  new.append(line_value)
+                  text = new
+          
+              upsert("CONFIG_LOCALVERSION=", f'CONFIG_LOCALVERSION="{suffix}"')
+              upsert("CONFIG_LOCALVERSION_AUTO=", "CONFIG_LOCALVERSION_AUTO=n")
+              upsert("LOCALVERSION=", f'LOCALVERSION="{suffix}"')
+              upsert("LOCALVERSION_AUTO=", "LOCALVERSION_AUTO=n")
+          
+          # WildKernel feature toggles (safe, module-friendly)
+          # IP_SET (netfilter ipset support)
+          if os.environ.get("ENABLE_IPSET", "On") == "On":
+              text = ensure("NETFILTER")
+              text = ensure("NETFILTER_XTABLES")
+              text = ensure_mod("IP_SET")
+              text = ensure_mod("IP_SET_HASH_IP")
+              text = ensure_mod("NETFILTER_XT_SET")
+          
+          # TTL target (match/modify TTL / hop-limit)
+          if os.environ.get("ENABLE_TTL", "On") == "On":
+              text = ensure("NETFILTER")
+              text = ensure("NETFILTER_XTABLES")
+              text = ensure_mod("NETFILTER_XT_TARGET_HL")
+              text = ensure_mod("NETFILTER_XT_TARGET_TTL")
+          
+          # HMBird is applied via patches; no defconfig changes required here.
+          
+          cfg_path.write_text("\n".join(text) + "\n", encoding="utf-8")
+          print("gki_defconfig updated safely.")
+          PY
         env:
           SUSFS_ON: ${{ github.event.inputs.SUSFS == 'On' && '1' || '0' }}
           BBG_ON: ${{ github.event.inputs.bbg == 'On' && '1' || '0' }}
