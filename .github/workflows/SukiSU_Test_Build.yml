@@ -1,4 +1,4 @@
-name: KSU/SUKI_TEST
+name: KSU/SUKI-TEST
 permissions:
   contents: write
 env:
@@ -349,130 +349,77 @@ jobs:
       if: ${{ ((github.event.inputs.SUSFS || 'Off') || 'Off') == 'On' && matrix.root_solution
         != 'none' }}
       shell: bash
-      run: "set -euo pipefail\n\n# avoid -u \"unbound variable\" surprises\nKSU_ENABLE_PATCH=\"\
-        \"\n\ncd \"$GITHUB_WORKSPACE/kernel_workspace/kernel_platform\"\n\necho \"\
-        \U0001F9EC SUSFS requested \u2192 strict patching (no fuzz) + auto-fix for\
-        \ KernelSU-Next\u2026\"\n\nCOMMON_DIR=\"./common\"\nif [ ! -d \"${COMMON_DIR}\"\
-        \ ]; then\necho \"::error::Expected ${COMMON_DIR} folder not found under kernel_platform\"\
-        \nexit 1\nfi\n\n# ---------- helpers ----------\napply_patch_multi() {\n \
-        \ local patch_file=\"$1\"\n  local target_dir=\"$2\"\n\n  # IMPORTANT: patch_file\
-        \ can be relative to the caller. We cd into target_dir,\n  # so we must resolve\
-        \ to an absolute path first (otherwise \"No such file\" happens).\n  local\
-        \ patch_file_abs=\"\"\n  if command -v realpath >/dev/null 2>&1; then\n  \
-        \  patch_file_abs=\"$(realpath -m \"${patch_file}\" 2>/dev/null || true)\"\
-        \n  fi\n  if [ -z \"${patch_file_abs}\" ] && command -v readlink >/dev/null\
-        \ 2>&1; then\n    patch_file_abs=\"$(readlink -f \"${patch_file}\" 2>/dev/null\
-        \ || true)\"\n  fi\n  if [ -z \"${patch_file_abs}\" ]; then\n    patch_file_abs=\"\
-        ${patch_file}\"\n  fi\n\n  # try a few strip levels, but NEVER with fuzz (prevents\
-        \ 'random' broken builds)\n  for p in 0 1 2 3; do\n    if (cd \"${target_dir}\"\
-        \ && patch -p${p} --fuzz=0 --dry-run -f < \"${patch_file_abs}\" >/dev/null\
-        \ 2>&1); then\n      echo \"\u2705 Applying $(basename \"${patch_file_abs}\"\
-        ) in ${target_dir} with -p${p}\"\n      (cd \"${target_dir}\" && patch -p${p}\
-        \ --fuzz=0 --forward --batch < \"${patch_file_abs}\")\n      return 0\n  \
-        \  fi\n  done\n  return 1\n}\napply_all_patches_best_effort() {\nlocal patch_root=\"\
-        $1\"\nlocal target_dir=\"$2\"\n\nif [ ! -d \"${patch_root}\" ]; then\nreturn\
-        \ 0\nfi\n\necho \"\U0001F527 Trying WildKernels patches under: ${patch_root}\"\
-        \n# Sort for determinism\nwhile IFS= read -r -d '' f; do\nif apply_patch_multi\
-        \ \"${f}\" \"${target_dir}\"; then\n:\nelse\necho \"\u21AA\uFE0F skipped (did\
-        \ not apply cleanly): ${f}\"\nfi\ndone < <(find \"${patch_root}\" -type f\
-        \ \\( -name \"*.patch\" -o -name \"*.diff\" \\) -print0 | sort -z)\n}\napply_patches_with_grep_best_effort()\
-        \ {\n  local needle=\"$1\"\n  local patch_root=\"$2\"\n  local target_dir=\"\
-        $3\"\n\n  if [ ! -d \"${patch_root}\" ]; then\n    echo \"\u2139\uFE0F Patches\
-        \ dir not present (${patch_root}); skip grep-scan.\"\n    return 0\n  fi\n\
-        \n  mapfile -t PATCH_FILES < <(grep -RIl --include=\"*.patch\" --include=\"\
-        *.diff\" \"${needle}\" \"${patch_root}\" 2>/dev/null | sort -V -r || true)\n\
-        \  if [ ${#PATCH_FILES[@]} -eq 0 ]; then\n    echo \"\u2139\uFE0F No patches\
-        \ containing '${needle}' found under ${patch_root}\"\n    return 0\n  fi\n\
-        \n  for patch_file in \"${PATCH_FILES[@]}\"; do\n    local abs_patch_file=\"\
-        $(pwd)/${patch_file}\"\n    if [ -f \"${abs_patch_file}\" ]; then\n      apply_patch_multi\
-        \ \"${abs_patch_file}\" \"${target_dir}\" || true\n    fi\n  done\n}\n\n\n\
-        # ---------- locate KernelSU sources ----------\n# Prefer KSU_DIR from previous\
-        \ step if set\nKSU_DIR=\"${KSU_DIR:-}\"\nif [ -z \"${KSU_DIR}\" ] || [ ! -d\
-        \ \"${KSU_DIR}\" ]; then\nif [ -d \"./KernelSU\" ]; then\nKSU_DIR=\"./KernelSU\"\
-        \nelif [ -d \"./common/KernelSU\" ]; then\nKSU_DIR=\"./common/KernelSU\"\n\
-        elif [ -d \"./common/KernelSU-Next\" ]; then\nKSU_DIR=\"./common/KernelSU-Next\"\
-        \nelif [ -d \"./common/drivers/kernelsu\" ]; then\nKSU_DIR=\"./common/drivers/kernelsu\"\
-        \nelse\necho \"::error::Cannot locate KernelSU sources (KernelSU/common/KernelSU*/common/drivers/kernelsu).\"\
-        \nfind . -maxdepth 3 -type d -name \"KernelSU*\" -o -name \"kernelsu\" -print\
-        \ || true\nexit 1\nfi\nfi\necho \"KernelSU dir: ${KSU_DIR}\"\n\n# ----------\
-        \ clone susfs4ksu ----------\nSUSFS_REF=\"${SUSFS_REF:-gki-android15-6.6}\"\
-        \nif [ -z \"${SUSFS_REF}\" ]; then\nSUSFS_REF=\"gki-${ANDROID_VERSION}-${KERNEL_VERSION}\"\
-        \nfi\necho \"SUSFS ref: ${SUSFS_REF}\"\n\nrm -rf susfs4ksu wk_patches\n\n\
-        if git clone --depth 1 --branch \"${SUSFS_REF}\" https://gitlab.com/simonpunk/susfs4ksu.git\
-        \ susfs4ksu 2>/dev/null; then\necho \"\u2705 cloned susfs4ksu (${SUSFS_REF})\
-        \ shallow\"\nelse\necho \"\u2139\uFE0F Shallow clone failed (maybe a commit\
-        \ hash). Doing full clone + checkout...\"\ngit clone https://gitlab.com/simonpunk/susfs4ksu.git\
-        \ susfs4ksu\n(cd susfs4ksu && git checkout \"${SUSFS_REF}\")\nfi\n\npick_susfs_ksu_enable_patch()\
-        \ {\n# Find the KernelSU-side \"enable SUSFS\" patch inside susfs4ksu.\n#\
-        \ IMPORTANT: restrict to kernel_patches/KernelSU* so we never pick the kernel\
-        \ patch (50_add_*).\nlocal kind=\"${1:-KernelSU}\"\nlocal base=\"susfs4ksu/kernel_patches\"\
-        \nlocal p=\"\"\n\nfor d in \"${base}/${kind}\" \"${base}/KernelSU\"; do\n\
-        [ -d \"$d\" ] || continue\np=\"$(find \"$d\" -maxdepth 3 -type f -name '*.patch'\
-        \ 2>/dev/null | grep -iE 'enable.*susfs|susfs.*enable' | head -n1 || true)\"\
-        \nif [ -n \"$p\" ]; then\necho \"$p\"\nreturn 0\nfi\ndone\n\nfor d in \"${base}/${kind}\"\
-        \ \"${base}/KernelSU\"; do\n[ -d \"$d\" ] || continue\np=\"$(grep -RIl 'KSU_SUSFS'\
-        \ \"$d\" --include='*.patch' 2>/dev/null | while read -r f; do\nif grep -q\
-        \ 'kernel/Kconfig' \"$f\" 2>/dev/null; then echo \"$f\"; break; fi\ndone |\
-        \ head -n1 || true)\"\nif [ -n \"$p\" ]; then\necho \"$p\"\nreturn 0\nfi\n\
-        done\n\necho \"\"\n}\n\n# Select the correct kernel patch for this tree\n\
-        KERNEL_PATCH_FILE=\"$(ls -1 susfs4ksu/kernel_patches 2>/dev/null | grep -E\
-        \ '^50_add_susfs_in_.*\\.patch$' | grep -E \"android15-6\\.6|android15|6\\\
-        .6\" | head -n 1 || true)\"\nif [ -z \"${KERNEL_PATCH_FILE}\" ]; then\nKERNEL_PATCH_FILE=\"\
-        $(ls -1 susfs4ksu/kernel_patches 2>/dev/null | grep -E '^50_add_susfs_in_.*\\\
-        .patch$' | head -n 1 || true)\"\nfi\nif [ -z \"${KERNEL_PATCH_FILE}\" ]; then\n\
-        echo \"::error::Could not locate kernel patch (50_add_susfs_in_*.patch) under\
-        \ susfs4ksu/kernel_patches\"\nls -la susfs4ksu/kernel_patches || true\nexit\
-        \ 1\nfi\nKERNEL_PATCH=\"susfs4ksu/kernel_patches/${KERNEL_PATCH_FILE}\"\n\
-        echo \"Kernel patch: ${KERNEL_PATCH}\"\n\nif [ -n \"${KSU_ENABLE_PATCH:-}\"\
-        \ ]; then\n  KSU_ENABLE_PATCH_ABS=\"$(pwd)/${KSU_ENABLE_PATCH}\"\nelse\n \
-        \ KSU_ENABLE_PATCH_ABS=\"\"\nfi\nKERNEL_PATCH_ABS=\"$(pwd)/${KERNEL_PATCH}\"\
-        \n\n# Copy helper sources/headers (safe + idempotent)\ncp -af susfs4ksu/kernel_patches/fs/*.c\
-        \ \"${COMMON_DIR}/fs/\" 2>/dev/null || true\ncp -af susfs4ksu/kernel_patches/include/linux/*.h\
-        \ \"${COMMON_DIR}/include/linux/\" 2>/dev/null || true\n\n# ---------- kernel-side\
-        \ SUSFS ----------\nif grep -Rqs --include='Kconfig*' '^\\s*config\\s\\+SUSFS\\\
-        b' \"${COMMON_DIR}\"; then\necho \"\u2705 Kernel already contains SUSFS Kconfig;\
-        \ skipping kernel patch.\"\nelse\necho \"Applying kernel SUSFS patch (strict)\u2026\
-        \"\nif ! apply_patch_multi \"${KERNEL_PATCH_ABS}\" \"${COMMON_DIR}\"; then\n\
-        echo \"\u26A0\uFE0F simonpunk kernel patch did not apply cleanly.\"\necho\
-        \ \"   Trying WildKernels experimental SUSFS patches (best-effort)\u2026\"\
-        \ngit clone --depth 1 https://github.com/WildKernels/kernel_patches.git wk_patches\n\
-        apply_all_patches_best_effort \"wk_patches/experimental/susfs\" \"${COMMON_DIR}\"\
-        \nfi\nfi\n# ---------- KernelSU-side SUSFS ----------\nif [ -d \"${KSU_DIR}\"\
-        \ ]; then\n  echo \"KernelSU dir: ${KSU_DIR}\"\n  if git -C \"${KSU_DIR}\"\
-        \ rev-parse --is-inside-work-tree >/dev/null 2>&1; then\n    echo \"KernelSU\
-        \ git HEAD: $(git -C \"${KSU_DIR}\" rev-parse --short HEAD)\"\n  fi\n\n# ---\
-        \ KernelSU-side enable: ensure KSU_SUSFS exists in Kconfig ---\nif grep -q\
-        \ \"KSU_SUSFS\" \"${KSU_DIR}/kernel/Kconfig\" 2>/dev/null; then\n  echo \"\
-        \u2705 ${KSU_DIR} already exposes KSU_SUSFS in Kconfig.\"\nelse\n  KSU_ENABLE_PATCH=\"\
-        $(pick_susfs_ksu_enable_patch \"${KSU_KIND}\")\"\n  \n# Default (per susfs4ksu\
-        \ README) - if auto-detect fails, try this known path:\nif [ -z \"${KSU_ENABLE_PATCH}\"\
-        \ ] && [ -f \"susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch\"\
-        \ ]; then\n  KSU_ENABLE_PATCH=\"susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch\"\
-        \nfi\n\necho \"KernelSU enable patch (auto): ${KSU_ENABLE_PATCH}\"\n  if [\
-        \ -n \"${KSU_ENABLE_PATCH:-}\" ] && [ -f \"${KSU_ENABLE_PATCH}\" ]; then\n\
-        \    echo \"Applying KernelSU SUSFS enable patch (strict)\u2026\"\n    apply_patch_strict\
-        \ \"${KSU_ENABLE_PATCH}\" \"${KSU_DIR}\" || true\n  else\n    echo \"::warning::No\
-        \ suitable KernelSU enable patch found in susfs4ksu for ${KSU_KIND}.\"\n \
-        \ fi\n\n  # KernelSU-Next fallback: switch to next-susfs branch (it carries\
-        \ KSU_SUSFS in Kconfig).\n  if ! grep -q \"KSU_SUSFS\" \"${KSU_DIR}/kernel/Kconfig\"\
-        \ 2>/dev/null && [ \"${KSU_KIND}\" = \"KernelSU-Next\" ]; then\n    echo \"\
-        \U0001F501 Trying KernelSU-Next next-susfs branch (best-effort)\u2026\"\n\
-        \    ( cd \"${KSU_DIR}\" && git fetch --depth=1 origin next-susfs && git checkout\
-        \ -f FETCH_HEAD ) || true\n  fi\n\n  if ! grep -q \"KSU_SUSFS\" \"${KSU_DIR}/kernel/Kconfig\"\
-        \ 2>/dev/null; then\n    echo \"::warning::SUSFS requested, but KernelSU does\
-        \ not expose KSU_SUSFS in Kconfig for this root solution/commit.\"\n    echo\
-        \ \"Continuing build WITHOUT SUSFS to avoid hard failure. (Select SukiSU Ultra\
-        \ or a SUSFS-compatible KernelSU commit to enable SUSFS.)\"\n    echo \"(auto)\
-        \ Setting SUSFS=Off for the rest of the job.\"\n    echo \"SUSFS=Off\" >>\
-        \ \"$GITHUB_ENV\"\n    echo \"SUSFS_EFFECTIVE=Off\" >> \"$GITHUB_ENV\"\n \
-        \   SUSFS=\"Off\"\n    SUSFS_EFFECTIVE=\"Off\"\n  fi\nfi\n# ---------- final\
-        \ hard checks ----------\nif [ \"${SUSFS}\" = \"On\" ] && ! grep -Rqs --include='Kconfig*'\
-        \ '^\\s*config\\s\\+KSU_SUSFS\\b' \"${KSU_DIR}\"; then\n  echo \"::warning::SUSFS\
-        \ requested, but KernelSU still does not expose KSU_SUSFS in Kconfig.\"\n\
-        \  echo \"(auto) Setting SUSFS=Off for the rest of the job.\"\n  echo \"SUSFS=Off\"\
-        \ >> \"$GITHUB_ENV\"\n  echo \"SUSFS_EFFECTIVE=Off\" >> \"$GITHUB_ENV\"\n\
-        \  SUSFS=\"Off\"\n  SUSFS_EFFECTIVE=\"Off\"\nfi\n\necho \"\u2705 SUSFS integration\
-        \ completed.\"\n"
+      run: "set -euo pipefail\n\nnote() { echo -e \"$*\"; }\nwarn() { echo \"::warning::$*\"\
+        ; }\nerr()  { echo \"::error::$*\"; }\ndie()  { err \"$*\"; exit 1; }\n\n\
+        # Apply a patch file into a dir with -p1, strict (no fuzz), but tolerate \"\
+        already applied\".\napply_patch_p1_strict() {\n  local patch_file=\"$1\"\n\
+        \  local target_dir=\"$2\"\n  local label=\"${3:-$(basename \"$patch_file\"\
+        )}\"\n\n  [ -f \"$patch_file\" ] || die \"Patch not found: $patch_file\"\n\
+        \  [ -d \"$target_dir\" ]  || die \"Target dir not found: $target_dir\"\n\n\
+        \  (\n    cd \"$target_dir\"\n    if patch -p1 --fuzz=0 --dry-run --forward\
+        \ < \"$patch_file\" >/dev/null 2>&1; then\n      note \"\u2705 Applying $label\
+        \ in $target_dir with -p1 (strict)\"\n      patch -p1 --fuzz=0 --forward <\
+        \ \"$patch_file\"\n      return 0\n    fi\n\n    # If it doesn't apply forward,\
+        \ check if it was already applied (reverse would apply cleanly)\n    if patch\
+        \ -p1 --fuzz=0 --dry-run -R < \"$patch_file\" >/dev/null 2>&1; then\n    \
+        \  warn \"$label already applied in $target_dir (skipping)\"\n      return\
+        \ 0\n    fi\n\n    return 1\n  )\n}\n\n# Best-effort try a patch with multiple\
+        \ strip levels (0..2) strict/no-fuzz.\ntry_apply_patch_strict_multi() {\n\
+        \  local patch_file=\"$1\"\n  local target_dir=\"$2\"\n  local label=\"${3:-$(basename\
+        \ \"$patch_file\")}\"\n\n  [ -f \"$patch_file\" ] || return 1\n  [ -d \"$target_dir\"\
+        \ ]  || return 1\n\n  for p in 1 0 2; do\n    (\n      cd \"$target_dir\"\n\
+        \      if patch -p\"$p\" --fuzz=0 --dry-run --forward < \"$patch_file\" >/dev/null\
+        \ 2>&1; then\n        note \"\u2705 Applying $label in $target_dir with -p$p\
+        \ (strict)\"\n        patch -p\"$p\" --fuzz=0 --forward < \"$patch_file\"\n\
+        \        exit 0\n      fi\n      if patch -p\"$p\" --fuzz=0 --dry-run -R <\
+        \ \"$patch_file\" >/dev/null 2>&1; then\n        warn \"$label already applied\
+        \ in $target_dir (skipping)\"\n        exit 0\n      fi\n      exit 1\n  \
+        \  ) && return 0\n  done\n  return 1\n}\n\n# --- Inputs / defaults ---\nSUSFS_REF_INPUT=\"\
+        ${SUSFS_REF_INPUT:-}\"\nSUSFS_REF=\"${SUSFS_REF_INPUT:-gki-android15-6.6}\"\
+        \n\nKERNEL_DIR=\"${KERNEL_DIR:-./common}\"\nKSU_DIR=\"${KSU_DIR:-./common/KernelSU-Next}\"\
+        \n\nnote \"\U0001F9EC SUSFS requested \u2192 strict patching (no fuzz) \u2026\
+        \"\nnote \"Kernel dir: ${KERNEL_DIR}\"\nnote \"KernelSU dir: ${KSU_DIR}\"\n\
+        note \"SUSFS ref: ${SUSFS_REF}\"\n\n# --- Clone susfs4ksu ---\nrm -rf susfs4ksu\n\
+        note \"\u2705 cloning susfs4ksu (${SUSFS_REF}) shallow\"\nif ! git clone --depth=1\
+        \ --branch \"${SUSFS_REF}\" https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu\
+        \ 2>/dev/null; then\n  warn \"Failed to clone susfs4ksu branch '${SUSFS_REF}'.\
+        \ Trying default branch + checkout (best-effort)\u2026\"\n  git clone --depth=1\
+        \ https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu\n  if [ -n \"${SUSFS_REF_INPUT}\"\
+        \ ]; then\n    ( cd susfs4ksu && git fetch --depth=1 origin \"${SUSFS_REF_INPUT}\"\
+        \ && git checkout \"${SUSFS_REF_INPUT}\" ) \\\n      || die \"Could not checkout\
+        \ susfs4ksu ref '${SUSFS_REF_INPUT}'.\"\n  fi\nfi\n\n# --- Kernel patch (fs/namespace/etc)\
+        \ ---\nKERNEL_PATCH=\"susfs4ksu/kernel_patches/50_add_susfs_in_${SUSFS_REF}.patch\"\
+        \nif [ ! -f \"${KERNEL_PATCH}\" ]; then\n  warn \"Kernel patch not found at\
+        \ expected path: ${KERNEL_PATCH}\"\n  KERNEL_PATCH=\"$(find susfs4ksu/kernel_patches\
+        \ -maxdepth 1 -type f -name '50_add_susfs_in_*.patch' | sort | tail -n1 ||\
+        \ true)\"\nfi\n[ -n \"${KERNEL_PATCH}\" ] || die \"Could not locate a 50_add_susfs_in_*.patch\
+        \ under susfs4ksu/kernel_patches.\"\nnote \"Kernel patch: ${KERNEL_PATCH}\"\
+        \n\nif ! apply_patch_p1_strict \"${KERNEL_PATCH}\" \"${KERNEL_DIR}\" \"$(basename\
+        \ \"${KERNEL_PATCH}\")\"; then\n  warn \"SUSFS kernel patch did not apply\
+        \ cleanly to this kernel tree.\"\n  warn \"Disabling SUSFS for this build\
+        \ so the workflow can continue.\"\n  echo \"SUSFS_EFFECTIVE=Off\" >> \"$GITHUB_ENV\"\
+        \n  exit 0\nfi\n\n# --- KernelSU enable patch (adds KSU_SUSFS Kconfig + hooks)\
+        \ ---\nKSU_ENABLE_PATCH=\"susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch\"\
+        \nif [ ! -d \"${KSU_DIR}\" ]; then\n  warn \"KernelSU dir not found at ${KSU_DIR}.\
+        \ Trying to discover it under ./common\u2026\"\n  KSU_DIR=\"$(find ./common\
+        \ -maxdepth 2 -type d -name 'KernelSU*' | head -n1 || true)\"\nfi\n\nif [\
+        \ -z \"${KSU_DIR}\" ] || [ ! -d \"${KSU_DIR}\" ]; then\n  warn \"KernelSU\
+        \ directory not present; cannot enable SUSFS in KernelSU. (Continuing without\
+        \ KernelSU SUSFS integration.)\"\n  echo \"SUSFS_EFFECTIVE=On\" >> \"$GITHUB_ENV\"\
+        \n  exit 0\nfi\n\nnote \"KernelSU enable patch: ${KSU_ENABLE_PATCH}\"\nif\
+        \ try_apply_patch_strict_multi \"${KSU_ENABLE_PATCH}\" \"${KSU_DIR}\" \"10_enable_susfs_for_ksu.patch\"\
+        ; then\n  note \"\u2705 KernelSU SUSFS enable patch applied.\"\nelse\n  warn\
+        \ \"simonpunk KernelSU enable patch did not apply cleanly to this KernelSU\
+        \ revision.\"\nfi\n\n# --- Verify Kconfig exposes KSU_SUSFS (best-effort)\
+        \ ---\nif grep -Rqs '^[[:space:]]*config[[:space:]]\\+KSU_SUSFS\\b' \"${KSU_DIR}/kernel\"\
+        \ 2>/dev/null; then\n  note \"\u2705 Found KSU_SUSFS in KernelSU Kconfig.\"\
+        \nelse\n  warn \"SUSFS kernel patch applied, but KernelSU does not expose\
+        \ KSU_SUSFS in Kconfig.\"\n  warn \"This usually means your KernelSU revision\
+        \ is incompatible with the SUSFS enable patch.\"\n  warn \"Build will continue,\
+        \ but SUSFS-in-KernelSU features may be unavailable.\"\nfi"
+      env:
+        SUSFS_REF_INPUT: ${{ github.event.inputs.susfs_branch_or_commit }}
+        KERNEL_DIR: ./common
     - name: "\u2699\uFE0F Configure Kernel Options"
       run: "set -e\ncd \"$GITHUB_WORKSPACE/kernel_workspace/kernel_platform\"\n\n\
         echo \"\u2699\uFE0F Configuring kernel build options (stable + daily balanced)...\"\
@@ -486,9 +433,13 @@ jobs:
         \ \"$DEFCONFIG\"\n  elif [ \"$val\" = \"n\" ]; then\n    echo \"# CONFIG_${key}\
         \ is not set\" >> \"$DEFCONFIG\"\n  else\n    # String values must be passed\
         \ with quotes, e.g. '\"bbr\"'\n    echo \"CONFIG_${key}=${val}\" >> \"$DEFCONFIG\"\
-        \n  fi\n}\n\nROOT_SOL=\"${ROOT_SOL:-${{ matrix.root_solution }}}\"\nif [ \"\
-        ${ROOT_SOL}\" = \"none\" ]; then\n  echo \"\U0001F4E6 Root disabled (root_solution=none).\"\
-        \n  defcfg_set KSU n\nelse\n  echo \"\U0001F4E6 Enabling KernelSU (${ROOT_SOL})...\"\
+        \n  fi\n}\n\nROOT_SOL=\"${ROOT_SOL:-${{ matrix.root_solution }}}\"\n\n# workflow\
+        \ inputs (use SUSFS_EFFECTIVE if SUSFS patching had to be disabled)\nSUSFS=\"\
+        ${SUSFS_EFFECTIVE:-${{ github.event.inputs.SUSFS }}}\"\nPROFILE=\"${{ github.event.inputs.PROFILE\
+        \ }}\"\nKPM=\"${{ github.event.inputs.KPM }}\"\nBBG=\"${{ github.event.inputs.bbg\
+        \ }}\"\nBBR=\"${{ github.event.inputs.bbr }}\"\n\nif [ \"${ROOT_SOL}\" = \"\
+        none\" ]; then\n  echo \"\U0001F4E6 Root disabled (root_solution=none).\"\n\
+        \  defcfg_set KSU n\nelse\n  echo \"\U0001F4E6 Enabling KernelSU (${ROOT_SOL})...\"\
         \n  defcfg_set KSU y\nfi\n\n# Useful for debugging user reports (\"what config\
         \ did you ship?\")\ndefcfg_set IKCONFIG y\ndefcfg_set IKCONFIG_PROC y\n\n\
         # Terminal/PTTY safety (prevents terminal apps failing/crashing on some builds)\n\
@@ -579,7 +530,7 @@ jobs:
         \\n\".join(lines).rstrip()+\"\\n\")\nprint('BBG enabled symbol :', bbg_sym)\n\
         print('BBG LSM name :', lsm_name)\nprint('CONFIG_LSM :', lsm_line)\nPY\nfi\n\
         \necho \"\u2705 Kernel config options updated\"\necho \"---- Tail of gki_defconfig\
-        \ (last 80) ----\"\ntail -n 80 \"$DEFCONFIG\" || true\n"
+        \ (last 80) ----\"\ntail -n 80 \"$DEFCONFIG\" || true"
     - name: "\U0001F50E Verify KSU/SUSFS config (pre-build)"
       run: "\nset -e\n\ncd \"$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common\"\
         \n\n\n# Generate .config from gki_defconfig so we can verify the effective\
@@ -668,15 +619,26 @@ jobs:
     - name: "\U0001F9E9 Fix missing lz4armv8 (if needed)"
       if: ${{ github.event.inputs.LZ4 == 'On' }}
       shell: bash
-      run: "set -euo pipefail\ncd \"$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common\"\
-        \n\nNEED_DIR=\"lib/lz4/lz4armv8\"\nASM=\"$NEED_DIR/lz4armv8.S\"\nHDR=\"$NEED_DIR/lz4armv8.h\"\
-        \n\nif [ -f \"$ASM\" ] && [ -f \"$HDR\" ]; then\n  echo \"\u2705 lz4armv8\
-        \ sources present\"\n  exit 0\nfi\n\necho \"\u26A0\uFE0F lz4armv8 sources\
-        \ missing \u2014 attempting to fetch from Linux v6.6\"\nmkdir -p \"$NEED_DIR\"\
-        \n\ncurl -fsSL -o \"$ASM\" \"https://raw.githubusercontent.com/torvalds/linux/v6.6/lib/lz4/lz4armv8/lz4armv8.S\"\
-        \ncurl -fsSL -o \"$HDR\" \"https://raw.githubusercontent.com/torvalds/linux/v6.6/lib/lz4/lz4armv8/lz4armv8.h\"\
-        \n\ntest -s \"$ASM\" && test -s \"$HDR\"\necho \"\u2705 Restored $ASM and\
-        \ $HDR\""
+      run: "set -euo pipefail\n\nneed_file=\"lib/lz4/lz4armv8/lz4armv8.S\"\nneed_hdr=\"\
+        lib/lz4/lz4armv8/lz4armv8.h\"\n\nif [ -f \"$need_file\" ] && [ -f \"$need_hdr\"\
+        \ ]; then\n  echo \"\u2705 lz4armv8 sources already present.\"\n  exit 0\n\
+        fi\n\necho \"\U0001F9E9 Missing lz4armv8 sources detected; fetching known-good\
+        \ copies (best-effort)\u2026\"\nmkdir -p \"lib/lz4/lz4armv8\"\n\nurls_S=(\n\
+        \  \"https://raw.githubusercontent.com/yaap/kernel_oneplus_sm8150/sixteen/lib/lz4/lz4armv8/lz4armv8.S\"\
+        \n  \"https://raw.githubusercontent.com/ravindu644/android_kernel_beyond2/master/lib/lz4/lz4armv8/lz4armv8.S\"\
+        \n)\n\nurls_H=(\n  \"https://raw.githubusercontent.com/yaap/kernel_oneplus_sm8150/sixteen/lib/lz4/lz4armv8/lz4armv8.h\"\
+        \n  \"https://raw.githubusercontent.com/ravindu644/android_kernel_beyond2/master/lib/lz4/lz4armv8/lz4armv8.h\"\
+        \n)\n\nfetch_one() {\n  local out=\"$1\"; shift\n  for u in \"$@\"; do\n \
+        \   if curl -fsSL \"$u\" -o \"$out\"; then\n      echo \"\u2705 fetched $(basename\
+        \ \"$out\") from $u\"\n      return 0\n    fi\n  done\n  return 1\n}\n\n#\
+        \ Fetch .S and .h (both needed by some trees)\nfetch_one \"$need_file\" \"\
+        ${urls_S[@]}\" || { echo \"::warning::Could not fetch $need_file (will rely\
+        \ on later fallback)\"; }\nfetch_one \"$need_hdr\"  \"${urls_H[@]}\" || {\
+        \ echo \"::warning::Could not fetch $need_hdr (will rely on later fallback)\"\
+        ; }\n\n# Quick sanity\nif [ -f \"$need_file\" ] && [ -f \"$need_hdr\" ]; then\n\
+        \  echo \"\u2705 lz4armv8 sources are now present.\"\nelse\n  echo \"::warning::lz4armv8\
+        \ sources still missing after fetch; later sanity step may disable asm or\
+        \ fail.\"\nfi"
     - name: "\U0001F5DC\uFE0F Default ZRAM compression to LZ4"
       run: "set -e\necho \"\U0001F5DC\uFE0F Forcing ZRAM default compressor to LZ4\
         \ (kernel-side default)...\"\nDEFCONFIG=\"$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig\"\
