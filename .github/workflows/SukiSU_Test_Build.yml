@@ -1,5 +1,5 @@
 ---
-name: Build KernelSU Next
+name: TEST
 permissions:
   contents: write
 env:
