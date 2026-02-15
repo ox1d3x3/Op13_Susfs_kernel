@@ -465,6 +465,49 @@ jobs:
         \  grep -RIn --include='Kconfig*' --max-count=40 'SUSFS\\|KSU_SUSFS' \"${COMMON_DIR}\"\
         \ 2>/dev/null || true\n  exit 1\nfi\n\necho \"✅ SUSFS kernel-side integration\
         \ complete.\"\n"
+    - name: 🧬 Ensure KSUN SUSFS Kconfig symbols
+      if: ${{ inputs.ROOT_SOL != 'none' && inputs.SUSFS == 'On' }}
+      shell: bash
+      run: "set -euo pipefail\ncd \"$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common\"\
+        \n\n# SUSFS kernel patch adds code guarded by CONFIG_KSU_SUSFS*.\n# On many\
+        \ trees, the *Kconfig* symbols are expected to be provided by KernelSU itself.\n\
+        # KernelSU Next doesn't always match the upstream KernelSU Kconfig, so we\
+        \ inject the symbols\n# into the KernelSU Kconfig file if they're missing\
+        \ (idempotent).\n\necho \"\U0001F50E Searching for KernelSU Kconfig...\"\n\
+        KCFG=\"$(grep -RIl --exclude-dir='.git' --include='Kconfig*' -E '^\\s*(menuconfig|config)\\\
+        s+KSU\\b' . | head -n 1 || true)\"\n\nif [ -z \"$KCFG\" ]; then\n  # Fallback\
+        \ search (different layouts)\n  KCFG=\"$(grep -RIl --exclude-dir='.git' --include='Kconfig*'\
+        \ -E 'KernelSU|kernelsu' KernelSU-Next drivers 2>/dev/null | head -n 1 ||\
+        \ true)\"\nfi\n\nif [ -z \"$KCFG\" ]; then\n  echo \"::error::Could not locate\
+        \ KernelSU Kconfig in this tree. SUSFS configs cannot be enabled without Kconfig\
+        \ symbols.\"\n  echo \"::error::Searched for: (menuconfig|config) KSU, and\
+        \ KernelSU/kernelsu in KernelSU-Next/ and drivers/\"\n  exit 1\nfi\n\necho\
+        \ \"✅ KernelSU Kconfig candidate: $KCFG\"\n\nif grep -qE '^\\s*config\\s+KSU_SUSFS\\\
+        b' \"$KCFG\"; then\n  echo \"✅ KSU_SUSFS already present in $KCFG (no injection\
+        \ needed).\"\n  exit 0\nfi\n\necho \"\U0001F9E9 Injecting SUSFS Kconfig symbols\
+        \ into $KCFG ...\"\ncat >> \"$KCFG\" <<'EOF'\n\n# ---- Added by OP13 Ultimate\
+        \ KSUN workflow: SUSFS options ----\nconfig KSU_SUSFS\n    bool \"Enable SUSFS\
+        \ support\"\n    depends on KSU\n    default n\n    help\n      Enable SUSFS\
+        \ integration in the kernel (paths/mounts hiding, kstat spoofing, uname spoofing).\n\
+        \nconfig KSU_SUSFS_SUS_PATH\n    bool \"Enable SUSFS path hiding\"\n    depends\
+        \ on KSU_SUSFS\n    default n\n\nconfig KSU_SUSFS_SUS_MOUNT\n    bool \"Enable\
+        \ SUSFS mount hiding\"\n    depends on KSU_SUSFS\n    default n\n\nconfig\
+        \ KSU_SUSFS_SUS_KSTAT\n    bool \"Enable SUSFS kstat spoofing\"\n    depends\
+        \ on KSU_SUSFS\n    default n\n\nconfig KSU_SUSFS_SPOOF_UNAME\n    bool \"\
+        Enable SUSFS uname spoofing\"\n    depends on KSU_SUSFS\n    default n\n\n\
+        config KSU_SUSFS_ENABLE_LOG\n    bool \"Enable SUSFS logs\"\n    depends on\
+        \ KSU_SUSFS\n    default n\n\nconfig KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS\n  \
+        \  bool \"Hide KernelSU/SUSFS symbols\"\n    depends on KSU_SUSFS\n    default\
+        \ n\n\nconfig KSU_SUSFS_TRY_UMOUNT\n    bool \"Enable SUSFS try_umount hooks\"\
+        \n    depends on KSU_SUSFS\n    default n\n\nconfig KSU_SUSFS_OPEN_REDIRECT\n\
+        \    bool \"Enable SUSFS open redirect\"\n    depends on KSU_SUSFS\n    default\
+        \ n\n\nconfig KSU_SUSFS_SUS_SU\n    bool \"Enable SUSFS su domain support\"\
+        \n    depends on KSU_SUSFS\n    default n\n\nconfig KSU_SUSFS_SUS_OVERLAYFS\n\
+        \    bool \"Enable SUSFS overlayfs support\"\n    depends on KSU_SUSFS\n \
+        \   default n\n# ---- end SUSFS options ----\n\nEOF\n\necho \"✅ Injection\
+        \ complete.\"\necho \"\U0001F50E Sanity: KSU_SUSFS now present?\"\ngrep -nE\
+        \ '^\\s*config\\s+KSU_SUSFS\\b' \"$KCFG\" || { echo \"::error::Injection failed\
+        \ (KSU_SUSFS not found).\"; exit 1; }\n"
     - name: ⚙️ Configure Kernel Options
       run: "set -e\ncd \"$GITHUB_WORKSPACE/kernel_workspace/kernel_platform\"\n\n\
         echo \"⚙️ Configuring kernel build options (stable + daily balanced)...\"\n\
@@ -597,10 +640,10 @@ jobs:
         \    echo \" Likely causes:\"\n\n    echo \" - SUSFS KernelSU enable patch\
         \ didn't apply\"\n\n    echo \" - SUSFS Kconfig symbols are missing in this\
         \ kernel tree\"\n\n    echo \"\"\n\n    echo \"---- Grep for SUSFS symbols\
-        \ in KernelSU driver ----\"\n\n    grep -RIn --max-count=50 'KSU_SUSFS\\|SUSFS'\
-        \ drivers/kernelsu 2>/dev/null || true || true\n\n    exit 1\n\n  fi\n\nfi\n\
-        \n\necho \"---- LZ4 sanity ----\"\n\nif [ -f lib/lz4/lz4armv8/lz4armv8.S ];\
-        \ then\n  echo \"✅ Found lib/lz4/lz4armv8/lz4armv8.S\"\nelse\n  echo \"::warning::Missing\
+        \ in KernelSU driver ----\"\n\n    grep -RIn --exclude-dir='.git' --max-count=80\
+        \ 'KSU_SUSFS\\|susfs_' . || true\n\n    exit 1\n\n  fi\n\nfi\n\n\necho \"\
+        ---- LZ4 sanity ----\"\n\nif [ -f lib/lz4/lz4armv8/lz4armv8.S ]; then\n  echo\
+        \ \"✅ Found lib/lz4/lz4armv8/lz4armv8.S\"\nelse\n  echo \"::warning::Missing\
         \ lib/lz4/lz4armv8/lz4armv8.S (this tree references arm64 asm LZ4).\"\n  echo\
         \ \"::warning::Auto-disabling arm64 asm LZ4 and falling back to generic C\
         \ implementation.\"\n  # Remove lz4armv8 references from Kbuild/Makefile if\
