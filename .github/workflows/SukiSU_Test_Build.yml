@@ -364,7 +364,7 @@ jobs:
             chmod -R u+rx,go+rx drivers/of/overwriter/overwrite_configs || true
             find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -exec chmod +x {} \; || true
             # Strip CRLF (portable)
-            find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -exec perl -pi -e 's/\\r$//' {} \\; || true
+            find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -exec perl -pi -e 's/\\r$//' {} \; || true
           fi
 
           apply_patch "../mrcx_patches/zram/001-lz4.patch"
