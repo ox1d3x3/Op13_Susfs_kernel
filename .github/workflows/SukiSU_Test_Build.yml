@@ -1,437 +1,646 @@
-name: KSU/SUKI-TEST
+name: KSU
 
-'on':
+on:
   workflow_dispatch:
     inputs:
-      root_solution:
-        description: "Root solution to integrate"
+      # ---- Build identity ----
+      kernel_name:
+        description: "Kernel localversion (shows in uname). KEEP this stable for daily-driver use."
         required: true
-        default: "wild-ksu"
+        default: android15-8-g29d86c5fc9dd-abogki428889875-4k
+        type: string
+      android_version:
+        description: "Android version label for tagging only (does not change sources)"
+        required: true
+        default: android15
+        type: string
+      kernel_version:
+        description: "Kernel version label for tagging only (does not change sources)"
+        required: true
+        default: "6.6"
+        type: string
+
+      # ---- KernelSU Next ----
+      ksu_channel:
+        description: "KernelSU Next channel for setup.sh (recommended: stable)"
+        required: true
+        default: stable
         type: choice
-        options:
-          - none
-          - ksu-next
-          - wild-ksu
-          - sukisu-ultra
+        options: [stable, dev, legacy, tag]
+      ksu_tag:
+        description: "Only used when ksu_channel=tag (example: v3.0.0). Leave blank otherwise."
+        required: false
+        default: ""
+        type: string
+
+      # ---- Optional features (safe defaults) ----
       susfs:
-        description: "Enable SUSFS (will auto-disable if incompatible)"
+        description: "Enable SUSFS kernel patches (root hiding addon; requires matching userspace module)"
         required: true
         default: "On"
         type: choice
-        options: [On, Off]
+        options: ["On", "Off"]
+      susfs_ref:
+        description: "SUSFS branch/tag/commit (default matches Android 15 / 6.6)"
+        required: false
+        default: gki-android15-6.6
+        type: string
+
+      bbg:
+        description: "Enable BBG (Baseband Guard) LSM if present in tree (recommended On)"
+        required: true
+        default: "On"
+        type: choice
+        options: ["On", "Off"]
+
+      bbr:
+        description: "Enable TCP BBR congestion control (safe; optional)"
+        required: true
+        default: "On"
+        type: choice
+        options: ["On", "Off"]
+
       kpm:
-        description: "Enable KPM (if your tree supports it)"
+        description: "Enable KPM (only if you know you need it)"
         required: true
         default: "Off"
         type: choice
-        options: [On, Off]
-      force_lz4_zram:
-        description: "Force ZRAM default compressor = LZ4"
+        options: ["On", "Off"]
+
+      lz4_zram:
+        description: "Enable LZ4 for ZRAM (kernel-side config)"
         required: true
         default: "On"
         type: choice
-        options: [On, Off]
-      build_type:
-        description: "Build type"
+        options: ["On", "Off"]
+
+      optimize_level:
+        description: "Compiler optimization for kernel C code (O2 recommended for stability)"
         required: true
-        default: "Release"
+        default: O2
         type: choice
-        options: [Release, Debug]
+        options: [O2, O3]
+
+      profile:
+        description: "Build profile label (does not change DVFS; mainly affects compile flags / naming)"
+        required: true
+        default: balanced
+        type: choice
+        options: [balanced, performance, battery]
+
+      toolchain:
+        description: "Toolchain selection for clang/ld.lld (auto tries in-tree first; neutron is a safe fallback)"
+        required: true
+        default: auto
+        type: choice
+        options: [auto, in-tree, neutron]
+
+      # ---- Sources / packaging ----
+      manifest_repo:
+        description: "Repo manifest for OP13 kernel_platform (sm8750)"
+        required: true
+        default: https://github.com/mrcxlinux/actions_oplus_sm8750.git
+        type: string
+      manifest_branch:
+        description: "Manifest branch"
+        required: true
+        default: zh
+        type: string
+      manifest_file:
+        description: "Manifest xml file"
+        required: true
+        default: manifest.xml
+        type: string
+
+      anykernel_repo:
+        description: "AnyKernel3 repo (should match your device/boot layout)"
+        required: true
+        default: https://github.com/mrcxlinux/AnyKernel3
+        type: string
+      anykernel_ref:
+        description: "AnyKernel3 ref (branch/tag/commit)"
+        required: true
+        default: main
+        type: string
+
       clean_build:
-        description: "Delete common/out before build"
+        description: "Remove out/ and reset ccache before build"
         required: true
         default: false
         type: boolean
 
-permissions:
-  contents: read
+      make_release:
+        description: "Create a GitHub Release with the flashable zip (uses GITHUB_TOKEN)"
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
-  group: op13-gki-${{ github.ref }}-${{ github.event.inputs.root_solution }}-${{ github.event.inputs.susfs }}
+  group: op13-ksun-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build (${{ github.event.inputs.root_solution }}, SUSFS=${{ github.event.inputs.susfs }})
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 360
 
+    env:
+      ANDROID_VERSION: ${{ github.event.inputs.android_version }}
+      KERNEL_VERSION: ${{ github.event.inputs.kernel_version }}
+      KERNEL_NAME: ${{ github.event.inputs.kernel_name }}
+      SUSFS: ${{ github.event.inputs.susfs }}
+      SUSFS_REF: ${{ github.event.inputs.susfs_ref }}
+      BBG: ${{ github.event.inputs.bbg }}
+      BBR: ${{ github.event.inputs.bbr }}
+      KPM: ${{ github.event.inputs.kpm }}
+      LZ4_ZRAM: ${{ github.event.inputs.lz4_zram }}
+      PROFILE: ${{ github.event.inputs.profile }}
+      TOOLCHAIN: ${{ github.event.inputs.toolchain }}
+      CURL_OPTS: "--retry 5 --retry-delay 2 --connect-timeout 15"
+
     steps:
-      - name: Checkout
+      - name: Checkout workflow repo
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
 
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@v10
-        with:
-          root-reserve-mb: 2048
-          swap-size-mb: 8192
-          remove-dotnet: true
-          remove-android: true
-          remove-haskell: true
-
-      - name: Install dependencies
+      - name: Install build deps
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bash bc bison build-essential ca-certificates ccache curl flex gawk git \
-            libelf-dev liblz4-tool libncurses-dev libssl-dev lld llvm \
-            python3 rsync unzip xz-utils zip zstd \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
-          sudo apt-get clean
+            git curl wget ca-certificates rsync jq zip unzip \
+            bc bison flex make \
+            build-essential libc6-dev libssl-dev libelf-dev libncurses-dev \
+            ccache \
+            gcc-aarch64-linux-gnu \
+            python3 python3-pip
+          # repo tool
+          mkdir -p "$HOME/bin"
+          curl $CURL_OPTS -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+          ccache -M 15G || true
 
-      - name: Resolve paths & toolchain
-        id: paths
+      - name: Sync kernel sources (repo)
         run: |
           set -euo pipefail
+          mkdir -p kernel_workspace
+          cd kernel_workspace
+          repo init -u "${{ github.event.inputs.manifest_repo }}" -b "${{ github.event.inputs.manifest_branch }}" -m "${{ github.event.inputs.manifest_file }}" --depth=1
+          repo sync -c -j"$(nproc --all)" --force-sync --no-clone-bundle --no-tags
 
-          KP="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
-          COMMON="$KP/common"
-          OUT="$COMMON/out"
-
-          echo "kernel_platform=$KP" >> "$GITHUB_OUTPUT"
-          echo "common_dir=$COMMON" >> "$GITHUB_OUTPUT"
-          echo "out_dir=$OUT" >> "$GITHUB_OUTPUT"
-
-          if [[ ! -d "$COMMON" ]]; then
-            echo "::error::Expected kernel tree at: $COMMON"
-            echo "Workspace root:"
-            ls -la "$GITHUB_WORKSPACE"
-            echo "Top-level tree:"
-            find "$GITHUB_WORKSPACE" -maxdepth 3 -type d -print | sed 's#^#  #'
+      - name: Detect kernel tree
+        id: tree
+        run: |
+          set -euo pipefail
+          ROOT="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+          if [ ! -d "$ROOT/common" ]; then
+            echo "::error::Expected kernel tree at kernel_workspace/kernel_platform/common"
+            find "$GITHUB_WORKSPACE/kernel_workspace" -maxdepth 3 -type d | head -n 200 || true
             exit 1
           fi
+          echo "KERNEL_COMMON=$ROOT/common" >> "$GITHUB_OUTPUT"
+          echo "Kernel common: $ROOT/common"
 
-          # Prefer prebuilts clang if present
-          CLANG_BIN="$(ls -d "$KP"/prebuilts/clang/host/linux-x86/clang-*/bin 2>/dev/null | head -n1 || true)"
-          if [[ -z "$CLANG_BIN" ]]; then
-            CLANG_BIN="$(ls -d "$KP"/prebuilts/clang/host/linux-x86/clang-r*/bin 2>/dev/null | head -n1 || true)"
+      - name: "Setup toolchain: clang + lld"
+        run: |
+          set -euo pipefail
+
+          ROOT="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+          WANT="${{ github.event.inputs.toolchain }}"
+
+          use_in_tree() {
+            # prefer in-tree clang if present
+            local base="$ROOT/prebuilts/clang/host/linux-x86"
+            [ -d "$base" ] || return 1
+            local cand
+            cand="$(ls -1d "$base"/clang-* 2>/dev/null | sort -V | tail -n 1 || true)"
+            [ -n "$cand" ] || return 1
+            echo "$cand"
+            return 0
+          }
+
+          if [ "$WANT" = "in-tree" ] || [ "$WANT" = "auto" ]; then
+            if CAND="$(use_in_tree)"; then
+              echo "✅ Using in-tree clang: $CAND"
+              echo "$CAND/bin" >> "$GITHUB_PATH"
+              echo "TOOLCHAIN_KIND=in-tree" >> "$GITHUB_ENV"
+            else
+              if [ "$WANT" = "in-tree" ]; then
+                echo "::error::Requested in-tree toolchain, but prebuilts/clang not found in manifest sources."
+                exit 1
+              fi
+              echo "ℹ️ In-tree clang not found; will install Neutron clang."
+              WANT="neutron"
+            fi
           fi
-          if [[ -n "$CLANG_BIN" ]]; then
-            echo "Using prebuilts clang: $CLANG_BIN"
-            echo "$CLANG_BIN" >> "$GITHUB_PATH"
+
+          if [ "$WANT" = "neutron" ]; then
+            echo "⬇️ Installing Neutron clang (antman)..."
+            mkdir -p "$HOME/toolchains/neutron-clang"
+            cd "$HOME/toolchains/neutron-clang"
+            bash <(curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S
+            echo "$HOME/toolchains/neutron-clang/bin" >> "$GITHUB_PATH"
+            echo "TOOLCHAIN_KIND=neutron" >> "$GITHUB_ENV"
+          fi
+
+          echo "---- toolchain ----"
+          clang --version
+          ld.lld --version
+          echo "TOOLCHAIN_KIND=${TOOLCHAIN_KIND:-unknown}"
+
+
+      - name: Apply KernelSU Next (KSU-Next) - NO other root
+        run: |
+          set -euo pipefail
+          cd "${{ steps.tree.outputs.KERNEL_COMMON }}"
+
+          # If KSU is already in tree, do NOT run setup again (avoids double-patching).
+          if [ -d "drivers/kernelsu" ] || [ -d "KernelSU" ] || [ -d "KernelSU-Next" ] || grep -Rqs "KernelSU" drivers 2>/dev/null; then
+            echo "ℹ️ KernelSU sources already present in tree; skipping setup.sh"
           else
-            echo "No prebuilts clang found; using system clang/lld."
+            KSU_CH="${{ github.event.inputs.ksu_channel }}"
+            KSU_TAG="${{ github.event.inputs.ksu_tag }}"
+            if [ "$KSU_CH" = "tag" ]; then
+              if [ -z "$KSU_TAG" ]; then
+                echo "::error::ksu_channel=tag requires ksu_tag (example: v3.0.0)"
+                exit 1
+              fi
+              KSU_ARG="$KSU_TAG"
+            else
+              KSU_ARG="$KSU_CH"
+            fi
+
+            echo "➡️ Installing KernelSU Next via setup.sh ($KSU_ARG)"
+            curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "$KSU_ARG"
           fi
 
-      - name: Optional clean build
-        if: ${{ github.event.inputs.clean_build }}
-        run: |
-          set -euo pipefail
-          rm -rf "${{ steps.paths.outputs.out_dir }}"
-
-      - name: Integrate root solution
-        run: |
-          set -euo pipefail
-          KP="${{ steps.paths.outputs.kernel_platform }}"
-          COMMON="${{ steps.paths.outputs.common_dir }}"
-          ROOT="${{ github.event.inputs.root_solution }}"
-
-          cd "$KP"
-
-          case "$ROOT" in
-            none)
-              echo "KSU_DIR=" >> "$GITHUB_ENV"
-              ;;
-            ksu-next)
-              echo "Integrating KernelSU-Next…"
-              curl -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-              ;;
-            wild-ksu)
-              echo "Integrating Wild_KSU…"
-              curl -fsSL "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild
-              ;;
-            sukisu-ultra)
-              echo "Integrating SukiSU-Ultra…"
-              curl -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s sukisu
-              ;;
-            *)
-              echo "::error::Unknown root_solution: $ROOT"
-              exit 1
-              ;;
-          esac
-
-          # Detect KernelSU directory (most setups place it here)
-          KSU_DIR=""
-          if [[ -d "$COMMON/KernelSU-Next" ]]; then KSU_DIR="$COMMON/KernelSU-Next"; fi
-          if [[ -z "$KSU_DIR" && -d "$COMMON/KernelSU" ]]; then KSU_DIR="$COMMON/KernelSU"; fi
-
-          echo "KSU_DIR=$KSU_DIR" >> "$GITHUB_ENV"
-          echo "Detected KSU_DIR=$KSU_DIR"
-
-      - name: Fix missing lz4armv8.S (if needed)
-        run: |
-          set -euo pipefail
-          COMMON="${{ steps.paths.outputs.common_dir }}"
-
-          # This file is referenced by some trees' Kbuild; missing it causes: "No rule to make target ..."
-          TARGET="$COMMON/lib/lz4/lz4armv8/lz4armv8.S"
-          if [[ -f "$TARGET" ]]; then
-            echo "lz4armv8.S already present."
-            exit 0
-          fi
-
-          echo "::notice::lz4armv8.S missing; pulling from WildKernels/kernel_patches…"
-          rm -rf wk_kernel_patches
-          git clone --depth 1 "https://github.com/WildKernels/kernel_patches" wk_kernel_patches
-
-          SRC="wk_kernel_patches/kernels/OnePlus13/zram/lz4armv8.S"
-          if [[ -f "$SRC" ]]; then
-            mkdir -p "$(dirname "$TARGET")"
-            cp -f "$SRC" "$TARGET"
-            echo "✅ Installed $TARGET"
+          # Locate KSU directory for later verification
+          if [ -d "./drivers/kernelsu" ]; then
+            echo "KSU_DIR=./drivers/kernelsu" >> "$GITHUB_ENV"
+          elif [ -d "./KernelSU-Next" ]; then
+            echo "KSU_DIR=./KernelSU-Next" >> "$GITHUB_ENV"
+          elif [ -d "./KernelSU" ]; then
+            echo "KSU_DIR=./KernelSU" >> "$GITHUB_ENV"
           else
-            echo "::warning::Cannot find $SRC. Build may fail if your Kbuild requires lz4armv8.S."
+            # fallback: try to find any kernelsu dir
+            FOUND="$(find . -maxdepth 4 -type d -name kernelsu -o -name 'KernelSU*' | head -n 1 || true)"
+            if [ -n "$FOUND" ]; then
+              echo "KSU_DIR=$FOUND" >> "$GITHUB_ENV"
+            fi
           fi
 
-      - name: Apply SUSFS patches (kernel + KernelSU) — guarded
+          echo "KSU_DIR=${KSU_DIR:-<unknown>}"
+          test -n "${KSU_DIR:-}" || { echo "::error::KernelSU dir not found after setup"; exit 1; }
+
+      - name: Apply SUSFS patches (optional)
         if: ${{ github.event.inputs.susfs == 'On' }}
         run: |
           set -euo pipefail
-          KP="${{ steps.paths.outputs.kernel_platform }}"
-          COMMON="${{ steps.paths.outputs.common_dir }}"
-          ROOT="${{ github.event.inputs.root_solution }}"
+          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
 
-          cd "$KP"
-          test -d "$COMMON" || { echo "::error::Target dir not found: $COMMON"; exit 1; }
-
-          apply_patch_dir() {
-            local target_dir="$1"
-            local patch_file="$2"
-            local plevel="${3:-1}"
-
-            if [[ ! -f "$patch_file" ]]; then
-              echo "::error::Patch not found: $patch_file"
-              return 2
-            fi
-
-            pushd "$target_dir" >/dev/null
-
-            # Already applied?
-            if patch -p"$plevel" --dry-run -R < "$patch_file" >/dev/null 2>&1; then
-              echo "↪️ already applied: $(basename "$patch_file")"
-              popd >/dev/null
-              return 0
-            fi
-
-            echo "🧩 applying: $(basename "$patch_file")  (dir=$(basename "$target_dir"))"
-            if patch -p"$plevel" --fuzz=0 < "$patch_file"; then
-              echo "✅ applied (strict)"
-            else
-              echo "::warning::Strict apply failed; retrying with fuzz=3…"
-              patch -p"$plevel" --fuzz=3 < "$patch_file"
-              echo "✅ applied (fuzz=3)"
-            fi
-
-            popd >/dev/null
-          }
-
-          # Clone SUSFS patchset (known working URL used in your logs)
-          SUSFS_REF="gki-android15-6.6"
-          rm -rf susfs4ksu
-          git clone --depth 1 --branch "$SUSFS_REF" "https://gitlab.com/simonpunk/susfs4ksu.git" susfs4ksu
-          echo "✅ cloned susfs4ksu ($SUSFS_REF) shallow"
-
-          # Kernel-side SUSFS patch
-          KERNEL_PATCH="susfs4ksu/kernel_patches/50_add_susfs_in_${SUSFS_REF}.patch"
-          apply_patch_dir "$COMMON" "$KERNEL_PATCH" 1
-
-          # Copy any extra files shipped by susfs4ksu (best-effort; safe if paths don't exist)
-          rsync -a --ignore-missing-args susfs4ksu/fs/ "$COMMON/fs/" || true
-          rsync -a --ignore-missing-args susfs4ksu/include/ "$COMMON/include/" || true
-
-          # KernelSU-side enable patches: try to auto-discover patches that mention KSU_SUSFS
-          KSU_DIR="${KSU_DIR:-}"
-          if [[ -z "$KSU_DIR" || ! -d "$KSU_DIR" ]]; then
-            echo "::warning::No KernelSU directory detected; SUSFS will be disabled."
-            echo "SUSFS_EFFECTIVE=Off" >> "$GITHUB_ENV"
-            exit 0
-          fi
-
-          mapfile -t CANDIDATES < <(grep -RIl "KSU_SUSFS" susfs4ksu | grep -E '\.patch$' || true)
-          echo "Found ${#CANDIDATES[@]} candidate KernelSU patches."
-
-          applied_any=0
-          for p in "${CANDIDATES[@]}"; do
-            # Only try patches that look like they touch KernelSU sources.
-            if grep -qE 'kernel/(Kconfig|Makefile|allowlist\.c|apk_sign\.c|core_hook\.c|ksu\.c|ksud\.c|kernel_umount\.c|selinux\.c|sucompat\.c|supercalls\.c)' "$p"; then
-              if apply_patch_dir "$KSU_DIR" "$p" 1; then
-                applied_any=1
-              fi
-            fi
-          done
-
-          # Verify symbol exists; if not, auto-fallback for ksu-next to Wild_KSU (most compatible)
-          if ! grep -R "KSU_SUSFS" -n "$KSU_DIR" >/dev/null 2>&1; then
-            if [[ "$ROOT" == "ksu-next" ]]; then
-              echo "::warning::KernelSU-Next still lacks KSU_SUSFS; switching to Wild_KSU automatically."
-              rm -rf "$COMMON/KernelSU-Next"
-              cd "$KP"
-              curl -fsSL "https://raw.githubusercontent.com/WildKernels/Wild_KSU/wild/kernel/setup.sh" | bash -s wild
-              KSU_DIR="$COMMON/KernelSU-Next"
-              echo "KSU_DIR=$KSU_DIR" >> "$GITHUB_ENV"
-
-              # Re-check
-              if ! grep -R "KSU_SUSFS" -n "$KSU_DIR" >/dev/null 2>&1; then
-                echo "::warning::Wild_KSU integration completed, but KSU_SUSFS still not detected. Disabling SUSFS to avoid CI failure."
-                echo "SUSFS_EFFECTIVE=Off" >> "$GITHUB_ENV"
-                exit 0
-              fi
-            else
-              echo "::warning::KSU_SUSFS not detected after patch attempts. Disabling SUSFS to avoid CI failure."
-              echo "SUSFS_EFFECTIVE=Off" >> "$GITHUB_ENV"
-              exit 0
-            fi
-          fi
-
-          echo "SUSFS_EFFECTIVE=On" >> "$GITHUB_ENV"
-          echo "✅ SUSFS enabled and KernelSU exposes KSU_SUSFS"
-
-      - name: Configure kernel (defconfig + toggles)
-        run: |
-          set -euo pipefail
-          COMMON="${{ steps.paths.outputs.common_dir }}"
-          OUT="${{ steps.paths.outputs.out_dir }}"
-          ROOT="${{ github.event.inputs.root_solution }}"
-          SUSFS_INPUT="${{ github.event.inputs.susfs }}"
-          SUSFS_EFFECTIVE="${SUSFS_EFFECTIVE:-$SUSFS_INPUT}"
-          KPM="${{ github.event.inputs.kpm }}"
-          FORCE_LZ4="${{ github.event.inputs.force_lz4_zram }}"
-          BUILD_TYPE="${{ github.event.inputs.build_type }}"
-
-          cd "$COMMON"
-          DEFCONFIG="arch/arm64/configs/gki_defconfig"
-
-          # Apply toggles directly in gki_defconfig (safe; deterministic)
-          set_cfg() {
-            local key="$1"
-            local val="$2"
-            if grep -qE "^${key}=" "$DEFCONFIG"; then
-              sed -i "s/^${key}=.*/${key}=${val}/" "$DEFCONFIG"
-            else
-              echo "${key}=${val}" >> "$DEFCONFIG"
-            fi
-          }
-          unset_cfg() {
-            local key="$1"
-            sed -i "/^${key}=y$/d" "$DEFCONFIG"
-            sed -i "/^${key}=m$/d" "$DEFCONFIG"
-            if ! grep -qE "^# ${key} is not set$" "$DEFCONFIG"; then
-              echo "# ${key} is not set" >> "$DEFCONFIG"
-            fi
-          }
-
-          # Root toggles
-          if [[ "$ROOT" == "none" ]]; then
-            unset_cfg "CONFIG_KSU"
+          echo "➡️ Cloning susfs4ksu: $SUSFS_REF"
+          rm -rf susfs4ksu || true
+          if git clone --depth 1 --branch "$SUSFS_REF" https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu 2>/dev/null; then
+            echo "✅ susfs4ksu cloned shallow"
           else
-            set_cfg "CONFIG_KSU" "y"
-            # Common sane defaults
-            set_cfg "CONFIG_KSU_NONE_HOOK" "y"
-            set_cfg "CONFIG_KSU_MANUAL_SU" "y"
+            echo "ℹ️ shallow clone failed; doing full clone + checkout..."
+            git clone https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+            (cd susfs4ksu && git checkout "$SUSFS_REF")
           fi
 
-          # KPM (only enable if requested; if symbol doesn't exist, it won't break)
-          if [[ "$KPM" == "On" ]]; then
-            set_cfg "CONFIG_KPM" "y"
-          else
-            unset_cfg "CONFIG_KPM"
-          fi
-
-          # SUSFS toggle (effective)
-          if [[ "$SUSFS_EFFECTIVE" == "On" ]]; then
-            set_cfg "CONFIG_KSU_SUSFS" "y"
-            set_cfg "CONFIG_KSU_SUSFS_SUS_PATH" "y"
-            set_cfg "CONFIG_KSU_SUSFS_SUS_MOUNT" "y"
-            set_cfg "CONFIG_KSU_SUSFS_SUS_KSTAT" "y"
-            set_cfg "CONFIG_KSU_SUSFS_SPOOF_UNAME" "y"
-            set_cfg "CONFIG_KSU_SUSFS_ENABLE_LOG" "y"
-            set_cfg "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS" "y"
-            set_cfg "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG" "y"
-            set_cfg "CONFIG_KSU_SUSFS_OPEN_REDIRECT" "y"
-            set_cfg "CONFIG_KSU_SUSFS_SUS_MAP" "y"
-          else
-            unset_cfg "CONFIG_KSU_SUSFS"
-          fi
-
-          # Force ZRAM LZ4 (best-effort; doesn't error if unsupported)
-          if [[ "$FORCE_LZ4" == "On" ]]; then
-            set_cfg "CONFIG_ZRAM" "y"
-            set_cfg "CONFIG_ZRAM_DEF_COMP_LZ4" "y"
-            unset_cfg "CONFIG_ZRAM_DEF_COMP_LZO"
-            unset_cfg "CONFIG_ZRAM_DEF_COMP_LZ4HC"
-          fi
-
-          # Make output dir and generate .config
-          mkdir -p "$OUT"
-          make O="$OUT" ARCH=arm64 gki_defconfig
-          make O="$OUT" ARCH=arm64 olddefconfig
-
-          echo "---- Effective config (KSU/KPM/SUSFS) ----"
-          grep -nE "CONFIG_KSU|CONFIG_KPM|CONFIG_ZRAM|CONFIG_KSU_SUSFS" "$OUT/.config" | head -n 80 || true
-
-          # If the tree references lz4armv8.S but it still isn't present, disable ARMv8 accel config if set
-          if [[ ! -f "$COMMON/lib/lz4/lz4armv8/lz4armv8.S" ]]; then
-            if grep -q "^CONFIG_EROFS_FS_ZIP_LZ4_ARMV8=y" "$OUT/.config" 2>/dev/null; then
-              echo "::warning::Disabling CONFIG_EROFS_FS_ZIP_LZ4_ARMV8 because lz4armv8.S is missing."
-              sed -i 's/^CONFIG_EROFS_FS_ZIP_LZ4_ARMV8=y/# CONFIG_EROFS_FS_ZIP_LZ4_ARMV8 is not set/' "$OUT/.config"
-              make O="$OUT" ARCH=arm64 olddefconfig
-            fi
-          fi
-
-      - name: Build kernel
-        run: |
-          set -euo pipefail
-          COMMON="${{ steps.paths.outputs.common_dir }}"
-          OUT="${{ steps.paths.outputs.out_dir }}"
-
+          COMMON="${{ steps.tree.outputs.KERNEL_COMMON }}"
           cd "$COMMON"
 
-          export ARCH=arm64
-          export LLVM=1
-          export LLVM_IAS=1
-          export CCACHE_COMPILERCHECK=content
-          export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
-          ccache -M 8G || true
+          # ---- Apply kernel patches (50_add_susfs*.patch etc) ----
+          # Prefer patches under kernel_patches/kernel/ (covers kernel-side changes)
+          KPATCH_DIR="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/susfs4ksu/kernel_patches/kernel"
+          if [ ! -d "$KPATCH_DIR" ]; then
+            echo "::error::SUSFS kernel patch dir not found: $KPATCH_DIR"
+            find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/susfs4ksu/kernel_patches" -maxdepth 3 -type d || true
+            exit 1
+          fi
 
-          echo "Building… (OUT=$OUT)"
-          make O="$OUT" -j"$(nproc)" Image modules dtbs || make O="$OUT" -j"$(nproc)" Image modules || make O="$OUT" -j"$(nproc)" Image
+          echo "➡️ Applying SUSFS kernel patches..."
+          # apply in numeric order if present
+          mapfile -t PATCHES < <(find "$KPATCH_DIR" -maxdepth 2 -type f -name '*.patch' | sort)
+          if [ "${#PATCHES[@]}" -eq 0 ]; then
+            echo "::error::No SUSFS kernel patches found in $KPATCH_DIR"
+            exit 1
+          fi
 
-          echo "Build outputs:"
-          ls -la "$OUT/arch/arm64/boot" || true
-
-      - name: Package artifacts
-        run: |
-          set -euo pipefail
-          OUT="${{ steps.paths.outputs.out_dir }}"
-          DIST="$GITHUB_WORKSPACE/dist"
-          rm -rf "$DIST"
-          mkdir -p "$DIST"
-
-          # Kernel image
-          for f in "$OUT/arch/arm64/boot/Image" "$OUT/arch/arm64/boot/Image.gz" "$OUT/arch/arm64/boot/Image.lz4"; do
-            [[ -f "$f" ]] && cp -f "$f" "$DIST/"
+          for p in "${PATCHES[@]}"; do
+            echo "  - $(basename "$p")"
+            git apply --whitespace=nowarn "$p" || patch -p1 --forward < "$p"
           done
 
-          # DTBs / DTBOs (best-effort)
-          find "$OUT/arch/arm64/boot" -maxdepth 2 -type f \( -name "*.dtb" -o -name "*.dtbo" \) -exec cp -f {} "$DIST/" \; || true
+          # ---- Apply KernelSU enable patch (KernelSU-Next aware) ----
+          echo "➡️ Applying SUSFS enable patch to KernelSU..."
+          BASE="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/susfs4ksu/kernel_patches"
+          EPATCH=""
+          for d in "$BASE/KernelSU-Next" "$BASE/KernelSU"; do
+            [ -d "$d" ] || continue
+            EPATCH="$(find "$d" -maxdepth 4 -type f -name '*.patch' | grep -iE 'enable.*susfs|susfs.*enable|KSU_SUSFS' | head -n 1 || true)"
+            if [ -n "$EPATCH" ]; then break; fi
+          done
+          if [ -z "$EPATCH" ]; then
+            echo "::error::Could not locate a KernelSU enable SUSFS patch in susfs4ksu/kernel_patches"
+            find "$BASE" -maxdepth 3 -type f -name '*.patch' | head -n 50 || true
+            exit 1
+          fi
 
-          # Config + build info
-          [[ -f "$OUT/.config" ]] && cp -f "$OUT/.config" "$DIST/config"
-          echo "root_solution=${{ github.event.inputs.root_solution }}" > "$DIST/build_meta.txt"
-          echo "susfs_effective=${SUSFS_EFFECTIVE:-${{ github.event.inputs.susfs }}}" >> "$DIST/build_meta.txt"
-          echo "kpm=${{ github.event.inputs.kpm }}" >> "$DIST/build_meta.txt"
-          echo "force_lz4_zram=${{ github.event.inputs.force_lz4_zram }}" >> "$DIST/build_meta.txt"
+          echo "  - $(basename "$EPATCH")"
+          git apply --whitespace=nowarn "$EPATCH" || patch -p1 --forward < "$EPATCH"
 
-          (cd "$DIST" && zip -r9 "$GITHUB_WORKSPACE/op13_gki_build.zip" .)
+      - name: Update gki_defconfig (name + feature toggles) - de-dupe
+        run: |
+          set -euo pipefail
+          COMMON="${{ steps.tree.outputs.KERNEL_COMMON }}"
+          DEFCONFIG="$COMMON/arch/arm64/configs/gki_defconfig"
+          test -f "$DEFCONFIG" || { echo "::error::Missing $DEFCONFIG"; exit 1; }
 
-      - name: Upload artifact
+          python3 - <<'PY'
+          import re, pathlib, os
+
+          defconfig = pathlib.Path(os.environ["DEFCONFIG"])
+          lines = defconfig.read_text(encoding="utf-8", errors="ignore").splitlines()
+
+          def drop(sym_prefix):
+            nonlocal lines
+            rx = re.compile(rf"^(#\s*)?{re.escape(sym_prefix)}")
+            lines = [l for l in lines if not rx.match(l)]
+
+          def set_cfg(sym, val):
+            nonlocal lines
+            # remove any existing occurrences
+            rx = re.compile(rf"^(#\s*)?{re.escape(sym)}(=|$)")
+            lines = [l for l in lines if not rx.match(l)]
+            lines.append(f"{sym}={val}")
+
+          # kernel name: keep CONFIG_LOCALVERSION stable
+          # Ensure LOCALVERSION_AUTO is disabled for deterministic uname
+          set_cfg("CONFIG_LOCALVERSION_AUTO", "n")
+          # Always store as "-<name>"
+          name = os.environ.get("KERNEL_NAME", "").strip()
+          if not name:
+            raise SystemExit("KERNEL_NAME is empty")
+          set_cfg("CONFIG_LOCALVERSION", f"\"-{name}\"")
+
+          # KernelSU Next
+          set_cfg("CONFIG_KSU", "y")
+
+          # Optional toggles
+          if os.environ.get("KPM", "Off") == "On":
+            set_cfg("CONFIG_KPM", "y")
+          else:
+            set_cfg("CONFIG_KPM", "n")
+
+          if os.environ.get("BBR", "Off") == "On":
+            set_cfg("CONFIG_TCP_CONG_BBR", "y")
+            set_cfg("CONFIG_TCP_CONG_BIC", "y")
+            set_cfg("CONFIG_DEFAULT_TCP_CONG", "\"bbr\"")
+          else:
+            # don't force-disable; just ensure default isn't switched
+            pass
+
+          if os.environ.get("LZ4_ZRAM", "Off") == "On":
+            set_cfg("CONFIG_ZRAM", "m")
+            set_cfg("CONFIG_ZRAM_DEF_COMP_LZ4", "y")
+            # LZ4 infra (some trees use CONFIG_LZ4_COMPRESS / _DECOMPRESS)
+            # We'll enable if present; leaving absent symbols alone is safe.
+            # Can't detect symbol presence without Kconfig parse, so just set and let Kconfig ignore if unknown.
+            set_cfg("CONFIG_LZ4_COMPRESS", "y")
+            set_cfg("CONFIG_LZ4_DECOMPRESS", "y")
+
+          # SUSFS requested -> ensure KSU_SUSFS toggle is on (actual symbol comes from patches)
+          if os.environ.get("SUSFS", "Off") == "On":
+            set_cfg("CONFIG_KSU_SUSFS", "y")
+          else:
+            # remove any existing occurrence; do not force an unknown symbol
+            pass
+
+          # BBG: symbol names vary, so we don't force a specific one here.
+          # We'll handle BBG via post-config detection later.
+
+          defconfig.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+          print("✅ gki_defconfig updated:", defconfig)
+          PY
+        env:
+          DEFCONFIG: ${{ steps.tree.outputs.KERNEL_COMMON }}/arch/arm64/configs/gki_defconfig
+          KERNEL_NAME: ${{ github.event.inputs.kernel_name }}
+          SUSFS: ${{ github.event.inputs.susfs }}
+          KPM: ${{ github.event.inputs.kpm }}
+          BBR: ${{ github.event.inputs.bbr }}
+          LZ4_ZRAM: ${{ github.event.inputs.lz4_zram }}
+
+      - name: Enable BBG (if present) + LSM ordering
+        if: ${{ github.event.inputs.bbg == 'On' }}
+        run: |
+          set -euo pipefail
+          COMMON="${{ steps.tree.outputs.KERNEL_COMMON }}"
+          DEFCONFIG="$COMMON/arch/arm64/configs/gki_defconfig"
+
+          python3 - <<'PY'
+          import re, pathlib, os
+
+          def read(p): return pathlib.Path(p).read_text(encoding="utf-8", errors="ignore").splitlines()
+
+          def write(p, lines):
+            pathlib.Path(p).write_text("\n".join(lines).rstrip()+"\n", encoding="utf-8")
+
+          def ensure_cfg(lines, sym, val):
+            rx = re.compile(rf"^(#\s*)?{re.escape(sym)}(=|$)")
+            lines = [l for l in lines if not rx.match(l)]
+            lines.append(f"{sym}={val}")
+            return lines
+
+          defconfig = os.environ["DEFCONFIG"]
+          root = pathlib.Path(os.environ["COMMON_DIR"])
+          security_dir = root / "security"
+
+          lines = read(defconfig)
+
+          # Detect any BBG_* symbol in security/Kconfig and turn on the top-level one.
+          symbols = []
+          if security_dir.exists():
+            for kcfg in security_dir.rglob("Kconfig"):
+              txt = kcfg.read_text(encoding="utf-8", errors="ignore")
+              symbols += re.findall(r"^\s*config\s+(BBG_[A-Za-z0-9_]+)\b", txt, flags=re.M)
+          symbols = sorted(set(symbols))
+
+          if not symbols:
+            print("⚠️ No BBG_* Kconfig symbols found in this tree; skipping BBG enable.")
+            write(defconfig, lines)
+            raise SystemExit(0)
+
+          # pick a reasonable default: BBG (or first)
+          bbg_sym = "BBG" if "BBG" in symbols else symbols[0]
+          if bbg_sym != "BBG":
+            # symbol is like BBG_LSM or similar
+            pass
+
+          # If symbol is not "BBG", enable it directly.
+          lines = ensure_cfg(lines, f"CONFIG_{bbg_sym}", "y")
+
+          # Some trees use BBG as an LSM; ensure it is in CONFIG_LSM after selinux (stable order).
+          # We'll try to find an lsm name string in Kconfig help (best effort).
+          lsm_name = "bbg"
+          # Update CONFIG_LSM line if exists
+          lsm_vals = []
+          for l in lines:
+            if l.startswith('CONFIG_LSM="'):
+              lsm_vals = l.split('"',1)[1].rsplit('"',1)[0].split(',')
+              break
+          if lsm_vals:
+            # Ensure bbg is present, placed after selinux
+            if "selinux" in lsm_vals:
+              if lsm_name in lsm_vals: lsm_vals.remove(lsm_name)
+              idx = lsm_vals.index("selinux")+1
+              lsm_vals.insert(idx, lsm_name)
+            else:
+              if lsm_name not in lsm_vals: lsm_vals.append(lsm_name)
+            # Replace existing CONFIG_LSM
+            lines = [l for l in lines if not l.startswith('CONFIG_LSM="')]
+            lines.append('CONFIG_LSM="' + ",".join(lsm_vals) + '"')
+
+          write(defconfig, lines)
+          print("✅ BBG enabled symbol:", bbg_sym)
+          PY
+        env:
+          DEFCONFIG: ${{ steps.tree.outputs.KERNEL_COMMON }}/arch/arm64/configs/gki_defconfig
+          COMMON_DIR: ${{ steps.tree.outputs.KERNEL_COMMON }}
+
+      - name: "Pre-build sanity: verify effective config"
+        run: |
+          set -euo pipefail
+          COMMON="${{ steps.tree.outputs.KERNEL_COMMON }}"
+          cd "$COMMON"
+          make O=out ARCH=arm64 gki_defconfig
+
+          echo "---- KernelSU / SUSFS / KPM ----"
+          grep -nE '^CONFIG_KSU(=|_)|^CONFIG_KPM(=|_)|^CONFIG_KSU_SUSFS(=|_)' out/.config || true
+
+          echo "---- ZRAM/LZ4 ----"
+          grep -nE '^CONFIG_ZRAM|LZ4' out/.config | head -n 80 || true
+
+          if [ "${{ github.event.inputs.susfs }}" = "On" ]; then
+            grep -q '^CONFIG_KSU_SUSFS=y' out/.config || { echo "::error::SUSFS requested but CONFIG_KSU_SUSFS not enabled"; exit 1; }
+          fi
+
+          grep -q '^CONFIG_KSU=y' out/.config || { echo "::error::KernelSU requested but CONFIG_KSU not enabled"; exit 1; }
+
+      - name: Build kernel (GKI)
+        run: |
+          set -euo pipefail
+          COMMON="${{ steps.tree.outputs.KERNEL_COMMON }}"
+          cd "$COMMON"
+
+          if [ "${{ github.event.inputs.clean_build }}" = "true" ]; then
+            rm -rf out build.log || true
+            ccache -C || true
+          fi
+
+          # Compile flags: conservative defaults
+          OPT="${{ github.event.inputs.optimize_level }}"
+          PROFILE="${{ github.event.inputs.profile }}"
+          if [ "$PROFILE" = "battery" ]; then
+            KOPT="-Os"
+          elif [ "$OPT" = "O3" ] && [ "$PROFILE" = "performance" ]; then
+            KOPT="-O3"
+          else
+            KOPT="-O2"
+          fi
+          echo "Using KCFLAGS: $KOPT"
+
+          set -o pipefail
+
+          # Optional tool discovery (avoid hardcoding paths that may not exist)
+          RUSTC=""
+          PAHOLE=""
+          if [ -x "../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc" ]; then
+            RUSTC="../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc"
+          fi
+          if [ -x "../../prebuilts/kernel-build-tools/linux-x86/bin/pahole" ]; then
+            PAHOLE="../../prebuilts/kernel-build-tools/linux-x86/bin/pahole"
+          fi
+
+          echo "---- Tool versions ----"
+          clang --version || true
+          ld.lld --version || true
+          aarch64-linux-gnu-objcopy --version || true
+
+          echo "---- Build (LLVM_IAS=1) ----"
+          make -j"$(nproc --all)" \
+            LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CC="ccache clang" LD=ld.lld HOSTLD=ld.lld \
+            ${RUSTC:+RUSTC="$RUSTC"} ${PAHOLE:+PAHOLE="$PAHOLE"} \
+            O=out KCFLAGS+="$KOPT" gki_defconfig all \
+            2>&1 | tee build.log || {
+              echo "::warning::LLVM_IAS build failed; retrying with LLVM_IAS=0 (GNU as fallback)"
+              make -j"$(nproc --all)" \
+                LLVM=1 LLVM_IAS=0 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+                CC="ccache clang" LD=ld.lld HOSTLD=ld.lld \
+                ${RUSTC:+RUSTC="$RUSTC"} ${PAHOLE:+PAHOLE="$PAHOLE"} \
+                O=out KCFLAGS+="$KOPT" gki_defconfig all \
+                2>&1 | tee -a build.log || {
+                  echo "::error::Build failed again"
+                  grep -nEi "fatal error:|error:|ld\.lld: error|undefined reference|No such file|not found|killed|No space" build.log | head -n 250 || true
+                  exit 2
+                }
+            }
+
+          ccache -s || true
+
+          echo "✅ Build complete"
+          ls -lh out/arch/arm64/boot/Image || true
+
+      - name: Upload build log
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: op13-gki-${{ github.sha }}-${{ github.event.inputs.root_solution }}-susfs-${{ github.event.inputs.susfs }}
+          name: build-log
+          path: ${{ steps.tree.outputs.KERNEL_COMMON }}/build.log
+
+      - name: Package AnyKernel3 flashable zip
+        id: pack
+        run: |
+          set -euo pipefail
+          IMG="${{ steps.tree.outputs.KERNEL_COMMON }}/out/arch/arm64/boot/Image"
+          test -f "$IMG" || { echo "::error::Image not found at $IMG"; exit 1; }
+
+          git clone --depth=1 --branch "${{ github.event.inputs.anykernel_ref }}" "${{ github.event.inputs.anykernel_repo }}" AnyKernel3
+          rm -rf AnyKernel3/.git || true
+          cp "$IMG" AnyKernel3/Image
+
+          # Deterministic artifact name
+          DATE_TAG="$(date -u +%Y%m%d)"
+          ZIP_BASENAME="OP13-${ANDROID_VERSION}-${KERNEL_VERSION}-${DATE_TAG}-${PROFILE}"
+          if [ "${{ github.event.inputs.susfs }}" = "On" ]; then ZIP_BASENAME="${ZIP_BASENAME}-SUSFS"; fi
+          ZIP_BASENAME="${ZIP_BASENAME}-KSUN"
+          echo "ZIP_BASENAME=$ZIP_BASENAME" >> "$GITHUB_OUTPUT"
+
+          (cd AnyKernel3 && zip -qr "../${ZIP_BASENAME}.zip" .)
+          sha256sum "${ZIP_BASENAME}.zip" | tee "${ZIP_BASENAME}.zip.sha256"
+
+          ls -lh "${ZIP_BASENAME}.zip" "${ZIP_BASENAME}.zip.sha256"
+
+      - name: Upload flashable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pack.outputs.ZIP_BASENAME }}
           path: |
-            op13_gki_build.zip
-            dist/**
+            ${{ steps.pack.outputs.ZIP_BASENAME }}.zip
+            ${{ steps.pack.outputs.ZIP_BASENAME }}.zip.sha256
+
+      - name: Create GitHub Release
+        if: ${{ github.event.inputs.make_release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.pack.outputs.ZIP_BASENAME }}
+          name: ${{ steps.pack.outputs.ZIP_BASENAME }}
+          generate_release_notes: true
+          files: |
+            ${{ steps.pack.outputs.ZIP_BASENAME }}.zip
+            ${{ steps.pack.outputs.ZIP_BASENAME }}.zip.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
