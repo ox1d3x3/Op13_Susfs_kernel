@@ -1,72 +1,209 @@
 name: KSU
+permissions:
+  contents: write
 
-on:
+'on':
   workflow_dispatch:
     inputs:
-      MANIFEST_URL:
-        description: "Repo manifest URL (e.g., a kernel_platform repo/manifest repo)"
+      # --- Source selection (repo manifest OR plain git) ---
+      SOURCE_URL:
+        description: "Manifest repo URL (repo tool) OR normal git repo URL containing kernel_platform/common"
         required: true
-        default: "https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git"
+        default: ""
+      SOURCE_METHOD:
+        description: "How to fetch sources"
+        type: choice
+        required: true
+        default: auto
+        options: [auto, repo, git]
       MANIFEST_BRANCH:
-        description: "Manifest branch. Leave 'auto' to detect default branch."
+        description: "Manifest branch (repo method). Use 'auto' to detect default. Ignored for git."
         required: true
-        default: "auto"
+        default: auto
       MANIFEST_FILE:
-        description: "Manifest XML file (usually default.xml)"
+        description: "Manifest xml filename (repo method)."
         required: true
-        default: "default.xml"
+        default: default.xml
       SYNC_DEPTH:
-        description: "Repo sync depth (0=full history; 1=shallow). Shallow is faster."
+        description: "Repo sync depth: 1=shallow, 0=full (repo method)."
         required: true
         default: "1"
       FETCH_TAGS:
-        description: "Fetch git tags (recommended Off unless you need tag-based versioning)"
+        description: "Fetch tags during repo sync (repo method)"
         type: choice
         required: true
-        default: "Off"
-        options: ["Off", "On"]
+        default: Off
+        options: [Off, On]
+      GIT_REF:
+        description: "Git ref/branch/tag/commit (git method). Empty = default."
+        required: false
+        default: ""
 
-      ANDROID_VERSION:
-        description: "Label only (artifact naming)"
+      # --- Device / identity ---
+      OP_MODEL:
+        description: "Artifact naming only (does not change kernel sources)"
+        type: choice
         required: true
-        default: "android15"
+        default: OP13-CN
+        options: [OP13-CN, OP13-Global, OP13-Both]
+      ANDROID_VERSION:
+        description: "Label only (metadata/artifact naming)"
+        required: true
+        default: android15
       KERNEL_VERSION:
-        description: "Label only (artifact naming)"
+        description: "Label only (metadata/artifact naming)"
         required: true
         default: "6.6"
       KERNEL_NAME:
-        description: "Exact localversion name to embed (e.g. android15-8-g...-4k)"
+        description: "Embedded localversion name (CONFIG_LOCALVERSION='-<name>')"
         required: true
         default: "android15-8-g29d86c5fc9dd-abogki428889875-4k"
-
-      KSU_REF:
-        description: "KernelSU Next ref: stable | dev | legacy | <tag/commit>. Default: stable"
-        required: true
-        default: "stable"
-
-      FORCE_LZ4_ZRAM:
-        description: "Enable LZ4 ZRAM config (best-effort)"
+      KERNEL_SUFFIX:
+        description: "Extra suffix appended to localversion and artifact name (optional)"
+        required: false
+        default: ""
+      BUILD_TIME:
+        description: "Build timestamp mode"
         type: choice
         required: true
-        default: "Off"
-        options: ["Off", "On"]
+        default: short
+        options: [short, full, none]
 
       BUILD_DEFCONFIG:
-        description: "Defconfig name. Leave 'auto' to use arch/arm64/configs/gki_defconfig if present."
+        description: "Defconfig file under arch/arm64/configs. 'auto' prefers gki_defconfig."
         required: true
-        default: "auto"
+        default: auto
+
+      # --- KernelSU Next ---
+      KSU_REF:
+        description: "KernelSU-Next ref: stable | dev | legacy | <tag/commit/branch>"
+        required: true
+        default: stable
+
+      # --- Toolchain ---
+      TOOLCHAIN:
+        description: "Toolchain selection"
+        type: choice
+        required: true
+        default: auto
+        options: [auto, in-tree, neutron, system]
+      NEUTRON_VERSION:
+        description: "Neutron toolchain version for antman (only if TOOLCHAIN=neutron or auto fallback)."
+        required: true
+        default: "18"
+
+      # --- Performance / daily-driver toggles (safe) ---
+      CLEAN_BUILD:
+        description: "Clean out/ and disable ccache"
+        type: choice
+        required: true
+        default: Off
+        options: [Off, On]
+      CCACHE:
+        description: "Use ccache (disabled if CLEAN_BUILD=On)"
+        type: choice
+        required: true
+        default: On
+        options: [On, Off]
+      OPTIMIZE_LEVEL:
+        description: "Compiler optimization level. O2 safest."
+        type: choice
+        required: true
+        default: O2
+        options: [O2, O3]
+      LTO:
+        description: "Link-time optimization"
+        type: choice
+        required: true
+        default: Thin
+        options: [Off, Thin, Full]
+      BBR:
+        description: "Enable TCP BBR congestion control"
+        type: choice
+        required: true
+        default: On
+        options: [On, Off]
+      FQ:
+        description: "Enable fq qdisc (recommended with BBR)"
+        type: choice
+        required: true
+        default: On
+        options: [On, Off]
+      FORCE_LZ4_ZRAM:
+        description: "Enable ZRAM + default compressor LZ4 (best-effort)"
+        type: choice
+        required: true
+        default: On
+        options: [On, Off]
+      PROFILE:
+        description: "Profile (best-effort config defaults only)"
+        type: choice
+        required: true
+        default: balanced
+        options: [balanced, performance, battery]
+
+      # --- Build system selection ---
+      BUILD_SYSTEM:
+        description: "How to build"
+        type: choice
+        required: true
+        default: auto
+        options: [auto, make, build_sh]
+      BUILD_CONFIG:
+        description: "Only for build_sh: BUILD_CONFIG path relative to kernel_platform. 'auto' tries to find one."
+        required: true
+        default: auto
+
+      # --- Packaging (optional AnyKernel3) ---
+      MAKE_ANYKERNEL_ZIP:
+        description: "Build AnyKernel3 flashable zip (requires ANYKERNEL_REPO)"
+        type: choice
+        required: true
+        default: Off
+        options: [Off, On]
+      ANYKERNEL_REPO:
+        description: "AnyKernel3 repo URL (optional)"
+        required: false
+        default: ""
+      ANYKERNEL_REF:
+        description: "AnyKernel3 ref/branch/tag (optional)"
+        required: false
+        default: ""
+
+      # --- Release ---
+      MAKE_RELEASE:
+        description: "Create GitHub Release with artifacts"
+        type: boolean
+        required: true
+        default: false
+      RELEASE_TAG:
+        description: "Release tag (only if MAKE_RELEASE=true). Empty = auto."
+        required: false
+        default: ""
+
+concurrency:
+  group: op13-ksun-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     env:
       WORKDIR: kernel_workspace
-      KP_DIR: kernel_workspace/kernel_platform
-      COMMON_DIR: kernel_workspace/kernel_platform/common
-      OUT_DIR: kernel_workspace/kernel_platform/common/out
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
 
     steps:
-      - name: Checkout repo (this repo)
+      - name: 🚀 Maximize Build Space
+        uses: easimon/maximize-build-space@v9
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 4096
+          remove-dotnet: true
+          remove-android: true
+          remove-haskell: true
+          remove-codeql: true
+
+      - name: Checkout workflow repo
         uses: actions/checkout@v4
 
       - name: Install build dependencies
@@ -79,265 +216,469 @@ jobs:
             libelf-dev libncurses-dev libssl-dev lld lz4 rsync unzip zip \
             python3 python3-pip \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
-          ccache --version || true
           echo "✅ deps installed"
 
-      - name: Install repo tool (required for repo init/sync)
+      - name: Cache ccache
+        if: ${{ inputs.CLEAN_BUILD == 'Off' && inputs.CCACHE == 'On' }}
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-${{ runner.os }}-${{ github.repository }}-${{ github.ref }}-${{ github.run_number }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ github.repository }}-${{ github.ref }}-
+            ccache-${{ runner.os }}-${{ github.repository }}-
+
+      - name: Install repo tool
         shell: bash
         run: |
           set -euo pipefail
           sudo curl -fL https://storage.googleapis.com/git-repo-downloads/repo -o /usr/local/bin/repo
           sudo chmod +x /usr/local/bin/repo
-          export PATH="/usr/local/bin:$PATH"
-          command -v repo
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
           repo --version
 
-      - name: Detect manifest default branch (if MANIFEST_BRANCH=auto)
-        id: detect_branch
+      - name: Fetch sources (repo+auto fallback to git)
+        id: fetch
         shell: bash
         run: |
           set -euo pipefail
-          MANIFEST_URL="${{ inputs.MANIFEST_URL }}"
-          WANT="${{ inputs.MANIFEST_BRANCH }}"
-          # detect default branch
-          symref="$(git ls-remote --symref "$MANIFEST_URL" HEAD 2>/dev/null || true)"
-          detected="$(printf "%s\n" "$symref" | awk '/^ref:/ {print $2}' | sed 's#refs/heads/##' | head -n1)"
-          if [[ -z "$detected" ]]; then
-            detected="master"
+          SRC_URL="${{ inputs.SOURCE_URL }}"
+          METHOD="${{ inputs.SOURCE_METHOD }}"
+
+          if [[ -z "$SRC_URL" ]]; then
+            echo "::error::SOURCE_URL is empty."
+            exit 1
           fi
 
-          chosen="$detected"
-          if [[ "$WANT" != "auto" && -n "$WANT" ]]; then
-            if git ls-remote --exit-code --heads "$MANIFEST_URL" "$WANT" >/dev/null 2>&1; then
-              chosen="$WANT"
-            else
-              echo "::warning::MANIFEST_BRANCH '$WANT' not found; falling back to '$detected'."
-            fi
+          # Quick connectivity check (avoid silent 404/typo URLs)
+          if ! git ls-remote "$SRC_URL" HEAD >/dev/null 2>&1; then
+            echo "::error::Cannot reach SOURCE_URL (git ls-remote failed). Check the URL/permissions."
+            exit 1
           fi
 
-          echo "chosen=$chosen" >> "$GITHUB_OUTPUT"
-          echo "detected=$detected" >> "$GITHUB_OUTPUT"
-          echo "Manifest branch chosen: $chosen (detected default: $detected)"
-
-      - name: Repo init + sync kernel sources
-        shell: bash
-        run: |
-          set -euo pipefail
-          export PATH="/usr/local/bin:$PATH"
           mkdir -p "${WORKDIR}"
           cd "${WORKDIR}"
 
-          MANIFEST_URL="${{ inputs.MANIFEST_URL }}"
-          MANIFEST_BRANCH="${{ steps.detect_branch.outputs.chosen }}"
-          MANIFEST_FILE="${{ inputs.MANIFEST_FILE }}"
-          DEPTH="${{ inputs.SYNC_DEPTH }}"
+          detect_default_branch() {
+            local url="$1"
+            local symref
+            symref="$(git ls-remote --symref "$url" HEAD 2>/dev/null || true)"
+            local b
+            b="$(printf "%s\n" "$symref" | awk '/^ref:/ {print $2}' | sed 's#refs/heads/##' | head -n1)"
+            [[ -n "$b" ]] && echo "$b" || echo "master"
+          }
 
-          echo "repo init: url=$MANIFEST_URL branch=$MANIFEST_BRANCH manifest=$MANIFEST_FILE depth=$DEPTH"
-          repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" -m "$MANIFEST_FILE"
+          try_repo() {
+            local url="$1"
+            local want_branch="${{ inputs.MANIFEST_BRANCH }}"
+            local manifest_file="${{ inputs.MANIFEST_FILE }}"
+            local depth="${{ inputs.SYNC_DEPTH }}"
+            local fetch_tags="${{ inputs.FETCH_TAGS }}"
 
-          # Sync flags
-          FLAGS=( -c -j"$(nproc)" --force-sync --no-clone-bundle )
-          if [[ "${{ inputs.FETCH_TAGS }}" == "Off" ]]; then
-            FLAGS+=( --no-tags )
+            local detected branch
+            detected="$(detect_default_branch "$url")"
+            branch="$detected"
+            if [[ "$want_branch" != "auto" && -n "$want_branch" ]]; then
+              if git ls-remote --exit-code --heads "$url" "$want_branch" >/dev/null 2>&1; then
+                branch="$want_branch"
+              else
+                echo "::warning::MANIFEST_BRANCH '$want_branch' not found; using '$detected'."
+              fi
+            fi
+
+            echo "repo init: url=$url branch=$branch manifest=$manifest_file depth=$depth"
+            set +e
+            repo init -u "$url" -b "$branch" -m "$manifest_file" >/tmp/repo_init.log 2>&1
+            rc=$?
+            set -e
+            if [[ $rc -ne 0 ]]; then
+              echo "::warning::repo init failed; falling back to git."
+              sed -n '1,120p' /tmp/repo_init.log || true
+              return 1
+            fi
+
+            local flags=( -c -j"$(nproc)" --force-sync --no-clone-bundle )
+            if [[ "$fetch_tags" == "Off" ]]; then flags+=( --no-tags ); fi
+            if [[ "$depth" != "0" ]]; then flags+=( --depth="$depth" ); fi
+
+            set +e
+            repo sync "${flags[@]}" >/tmp/repo_sync.log 2>&1
+            rc=$?
+            set -e
+            if [[ $rc -ne 0 ]]; then
+              echo "::warning::repo sync failed; falling back to git."
+              sed -n '1,160p' /tmp/repo_sync.log || true
+              return 1
+            fi
+
+            echo "method=repo" >> "$GITHUB_OUTPUT"
+            return 0
+          }
+
+          try_git() {
+            local url="$1"
+            local ref="${{ inputs.GIT_REF }}"
+            rm -rf src
+            git clone --depth 1 "$url" src
+            if [[ -n "$ref" ]]; then
+              cd src
+              git fetch --depth 1 origin "$ref" || git fetch origin "$ref"
+              git checkout "$ref"
+              cd ..
+            fi
+            echo "method=git" >> "$GITHUB_OUTPUT"
+            return 0
+          }
+
+          if [[ "$METHOD" == "repo" ]]; then
+            try_repo "$SRC_URL" || { echo "::error::repo method failed."; exit 1; }
+          elif [[ "$METHOD" == "git" ]]; then
+            try_git "$SRC_URL" || { echo "::error::git method failed."; exit 1; }
+          else
+            if try_repo "$SRC_URL"; then
+              echo "✅ fetched via repo"
+            else
+              try_git "$SRC_URL"
+            fi
           fi
-          if [[ "$DEPTH" != "0" ]]; then
-            FLAGS+=( --depth="$DEPTH" )
-          fi
 
-          repo sync "${FLAGS[@]}"
-
-          test -d kernel_platform || { echo "::error::kernel_platform not found after sync"; ls -la; exit 1; }
-          test -d kernel_platform/common || { echo "::error::kernel_platform/common not found after sync"; ls -la kernel_platform; exit 1; }
-          echo "✅ repo sync done"
-
-      - name: Select defconfig
-        id: defcfg
+      - name: Resolve kernel_platform/common paths
+        id: paths
         shell: bash
         run: |
           set -euo pipefail
-          COMMON="${COMMON_DIR}"
-          want="${{ inputs.BUILD_DEFCONFIG }}"
-          if [[ "$want" == "auto" ]]; then
-            if [[ -f "${COMMON}/arch/arm64/configs/gki_defconfig" ]]; then
-              echo "path=${COMMON}/arch/arm64/configs/gki_defconfig" >> "$GITHUB_OUTPUT"
-              echo "name=gki_defconfig" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            # fallback: first match
-            found="$(find "${COMMON}/arch/arm64/configs" -maxdepth 1 -type f -name "*gki*_defconfig" | head -n1 || true)"
-            if [[ -n "$found" ]]; then
-              echo "path=$found" >> "$GITHUB_OUTPUT"
-              echo "name=$(basename "$found")" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            echo "::error::Could not auto-detect defconfig under arch/arm64/configs"
-            ls -la "${COMMON}/arch/arm64/configs" || true
-            exit 1
+          cd "${WORKDIR}"
+
+          if [[ -d "kernel_platform/common" ]]; then
+            KP="$PWD/kernel_platform"
+            COMMON="$PWD/kernel_platform/common"
+          elif [[ -d "src/kernel_platform/common" ]]; then
+            KP="$PWD/src/kernel_platform"
+            COMMON="$PWD/src/kernel_platform/common"
+          elif [[ -d "src/common" ]]; then
+            KP="$PWD/src"
+            COMMON="$PWD/src/common"
+          elif [[ -d "common" ]]; then
+            KP="$PWD"
+            COMMON="$PWD/common"
           else
-            # user supplied file name (assume arch/arm64/configs/<name>)
-            if [[ -f "${COMMON}/arch/arm64/configs/${want}" ]]; then
-              echo "path=${COMMON}/arch/arm64/configs/${want}" >> "$GITHUB_OUTPUT"
-              echo "name=${want}" >> "$GITHUB_OUTPUT"
+            echo "::error::Could not find kernel_platform/common in fetched sources."
+            ls -la
+            ls -la src || true
+            exit 1
+          fi
+
+          echo "KP_DIR=$KP" >> "$GITHUB_OUTPUT"
+          echo "COMMON_DIR=$COMMON" >> "$GITHUB_OUTPUT"
+          echo "OUT_DIR=$COMMON/out" >> "$GITHUB_OUTPUT"
+
+      - name: Toolchain (auto prefers in-tree, falls back to Neutron)
+        id: toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          KP="${{ steps.paths.outputs.KP_DIR }}"
+          TC="${{ inputs.TOOLCHAIN }}"
+          CLANG_BIN=""
+          KBUILD_BIN=""
+
+          if [[ -d "$KP/prebuilts/kernel-build-tools/linux-x86/bin" ]]; then
+            KBUILD_BIN="$KP/prebuilts/kernel-build-tools/linux-x86/bin"
+          fi
+
+          use_neutron=false
+          if [[ "$TC" == "neutron" ]]; then
+            use_neutron=true
+          elif [[ "$TC" == "in-tree" ]]; then
+            use_neutron=false
+          elif [[ "$TC" == "system" ]]; then
+            CLANG_BIN=""
+          else
+            # auto
+            if [[ -d "$KP/prebuilts/clang/host/linux-x86/clang-stable/bin" ]]; then
+              CLANG_BIN="$KP/prebuilts/clang/host/linux-x86/clang-stable/bin"
             else
-              echo "::error::Defconfig '${want}' not found under arch/arm64/configs"
-              ls -la "${COMMON}/arch/arm64/configs" || true
+              use_neutron=true
+            fi
+          fi
+
+          if [[ "$TC" == "in-tree" && -z "$CLANG_BIN" ]]; then
+            if [[ -d "$KP/prebuilts/clang/host/linux-x86/clang-stable/bin" ]]; then
+              CLANG_BIN="$KP/prebuilts/clang/host/linux-x86/clang-stable/bin"
+            else
+              echo "::error::TOOLCHAIN=in-tree but clang-stable not found in prebuilts."
               exit 1
             fi
           fi
 
-      - name: Embed kernel localversion string (KERNEL_NAME)
-        shell: bash
-        run: |
-          set -euo pipefail
-          DEF_PATH="${{ steps.defcfg.outputs.path }}"
-          KNAME="${{ inputs.KERNEL_NAME }}"
+          if [[ "$use_neutron" == "true" ]]; then
+            echo "Installing Neutron clang via antman (v${{ inputs.NEUTRON_VERSION }})"
+            mkdir -p "${WORKDIR}/toolchains"
+            cd "${WORKDIR}/toolchains"
+            git clone https://github.com/Neutron-Toolchains/antman.git --depth=1 antman
+            cd antman
+            bash antman -S=clang-"${{ inputs.NEUTRON_VERSION }}" --disable-patch=true
+            CLANG_BIN="${WORKDIR}/toolchains/antman/clang/bin"
+          fi
 
-          # Ensure deterministic localversion
-          # Remove previous CONFIG_LOCALVERSION / AUTO if any
-          sed -i '/^CONFIG_LOCALVERSION=/d' "$DEF_PATH" || true
-          sed -i '/^CONFIG_LOCALVERSION_AUTO=/d' "$DEF_PATH" || true
-          {
-            echo "CONFIG_LOCALVERSION=\"-${KNAME}\""
-            echo "CONFIG_LOCALVERSION_AUTO=n"
-          } >> "$DEF_PATH"
-
-          echo "✅ Updated defconfig localversion to -${KNAME}"
-          tail -n 5 "$DEF_PATH" || true
+          echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_OUTPUT"
+          echo "KBUILD_BIN=$KBUILD_BIN" >> "$GITHUB_OUTPUT"
+          echo "Using CLANG_BIN=$CLANG_BIN"
+          echo "Using KBUILD_BIN=$KBUILD_BIN"
 
       - name: Integrate KernelSU Next (KSUN only)
         shell: bash
         run: |
           set -euo pipefail
-          KP="${KP_DIR}"
-          COMMON="${COMMON_DIR}"
+          KP="${{ steps.paths.outputs.KP_DIR }}"
+          COMMON="${{ steps.paths.outputs.COMMON_DIR }}"
 
-          if [[ -d "${COMMON}/KernelSU-Next" ]]; then
-            echo "✅ KernelSU-Next already present; skipping setup."
+          if [[ -d "$COMMON/KernelSU-Next" ]]; then
+            echo "✅ KernelSU-Next already present"
             exit 0
           fi
 
           curl -fL https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh -o /tmp/ksu_setup.sh
-          head -n 1 /tmp/ksu_setup.sh | grep -q "#!" || { echo "::error::setup.sh download invalid"; exit 1; }
+          head -n 1 /tmp/ksu_setup.sh | grep -q "#!" || { echo "::error::Downloaded setup.sh is invalid (likely 404)."; exit 1; }
 
-          cd "${KP}"
-          echo "Running KernelSU-Next setup with ref: ${{ inputs.KSU_REF }}"
+          cd "$KP"
           bash /tmp/ksu_setup.sh "${{ inputs.KSU_REF }}"
+          test -d "$COMMON/KernelSU-Next" || { echo "::error::KernelSU-Next missing after setup"; exit 1; }
 
-          test -d "${COMMON}/KernelSU-Next" || { echo "::error::KernelSU-Next dir missing after setup"; exit 1; }
-          echo "✅ KernelSU-Next integrated"
-
-      - name: Toolchain setup (ensure clang + ld.lld)
+      - name: Apply defconfig tweaks (features + kernel name)
         shell: bash
         run: |
           set -euo pipefail
-          KP="${KP_DIR}"
+          COMMON="${{ steps.paths.outputs.COMMON_DIR }}"
+          DEF_IN="${{ inputs.BUILD_DEFCONFIG }}"
 
-          # Prefer in-tree prebuilts if present
-          if [[ -d "${KP}/prebuilts/clang/host/linux-x86/clang-stable/bin" ]]; then
-            echo "✅ Using in-tree clang-stable"
-            echo "TOOLCHAIN_BIN=${KP}/prebuilts/clang/host/linux-x86/clang-stable/bin" >> "$GITHUB_ENV"
+          if [[ "$DEF_IN" == "auto" ]]; then
+            if [[ -f "$COMMON/arch/arm64/configs/gki_defconfig" ]]; then
+              DEF="$COMMON/arch/arm64/configs/gki_defconfig"
+            else
+              DEF="$(find "$COMMON/arch/arm64/configs" -maxdepth 1 -type f -name "*gki*defconfig" | head -n1 || true)"
+              [[ -n "$DEF" ]] || { echo "::error::Could not auto-detect defconfig"; exit 1; }
+            fi
           else
-            echo "::warning::In-tree clang-stable not found; using system clang (may be incompatible)."
-            echo "TOOLCHAIN_BIN=" >> "$GITHUB_ENV"
+            DEF="$COMMON/arch/arm64/configs/$DEF_IN"
+            [[ -f "$DEF" ]] || { echo "::error::Defconfig not found: $DEF"; exit 1; }
           fi
 
-          # Kernel build tools (lld often lives here)
-          if [[ -d "${KP}/prebuilts/kernel-build-tools/linux-x86/bin" ]]; then
-            echo "KBUILD_BIN=${KP}/prebuilts/kernel-build-tools/linux-x86/bin" >> "$GITHUB_ENV"
-          else
-            echo "KBUILD_BIN=" >> "$GITHUB_ENV"
+          # localversion = -KERNEL_NAME[-suffix]
+          SUF="${{ inputs.KERNEL_SUFFIX }}"
+          LV="-${{ inputs.KERNEL_NAME }}"
+          if [[ -n "$SUF" ]]; then LV="${LV}-${SUF}"; fi
+
+          sed -i '/^CONFIG_LOCALVERSION=/d' "$DEF" || true
+          sed -i '/^CONFIG_LOCALVERSION_AUTO=/d' "$DEF" || true
+          printf '%s\n' \
+            "CONFIG_LOCALVERSION=\"${LV}\"" \
+            "CONFIG_LOCALVERSION_AUTO=n" >> "$DEF"
+
+          # Safe networking opts
+          if [[ "${{ inputs.BBR }}" == "On" ]]; then
+            printf '%s\n' \
+              "CONFIG_TCP_CONG_BBR=y" \
+              "CONFIG_TCP_CONG_CUBIC=y" \
+              "CONFIG_DEFAULT_TCP_CONG=\"bbr\"" >> "$DEF"
+          fi
+          if [[ "${{ inputs.FQ }}" == "On" ]]; then
+            printf '%s\n' \
+              "CONFIG_NET_SCH_FQ=y" \
+              "CONFIG_DEFAULT_FQ=y" >> "$DEF"
           fi
 
-      - name: Configure kernel (defconfig + options)
+          # ZRAM LZ4
+          if [[ "${{ inputs.FORCE_LZ4_ZRAM }}" == "On" ]]; then
+            printf '%s\n' \
+              "CONFIG_ZRAM=y" \
+              "CONFIG_ZRAM_DEF_COMP=\"lz4\"" \
+              "CONFIG_ZRAM_DEF_COMP_LZ4=y" \
+              "CONFIG_CRYPTO_LZ4=y" \
+              "CONFIG_LZ4_COMPRESS=y" \
+              "CONFIG_LZ4_DECOMPRESS=y" >> "$DEF"
+          fi
+
+          # LTO choice (best-effort)
+          case "${{ inputs.LTO }}" in
+            Off)  echo "CONFIG_LTO_NONE=y" >> "$DEF" ;;
+            Thin) echo "CONFIG_LTO_CLANG_THIN=y" >> "$DEF" ;;
+            Full) echo "CONFIG_LTO_CLANG_FULL=y" >> "$DEF" ;;
+          esac
+
+      - name: Configure kernel (.config) + apply profile defaults
         shell: bash
         run: |
           set -euo pipefail
-          COMMON="${COMMON_DIR}"
-          OUT="${OUT_DIR}"
-          DEFNAME="${{ steps.defcfg.outputs.name }}"
+          COMMON="${{ steps.paths.outputs.COMMON_DIR }}"
+          OUT="${{ steps.paths.outputs.OUT_DIR }}"
+          CLANG_BIN="${{ steps.toolchain.outputs.CLANG_BIN }}"
+          KBUILD_BIN="${{ steps.toolchain.outputs.KBUILD_BIN }}"
+          export PATH="$CLANG_BIN:$KBUILD_BIN:$PATH"
 
-          export PATH="${TOOLCHAIN_BIN}:${KBUILD_BIN}:${PATH}"
-          echo "clang: $(command -v clang || true)"
-          echo "ld.lld: $(command -v ld.lld || true)"
           if ! command -v ld.lld >/dev/null 2>&1; then
-            echo "::warning::ld.lld not found in PATH; installing lld"
             sudo apt-get update
             sudo apt-get install -y lld
           fi
-          command -v ld.lld
 
-          rm -rf "$OUT"
+          if [[ "${{ inputs.CLEAN_BUILD }}" == "On" ]]; then
+            rm -rf "$OUT"
+          fi
           mkdir -p "$OUT"
+
+          DEFNAME="${{ inputs.BUILD_DEFCONFIG }}"
+          if [[ "$DEFNAME" == "auto" ]]; then
+            if [[ -f "$COMMON/arch/arm64/configs/gki_defconfig" ]]; then
+              DEFNAME="gki_defconfig"
+            else
+              DEFNAME="$(basename "$(find "$COMMON/arch/arm64/configs" -maxdepth 1 -type f -name "*gki*defconfig" | head -n1)")"
+            fi
+          fi
 
           make -C "$COMMON" O="$OUT" ARCH=arm64 "$DEFNAME"
 
-          # Best-effort feature toggles via scripts/config
-          CFG="${OUT}/.config"
-          SCONF="${COMMON}/scripts/config"
-          if [[ -x "$SCONF" ]]; then
-            # KernelSU is expected to add CONFIG_KSU; enforce if possible
-            "$SCONF" --file "$CFG" -e KSU || true
-
-            if [[ "${{ inputs.FORCE_LZ4_ZRAM }}" == "On" ]]; then
-              "$SCONF" --file "$CFG" -e ZRAM || true
-              "$SCONF" --file "$CFG" --set-str ZRAM_DEF_COMP lz4 || true
-              "$SCONF" --file "$CFG" -e ZRAM_DEF_COMP_LZ4 || true
-              "$SCONF" --file "$CFG" -e CRYPTO_LZ4 || true
-              "$SCONF" --file "$CFG" -e LZ4_COMPRESS || true
-              "$SCONF" --file "$CFG" -e LZ4_DECOMPRESS || true
+          # scripts/config best-effort helper
+          cfg="$COMMON/scripts/config"
+          if [[ -x "$cfg" ]]; then
+            prof="${{ inputs.PROFILE }}"
+            if [[ "$prof" == "performance" ]]; then
+              "$cfg" --file "$OUT/.config" -e CPU_FREQ_DEFAULT_GOV_PERFORMANCE || true
+            elif [[ "$prof" == "battery" ]]; then
+              "$cfg" --file "$OUT/.config" -e CPU_FREQ_DEFAULT_GOV_POWERSAVE || true
+            else
+              "$cfg" --file "$OUT/.config" -e CPU_FREQ_DEFAULT_GOV_SCHEDUTIL || true
             fi
-          else
-            echo "::warning::scripts/config not found; skipping optional config edits."
           fi
 
           make -C "$COMMON" O="$OUT" ARCH=arm64 olddefconfig
+          grep -E "^CONFIG_LOCALVERSION=|^CONFIG_KSU=|^CONFIG_TCP_CONG_BBR=|^CONFIG_ZRAM=" "$OUT/.config" || true
 
-          echo "---- key flags ----"
-          egrep -n "CONFIG_KSU=|CONFIG_ZRAM=|CONFIG_ZRAM_DEF_COMP=" "$CFG" || true
-
-      - name: Build kernel Image
+      - name: Build kernel
         shell: bash
         run: |
           set -euo pipefail
-          COMMON="${COMMON_DIR}"
-          OUT="${OUT_DIR}"
+          KP="${{ steps.paths.outputs.KP_DIR }}"
+          COMMON="${{ steps.paths.outputs.COMMON_DIR }}"
+          OUT="${{ steps.paths.outputs.OUT_DIR }}"
+          CLANG_BIN="${{ steps.toolchain.outputs.CLANG_BIN }}"
+          KBUILD_BIN="${{ steps.toolchain.outputs.KBUILD_BIN }}"
+          export PATH="$CLANG_BIN:$KBUILD_BIN:$PATH"
 
-          export PATH="${TOOLCHAIN_BIN}:${KBUILD_BIN}:${PATH}"
-          echo "---- toolchain ----"
-          clang --version || true
-          ld.lld --version || true
+          # ccache
+          if [[ "${{ inputs.CLEAN_BUILD }}" == "Off" && "${{ inputs.CCACHE }}" == "On" ]]; then
+            export CC="ccache clang"
+            export CCACHE_COMPRESS=1
+            export CCACHE_MAXSIZE=10G
+            ccache -z || true
+          fi
 
-          make -C "$COMMON" O="$OUT" ARCH=arm64 \
-            CC=clang LD=ld.lld HOSTLD=ld.lld \
-            LLVM=1 LLVM_IAS=1 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-            -j"$(nproc)" all
+          OPT="${{ inputs.OPTIMIZE_LEVEL }}"
+          KCFLAGS="-O2"
+          if [[ "$OPT" == "O3" ]]; then KCFLAGS="-O3"; fi
 
-          test -f "$OUT/arch/arm64/boot/Image"
-          echo "✅ Image built: $OUT/arch/arm64/boot/Image"
+          BSYS="${{ inputs.BUILD_SYSTEM }}"
+          if [[ "$BSYS" == "auto" ]]; then
+            if [[ -x "$KP/build/build.sh" ]]; then BSYS="build_sh"; else BSYS="make"; fi
+          fi
 
-      - name: Package artifacts
+          if [[ "$BSYS" == "build_sh" ]]; then
+            BUILD_CONFIG_IN="${{ inputs.BUILD_CONFIG }}"
+            if [[ "$BUILD_CONFIG_IN" == "auto" ]]; then
+              cand="$(find "$KP" -maxdepth 4 -type f -name "build.config.gki.aarch64" | head -n1 || true)"
+              if [[ -z "$cand" ]]; then
+                cand="$(find "$KP" -maxdepth 5 -type f -name "build.config.gki*" | head -n1 || true)"
+              fi
+              [[ -n "$cand" ]] || { echo "::error::BUILD_CONFIG auto-detect failed. Set BUILD_CONFIG input."; exit 1; }
+              BUILD_CONFIG_IN="${cand#$KP/}"
+            fi
+            cd "$KP"
+            export BUILD_CONFIG="$BUILD_CONFIG_IN"
+            export OUT_DIR="$OUT"
+            export KCFLAGS
+            ./build/build.sh
+          else
+            make -C "$COMMON" O="$OUT" ARCH=arm64 \
+              CC=clang LD=ld.lld HOSTLD=ld.lld \
+              LLVM=1 LLVM_IAS=1 \
+              CROSS_COMPILE=aarch64-linux-gnu- \
+              CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+              KCFLAGS="$KCFLAGS" \
+              -j"$(nproc)" all
+          fi
+
+          test -f "$OUT/arch/arm64/boot/Image" || { echo "::error::Image not found"; exit 1; }
+          echo "✅ Image built"
+          if command -v ccache >/dev/null 2>&1; then ccache -s || true; fi
+
+      - name: Optional AnyKernel3 zip
+        if: ${{ inputs.MAKE_ANYKERNEL_ZIP == 'On' && inputs.ANYKERNEL_REPO != '' }}
         shell: bash
         run: |
           set -euo pipefail
+          OUT="${{ steps.paths.outputs.OUT_DIR }}"
+          rm -rf anykernel
+          git clone --depth 1 "${{ inputs.ANYKERNEL_REPO }}" anykernel
+          if [[ -n "${{ inputs.ANYKERNEL_REF }}" ]]; then
+            cd anykernel
+            git fetch --depth 1 origin "${{ inputs.ANYKERNEL_REF }}" || git fetch origin "${{ inputs.ANYKERNEL_REF }}"
+            git checkout "${{ inputs.ANYKERNEL_REF }}"
+            cd ..
+          fi
+          cp "$OUT/arch/arm64/boot/Image" anykernel/Image
+          (cd anykernel && zip -r9 ../AnyKernel3-OP13.zip . -x ".git/*")
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="${{ steps.paths.outputs.OUT_DIR }}"
           mkdir -p artifacts
-          cp "${OUT_DIR}/arch/arm64/boot/Image" artifacts/Image
-          cp "${OUT_DIR}/.config" artifacts/kernel.config
+          cp "$OUT/arch/arm64/boot/Image" artifacts/Image
+          cp "$OUT/.config" artifacts/kernel.config
 
-          {
-            echo "ANDROID_VERSION=${{ inputs.ANDROID_VERSION }}"
-            echo "KERNEL_VERSION=${{ inputs.KERNEL_VERSION }}"
-            echo "KERNEL_NAME=${{ inputs.KERNEL_NAME }}"
-            echo "KSU_REF=${{ inputs.KSU_REF }}"
-            echo "FORCE_LZ4_ZRAM=${{ inputs.FORCE_LZ4_ZRAM }}"
-          } > artifacts/build.meta
+          # Optional AnyKernel
+          if [[ -f AnyKernel3-OP13.zip ]]; then
+            mv AnyKernel3-OP13.zip artifacts/
+          fi
 
-          echo "✅ artifacts ready"
-          ls -la artifacts
+          # Build time
+          ts=""
+          if [[ "${{ inputs.BUILD_TIME }}" == "short" ]]; then
+            ts="$(date -u +%Y%m%d-%H%M)"
+          elif [[ "${{ inputs.BUILD_TIME }}" == "full" ]]; then
+            ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          fi
+
+          printf '%s\n' \
+            "OP_MODEL=${{ inputs.OP_MODEL }}" \
+            "ANDROID_VERSION=${{ inputs.ANDROID_VERSION }}" \
+            "KERNEL_VERSION=${{ inputs.KERNEL_VERSION }}" \
+            "KERNEL_NAME=${{ inputs.KERNEL_NAME }}" \
+            "KERNEL_SUFFIX=${{ inputs.KERNEL_SUFFIX }}" \
+            "BUILD_TIME=${ts}" \
+            "KSU_REF=${{ inputs.KSU_REF }}" \
+            "TOOLCHAIN=${{ inputs.TOOLCHAIN }}" \
+            "NEUTRON_VERSION=${{ inputs.NEUTRON_VERSION }}" \
+            "PROFILE=${{ inputs.PROFILE }}" \
+            "OPTIMIZE_LEVEL=${{ inputs.OPTIMIZE_LEVEL }}" \
+            "LTO=${{ inputs.LTO }}" \
+            "BBR=${{ inputs.BBR }}" \
+            "FQ=${{ inputs.FQ }}" \
+            "FORCE_LZ4_ZRAM=${{ inputs.FORCE_LZ4_ZRAM }}" \
+            "SOURCE_URL=${{ inputs.SOURCE_URL }}" \
+            "SOURCE_METHOD=${{ inputs.SOURCE_METHOD }}" \
+            > artifacts/build.meta
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: OP13_${{ inputs.ANDROID_VERSION }}_${{ inputs.KERNEL_VERSION }}_${{ inputs.KERNEL_NAME }}_KSUN-${{ inputs.KSU_REF }}_LZ4-${{ inputs.FORCE_LZ4_ZRAM }}
+          name: OP13_${{ inputs.OP_MODEL }}_${{ inputs.ANDROID_VERSION }}_${{ inputs.KERNEL_VERSION }}_${{ inputs.KERNEL_NAME }}${{ inputs.KERNEL_SUFFIX != '' && format('-{0}', inputs.KERNEL_SUFFIX) || '' }}_KSUN-${{ inputs.KSU_REF }}_Profile-${{ inputs.PROFILE }}_O-${{ inputs.OPTIMIZE_LEVEL }}_LTO-${{ inputs.LTO }}_BBR-${{ inputs.BBR }}_LZ4ZRAM-${{ inputs.FORCE_LZ4_ZRAM }}
           path: artifacts/*
+
+      - name: Create GitHub Release
+        if: ${{ inputs.MAKE_RELEASE }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.RELEASE_TAG != '' && inputs.RELEASE_TAG || format('op13-ksun-{0}', github.run_number) }}
+          name: ${{ format('OP13 KSUN build #{0}', github.run_number) }}
+          files: artifacts/*
