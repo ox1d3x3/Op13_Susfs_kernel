@@ -120,6 +120,30 @@ jobs:
     name: Build OP13 KernelSU-Next (Ultimate)
     runs-on: ubuntu-24.04
     steps:
+- name: Fix overwriter script permissions (avoid convert_configs.sh permission denied)
+  shell: bash
+  run: |
+    set -euo pipefail
+    cd kernel_workspace/kernel_platform/common
+
+    # The build runs these scripts directly (not via 'sh script'), so they MUST be executable.
+    if [[ -d "drivers/of/overwriter/overwrite_configs" ]]; then
+      echo "Found overwriter scripts; fixing permissions..."
+      chmod -R u+rx,go+rx drivers/of/overwriter/overwrite_configs || true
+      find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -print -exec chmod +x {} \; || true
+
+      # Guard against CRLF line endings
+      if command -v dos2unix >/dev/null 2>&1; then
+        find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -print -exec dos2unix {} \; || true
+      else
+        find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -print -exec sed -i 's/\r$//' {} \; || true
+      fi
+
+      ls -la drivers/of/overwriter/overwrite_configs | sed -n '1,60p' || true
+    else
+      echo "No overwriter scripts directory found; skipping."
+    fi
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
