@@ -126,7 +126,7 @@ env:
 jobs:
   build:
     name: SUSFS ${{ github.event.inputs.SUSFS }} | BBG ${{ github.event.inputs.bbg }} | ADIOS ${{ github.event.inputs.adios }} | Re-Kernel ${{ github.event.inputs.rekernel }}
-    runs-on: ${{ (github.event.inputs.toolchain == 'neutron') && 'ubuntu-24.04' || 'ubuntu-22.04' }}
+    runs-on: ubuntu-24.04
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
@@ -608,6 +608,21 @@ jobs:
           echo "KBUILD_BUILD_VERSION=1" >> "$GITHUB_ENV"
           echo "KBUILD_BUILD_USER=github-actions" >> "$GITHUB_ENV"
           echo "KBUILD_BUILD_HOST=op13" >> "$GITHUB_ENV"
+
+      - name: Preflight: toolchain sanity check
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Runner OS: $(lsb_release -ds || true)"
+          ldd --version | head -n 1 || true
+          echo "which clang: $(command -v clang || true)"
+          clang --version || true
+          # If clang cannot run due to GLIBC mismatch, fail early with a clear message.
+          if ! clang --version >/dev/null 2>&1; then
+            echo "::error::clang cannot execute on this runner (likely GLIBC mismatch). Use ubuntu-24.04 runner or a toolchain built for older GLIBC."
+            exit 1
+          fi
+
       - name: Build Kernel
         run: |
           set -euo pipefail
