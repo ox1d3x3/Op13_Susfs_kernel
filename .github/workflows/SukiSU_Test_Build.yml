@@ -1,399 +1,586 @@
-name: test
+name: KSU
 
-permissions:
-  contents: write
-
-env:
-  TZ: Australia/Perth
-  ANDROID_VERSION: android15
-  KERNEL_VERSION: "6.6"
-  KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
-
-'on':
+"on":
   workflow_dispatch:
     inputs:
-      target_os:
-        description: "Build target"
-        required: true
-        type: choice
-        default: oxygenos
-        options: [oxygenos, coloros, both]
-      make_release:
-        description: "Create GitHub Release"
-        required: true
-        type: boolean
-        default: false
-      clean_build:
-        description: "Clean build (wipe out/ and reset ccache)"
-        required: true
-        type: boolean
-        default: false
-      toolchain:
-        description: "Toolchain"
-        required: true
-        type: choice
-        default: in-tree
-        options: [in-tree, neutron, proton]
       ksu_channel:
-        description: "KernelSU Next channel"
+        description: "🔧 KernelSU Next channel (stable recommended for daily driver)"
         required: true
         type: choice
         default: stable
-        options: [stable, dev, legacy, v3.0.0]
-      defconfig:
-        description: "Defconfig (arch/arm64/configs/<name>)"
-        required: true
-        type: string
-        default: gki_defconfig
-      optimize_profile:
-        description: "Profile (battery/perf balance)"
+        options:
+          - stable
+          - dev
+          - legacy
+      SUSFS:
+        description: "📦 Enable SUSFS (recommended only if you need it)"
         required: true
         type: choice
-        default: balanced
-        options: [balanced, performance, battery]
+        default: Off
+        options: [On, Off]
+      ksunext_multimanager:
+        description: "🧩 Enable multi-manager compatibility patch (KernelSU variants)"
+        required: true
+        type: choice
+        default: Off
+        options: [On, Off]
+      zram_lz4:
+        description: "⚡ ZRAM: enable LZ4 fast compression"
+        required: true
+        type: choice
+        default: On
+        options: [On, Off]
+      zram_zstd:
+        description: "📦 ZRAM: enable ZSTD high-ratio compression"
+        required: true
+        type: choice
+        default: On
+        options: [On, Off]
+      bbg:
+        description: "📶 Enable Baseband-guard (BBG)"
+        required: true
+        type: choice
+        default: Off
+        options: [On, Off]
+      bbr:
+        description: "🌐 Enable TCP BBR"
+        required: true
+        type: choice
+        default: On
+        options: [On, Off]
+      proxy:
+        description: "🛰️ Enable proxy/netfilter/ipset features"
+        required: true
+        type: choice
+        default: On
+        options: [On, Off]
+      adios:
+        description: "💾 Enable ADIOS I/O scheduler"
+        required: true
+        type: choice
+        default: Off
+        options: [On, Off]
+      rekernel:
+        description: "🧠 Enable Re-Kernel"
+        required: true
+        type: choice
+        default: Off
+        options: [On, Off]
+      UNICODE_BYPASS:
+        description: "🧩 Apply Unicode zero-width bypass fix patch"
+        required: true
+        type: choice
+        default: Off
+        options: [On, Off]
+      enable_polly:
+        description: "🚀 Enable LLVM Polly (advanced; may reduce compatibility)"
+        required: true
+        type: choice
+        default: Off
+        options: [On, Off]
       optimize_level:
-        description: "KCFLAGS optimization level"
+        description: "⚙️ Compiler optimize level"
         required: true
         type: choice
         default: O2
         options: [O2, O3]
-      lto:
-        description: "LTO mode"
+      toolchain:
+        description: "🛠️ Toolchain"
         required: true
         type: choice
-        default: thin
-        options: [off, thin, full]
-      enable_bbr:
-        description: "Enable TCP BBR"
-        required: true
-        type: boolean
-        default: true
-      enable_zram_lz4:
-        description: "Enable ZRAM + LZ4"
-        required: true
-        type: boolean
-        default: true
-      force_localversion:
-        description: "Force LOCALVERSION to include KERNEL_NAME"
-        required: true
-        type: boolean
-        default: true
-      repo_depth:
-        description: "repo sync depth (1 = fastest)"
-        required: true
-        type: choice
-        default: "1"
-        options: ["1", "0"]
+        default: aosp
+        options:
+          - aosp
+          - neutron
+      kernel_suffix:
+        description: "📝 Kernel suffix (optional; no leading '-' and no spaces)"
+        required: false
+        type: string
+        default: ""
+      BUILD_TIME:
+        type: string
+        description: "📅 Custom build time (enter F to use current UTC time)"
+        required: false
+        default: "F"
+
+concurrency:
+  group: op13-android15-6_6-${{ github.ref }}-${{ github.event.inputs.SUSFS }}-${{ github.event.inputs.ksu_channel }}
+  cancel-in-progress: true
 
 jobs:
-  build_oxygenos:
-    name: OxygenOS (oneplus_13_global.xml)
-    if: ${{ github.event.inputs.target_os == 'oxygenos' || github.event.inputs.target_os == 'both' }}
+  build:
+    name: "SUSFS:${{ github.event.inputs.SUSFS }} | KSU:${{ github.event.inputs.ksu_channel }} | LZ4:${{ github.event.inputs.zram_lz4 }} | ZSTD:${{ github.event.inputs.zram_zstd }}"
     runs-on: ubuntu-22.04
     env:
-      MANIFEST_URL: https://github.com/OnePlusOSS/kernel_manifest.git
-      MANIFEST_BRANCH: oneplus/sm8750
-      MANIFEST_FILE: oneplus_13_global.xml
-      TARGET_LABEL: OOS
-    steps: &build_steps
-      - name: Checkout (workflow repo)
+      # Requested identity strings
+      ANDROID_VERSION: android15
+      KERNEL_VERSION: "6.6"
+      KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
+
+      # ccache
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_MAXSIZE: 10G
+
+    steps:
+      - name: 🧹 Maximize Build Space
+        uses: easimon/maximize-build-space@v10
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 4096
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+          remove-codeql: "true"
+          remove-docker-images: "true"
+
+      - name: 🛎️ Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare build deps
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            git curl ca-certificates rsync zip unzip file \
-            bc bison flex make ninja-build \
-            build-essential libssl-dev libelf-dev \
-            python3 python3-pip \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            ccache lld llvm
-          git config --global http.postBuffer 524288000
-
-      - name: Install repo tool
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/bin"
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
-          chmod +x "$HOME/bin/repo"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
-          repo version
-
-      - name: Cache ccache
+      - name: 💾 Restore ccache
         uses: actions/cache@v4
         with:
-          path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ github.job }}-${{ github.ref_name }}
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-op13-a15-6.6-${{ github.ref_name }}-${{ github.event.inputs.SUSFS }}-${{ github.event.inputs.ksu_channel }}-${{ github.event.inputs.toolchain }}
           restore-keys: |
-            ccache-${{ runner.os }}-${{ github.job }}-
+            ccache-${{ runner.os }}-op13-a15-6.6-${{ github.ref_name }}-
+            ccache-${{ runner.os }}-op13-a15-6.6-
 
-      - name: Setup ccache
+      - name: 📦 Install Dependencies
         shell: bash
         run: |
           set -euo pipefail
-          ccache -M 12G
-          ccache -s || true
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex build-essential \
+            curl wget git zip unzip rsync jq python3 python3-pip \
+            libssl-dev libelf-dev \
+            dwarves \
+            zstd \
+            ccache \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          # Install repo tool
+          sudo curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o /usr/local/bin/repo
+          sudo chmod +x /usr/local/bin/repo
+          ccache -M "${CCACHE_MAXSIZE}"
+          ccache -z
 
-      - name: Sync kernel sources (repo)
+      - name: 🧰 Setup Toolchain
         shell: bash
-        env:
-          DEPTH: ${{ github.event.inputs.repo_depth }}
         run: |
           set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE/kernel_workspace"
-          cd "$GITHUB_WORKSPACE/kernel_workspace"
 
-          echo "🌐 repo init: $MANIFEST_URL ($MANIFEST_BRANCH) -m $MANIFEST_FILE"
-          rm -rf .repo kernel_platform out src || true
-
-          if [ "$DEPTH" = "1" ]; then
-            repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" -m "$MANIFEST_FILE" --depth=1
+          mkdir -p "$HOME/toolchains"
+          if [[ "${{ github.event.inputs.toolchain }}" == "neutron" ]]; then
+            echo "Using Neutron clang…"
+            cd "$HOME/toolchains"
+            git clone --depth=1 https://github.com/Neutron-Toolchains/antman.git
+            cd antman
+            bash antman -S
+            echo "TOOLCHAIN_BIN=$HOME/toolchains/antman/bin" >> "$GITHUB_ENV"
           else
-            repo init -u "$MANIFEST_URL" -b "$MANIFEST_BRANCH" -m "$MANIFEST_FILE"
+            echo "Using AOSP prebuilt clang from source tree (auto-detect)…"
+            # Will be set after repo sync; placeholder for now
+            echo "TOOLCHAIN_BIN=" >> "$GITHUB_ENV"
           fi
 
-          echo "🔄 repo sync..."
-          repo sync -c -j"$(nproc)" --no-tags --no-clone-bundle --optimized-fetch --force-sync --prune
+      - name: 📥 Repo Init & Sync (OPlus SM8750)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p kernel_workspace
+          cd kernel_workspace
 
-          if [ ! -d "kernel_platform/common" ]; then
-            echo "::error::Cannot find kernel_platform/common after repo sync."
-            echo "Top-level dirs:"
-            find . -maxdepth 2 -type d | sed 's|^|  |' | head -n 200
+          repo init -u https://github.com/mrcxlinux/actions_oplus_sm8750.git -b main --depth=1
+          repo sync -c -j"$(nproc --all)" --force-sync --no-tags --no-clone-bundle
+
+          echo "✅ Repo sync finished"
+          du -sh . || true
+
+      - name: 🛠️ Source Tree Cleanup / Normalization
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel_workspace/kernel_platform
+
+          # Clean protected exports (sometimes breaks GKI builds)
+          rm -f msm-kernel/android/abi_gki_protected_exports_* || true
+
+          # Remove "-dirty" noise from version
+          sed -i 's/ -dirty//g' common/scripts/setlocalversion || true
+          sed -i 's/ -dirty//g' msm-kernel/scripts/setlocalversion || true
+          sed -i 's/ -dirty//g' external/dtc/scripts/setlocalversion || true
+
+      - name: ⚡ Setup Baseband-guard (BBG)
+        if: ${{ github.event.inputs.bbg == 'On' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel_workspace/kernel_platform/common
+          curl -fsSL https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh -o setup.sh
+          bash setup.sh
+
+      - name: ⚡ Setup KernelSU Next
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel_workspace/kernel_platform
+
+          echo "🛠️ Installing KernelSU Next (${{ github.event.inputs.ksu_channel }}) …"
+          curl -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "${{ github.event.inputs.ksu_channel }}"
+
+          if [[ ! -d "KernelSU-Next/.git" ]]; then
+            echo "::error::KernelSU-Next directory missing after setup.sh"
             exit 1
           fi
 
-          # Keep version strings clean/reproducible
-          sed -i 's/ -dirty//g' kernel_platform/common/scripts/setlocalversion || true
+          KSUVER="$(git -C KernelSU-Next describe --tags --always --dirty=-dirty 2>/dev/null || git -C KernelSU-Next rev-parse --short HEAD)"
+          # artifact-safe
+          KSUVER_SAFE="$(echo "$KSUVER" | tr '/ :@' '____')"
+          echo "KSUVER=$KSUVER_SAFE" >> "$GITHUB_ENV"
 
-      - name: Select toolchain
+          if [[ "${{ github.event.inputs.ksunext_multimanager }}" == "On" ]]; then
+            echo "🧩 Applying multi-manager compatibility patch…"
+            curl -fsSL "https://raw.githubusercontent.com/mrcxlinux/kernel_patches/main/ksun/kernelsu-next_multimanager.patch" -o "kernelsu-next_multimanager.patch"
+            (cd KernelSU-Next && git apply --check ../kernelsu-next_multimanager.patch)
+            (cd KernelSU-Next && git apply ../kernelsu-next_multimanager.patch)
+          fi
+
+      - name: 🔧 Setup & Apply Patches
         shell: bash
-        env:
-          TOOLCHAIN: ${{ github.event.inputs.toolchain }}
         run: |
           set -euo pipefail
-          if [ "$TOOLCHAIN" = "neutron" ]; then
-            echo "⬇️ Installing Neutron clang (antman)..."
-            mkdir -p "$HOME/toolchains/neutron-clang"
-            cd "$HOME/toolchains/neutron-clang"
-            bash <(curl -fsSL https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman) -S
-            echo "$HOME/toolchains/neutron-clang/bin" >> "$GITHUB_PATH"
-          elif [ "$TOOLCHAIN" = "proton" ]; then
-            echo "⬇️ Installing Proton clang..."
-            mkdir -p "$HOME/toolchains/proton-clang"
-            cd "$HOME/toolchains/proton-clang"
-            git clone --depth=1 https://github.com/kdrag0n/proton-clang.git .
-            echo "$HOME/toolchains/proton-clang/bin" >> "$GITHUB_PATH"
-          else
-            echo "✅ Using in-tree clang (preferred)."
-            WS="$GITHUB_WORKSPACE/kernel_workspace"
-            TC="$(find "$WS/kernel_platform/prebuilts/clang/host/linux-x86" -maxdepth 3 -type f -name clang -printf '%h\n' 2>/dev/null | head -n 1 || true)"
-            if [ -n "$TC" ]; then
-              echo "$TC" >> "$GITHUB_PATH"
-            else
-              echo "::warning::In-tree clang not found; using system clang."
+
+          cd kernel_workspace
+          rm -rf kernel_patches susfs4ksu || true
+          git clone --depth=1 https://github.com/mrcxlinux/kernel_patches.git
+
+          if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
+            git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6
+          fi
+
+          cd kernel_platform/common
+
+          apply_patch() {
+            local p="$1"
+            if [[ ! -f "$p" ]]; then
+              echo "::error::Patch not found: $p"
+              exit 1
             fi
-          fi
-
-      - name: Integrate KernelSU Next
-        shell: bash
-        env:
-          KSU_CHANNEL: ${{ github.event.inputs.ksu_channel }}
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
-          echo "🧩 Integrating KernelSU Next (channel=$KSU_CHANNEL)..."
-          curl -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "$KSU_CHANNEL"
-
-      - name: Configure kernel features
-        shell: bash
-        env:
-          DEFCONFIG: ${{ github.event.inputs.defconfig }}
-          ENABLE_BBR: ${{ github.event.inputs.enable_bbr }}
-          ENABLE_ZRAM_LZ4: ${{ github.event.inputs.enable_zram_lz4 }}
-          LTO: ${{ github.event.inputs.lto }}
-          PROFILE: ${{ github.event.inputs.optimize_profile }}
-          OPT_LEVEL: ${{ github.event.inputs.optimize_level }}
-          FORCE_LOCALVERSION: ${{ github.event.inputs.force_localversion }}
-        run: |
-          set -euo pipefail
-          KDIR="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
-          OUT="$KDIR/out"
-          cd "$KDIR"
-
-          if [ ! -f "arch/arm64/configs/$DEFCONFIG" ]; then
-            echo "::error::Defconfig not found: arch/arm64/configs/$DEFCONFIG"
-            ls -1 arch/arm64/configs | head -n 120
-            exit 1
-          fi
-
-          rm -rf "$OUT" || true
-          mkdir -p "$OUT"
-
-          # Base config
-          make O="$OUT" ARCH=arm64 "$DEFCONFIG"
-
-          CFG="./scripts/config"
-          if [ ! -x "$CFG" ]; then
-            echo "::error::scripts/config not found."
-            exit 1
-          fi
-
-          if [ "$ENABLE_BBR" = "true" ]; then
-            "$CFG" --file "$OUT/.config" -e TCP_CONG_BBR -e DEFAULT_BBR
-          fi
-
-          if [ "$ENABLE_ZRAM_LZ4" = "true" ]; then
-            "$CFG" --file "$OUT/.config" -e ZRAM -e ZSMALLOC -e CRYPTO_LZ4 -e LZ4_COMPRESS -e LZ4_DECOMPRESS
-          fi
-
-          case "$LTO" in
-            off)  "$CFG" --file "$OUT/.config" -d LTO_CLANG -d LTO_CLANG_THIN -d LTO_CLANG_FULL ;;
-            thin) "$CFG" --file "$OUT/.config" -e LTO_CLANG -e LTO_CLANG_THIN -d LTO_CLANG_FULL ;;
-            full) "$CFG" --file "$OUT/.config" -e LTO_CLANG -e LTO_CLANG_FULL -d LTO_CLANG_THIN ;;
-          esac
-
-          # Conservative governor default
-          "$CFG" --file "$OUT/.config" -e CPU_FREQ_GOV_SCHEDUTIL
-
-          make O="$OUT" ARCH=arm64 olddefconfig
-
-          # KCFLAGS optimization
-          if [ "$PROFILE" = "battery" ]; then
-            echo "KOPT=-Os" >> "$GITHUB_ENV"
-          else
-            if [ "$OPT_LEVEL" = "O3" ]; then
-              echo "KOPT=-O3" >> "$GITHUB_ENV"
+            echo "➡️ Applying patch: $p"
+            # Prefer git apply (clean), fallback to patch with fuzz
+            if git apply --check -p1 < "$p" 2>/dev/null; then
+              git apply -p1 < "$p"
             else
-              echo "KOPT=-O2" >> "$GITHUB_ENV"
+              patch -p1 -F 3 < "$p"
             fi
+          }
+
+          # Unicode bypass fix (optional)
+          if [[ "${{ github.event.inputs.UNICODE_BYPASS }}" == "On" ]]; then
+            apply_patch "$GITHUB_WORKSPACE/kernel_workspace/kernel_patches/common/unicode_bypass_fix_6.1+.patch"
           fi
 
-          # LOCALVERSION (optional)
-          if [ "$FORCE_LOCALVERSION" = "true" ]; then
-            echo "LOCALVERSION=-${KERNEL_NAME}" >> "$GITHUB_ENV"
+          # ZRAM compression patches (optional)
+          if [[ "${{ github.event.inputs.zram_lz4 }}" == "On" ]]; then
+            mkdir -p lib/lz4/lz4armv8
+            cp "$GITHUB_WORKSPACE/kernel_workspace/kernel_patches/zram/lz4armv8.S" lib/lz4/lz4armv8.S
+            cp "$GITHUB_WORKSPACE/kernel_workspace/kernel_patches/zram/lz4armv8.S" lib/lz4/lz4armv8/lz4armv8.S
+            apply_patch "$GITHUB_WORKSPACE/kernel_workspace/kernel_patches/zram/001-lz4.patch"
+          fi
+          if [[ "${{ github.event.inputs.zram_zstd }}" == "On" ]]; then
+            apply_patch "$GITHUB_WORKSPACE/kernel_workspace/kernel_patches/zram/002-zstd.patch"
           fi
 
-      - name: Build kernel (LLVM)
+          # SUSFS or Manual Hook
+          if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
+            cp "$GITHUB_WORKSPACE/kernel_workspace/susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch" .
+            # Copy SUSFS sources
+            rsync -a "$GITHUB_WORKSPACE/kernel_workspace/susfs4ksu/kernel_patches/fs/" fs/
+            rsync -a "$GITHUB_WORKSPACE/kernel_workspace/susfs4ksu/kernel_patches/include/linux/" include/linux/
+            apply_patch "$PWD/50_add_susfs_in_gki-android15-6.6.patch"
+
+            # Hide stuff (optional but commonly used with SUSFS)
+            apply_patch "$GITHUB_WORKSPACE/kernel_workspace/kernel_patches/69_hide_stuff.patch"
+          else
+            apply_patch "$GITHUB_WORKSPACE/kernel_workspace/kernel_patches/susfs/scope_min_manual_hooks_v1.9.patch"
+          fi
+
+          # Polly (optional)
+          if [[ "${{ github.event.inputs.enable_polly }}" == "On" ]]; then
+            apply_patch "$GITHUB_WORKSPACE/kernel_workspace/kernel_patches/common/EnablePOLLY.patch"
+          fi
+
+          echo "✅ Patch stage finished"
+
+      - name: ⚙️ Configure Kernel Defconfig
         shell: bash
-        env:
-          CLEAN: ${{ github.event.inputs.clean_build }}
         run: |
           set -euo pipefail
-          KDIR="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
-          OUT="$KDIR/out"
-          cd "$KDIR"
+          cd kernel_workspace/kernel_platform
 
-          if [ "$CLEAN" = "true" ]; then
-            rm -rf "$OUT" build.log || true
-            ccache -C || true
+          DEFCONFIG="common/arch/arm64/configs/gki_defconfig"
+          CFG="common/scripts/config"
+
+          if [[ ! -f "$DEFCONFIG" ]]; then
+            echo "::error::Missing defconfig: $DEFCONFIG"
+            exit 1
+          fi
+          if [[ ! -x "$CFG" ]]; then
+            echo "::error::Missing scripts/config: $CFG"
+            exit 1
           fi
 
-          command -v clang >/dev/null 2>&1 || { echo "::error::clang not found"; exit 1; }
-          command -v ld.lld >/dev/null 2>&1 || { echo "::error::ld.lld not found"; exit 1; }
+          set_bool() {
+            local key="$1" val="$2"
+            if [[ "$val" == "y" ]]; then "$CFG" --file "$DEFCONFIG" --enable "$key"
+            else "$CFG" --file "$DEFCONFIG" --disable "$key"
+            fi
+          }
+          set_str() { "$CFG" --file "$DEFCONFIG" --set-str "$1" "$2"; }
+          set_val() { "$CFG" --file "$DEFCONFIG" --set-val "$1" "$2"; }
 
-          echo "---- toolchain ----"
-          clang --version || true
-          ld.lld --version || true
-          echo "Using KCFLAGS: ${KOPT:-<none>}"
-          echo "LOCALVERSION: ${LOCALVERSION:-<none>}"
+          # KernelSU Next base
+          set_bool KSU y
 
-          make -j"$(nproc)" \
-            O="$OUT" ARCH=arm64 \
-            LLVM=1 LLVM_IAS=1 \
+          # SUSFS / Manual hook mode
+          if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
+            set_bool KSU_SUSFS y
+            set_bool KSU_SUSFS_SUS_PATH y
+            set_bool KSU_SUSFS_SUS_MOUNT y
+            set_bool KSU_SUSFS_SUS_KSTAT y
+            set_bool KSU_SUSFS_SPOOF_UNAME y
+            set_bool KSU_SUSFS_ENABLE_LOG y
+            set_bool KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS y
+            set_bool KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG y
+            set_bool KSU_SUSFS_OPEN_REDIRECT y
+            set_bool KSU_SUSFS_SUS_MAP y
+          else
+            set_bool KSU_SUSFS n
+            set_bool KSU_MANUAL_HOOK y
+          fi
+
+          # Mountify support
+          set_bool TMPFS_XATTR y
+          set_bool TMPFS_POSIX_ACL y
+
+          # BBG
+          if [[ "${{ github.event.inputs.bbg }}" == "On" ]]; then
+            set_bool BBG y
+            set_str LSM "landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf,baseband_guard"
+          fi
+
+          # BBR
+          if [[ "${{ github.event.inputs.bbr }}" == "On" ]]; then
+            set_bool TCP_CONG_ADVANCED y
+            set_bool TCP_CONG_BBR y
+            set_bool NET_SCH_FQ y
+            set_bool TCP_CONG_BIC n
+            set_bool TCP_CONG_WESTWOOD n
+            set_bool TCP_CONG_HTCP n
+          fi
+
+          # Proxy / ipset / netfilter
+          if [[ "${{ github.event.inputs.proxy }}" == "On" ]]; then
+            set_bool BPF_STREAM_PARSER y
+            set_bool NETFILTER_XT_MATCH_ADDRTYPE y
+            set_bool NETFILTER_XT_SET y
+            set_bool IP_SET y
+            set_val IP_SET_MAX 65534
+            set_bool IP_SET_BITMAP_IP y
+            set_bool IP_SET_BITMAP_IPMAC y
+            set_bool IP_SET_BITMAP_PORT y
+            set_bool IP_SET_HASH_IP y
+            set_bool IP_SET_HASH_IPMARK y
+            set_bool IP_SET_HASH_IPPORT y
+            set_bool IP_SET_HASH_IPPORTIP y
+            set_bool IP_SET_HASH_IPPORTNET y
+            set_bool IP_SET_HASH_IPMAC y
+            set_bool IP_SET_HASH_MAC y
+            set_bool IP_SET_HASH_NETPORTNET y
+            set_bool IP_SET_HASH_NET y
+            set_bool IP_SET_HASH_NETNET y
+            set_bool IP_SET_HASH_NETPORT y
+            set_bool IP_SET_HASH_NETIFACE y
+            set_bool IP_SET_LIST_SET y
+            set_bool IP6_NF_NAT y
+            set_bool IP6_NF_TARGET_MASQUERADE y
+          fi
+
+          # ADIOS
+          if [[ "${{ github.event.inputs.adios }}" == "On" ]]; then
+            set_bool MQ_IOSCHED_ADIOS y
+            set_bool MQ_IOSCHED_DEFAULT_ADIOS y
+          fi
+
+          # Re-Kernel
+          if [[ "${{ github.event.inputs.rekernel }}" == "On" ]]; then
+            set_bool REKERNEL y
+          fi
+
+          # Headers install off (saves time)
+          set_bool HEADERS_INSTALL n
+
+          # Optimize level
+          if [[ "${{ github.event.inputs.optimize_level }}" == "O3" ]]; then
+            set_bool CC_OPTIMIZE_FOR_PERFORMANCE_O3 y || true
+          else
+            set_bool CC_OPTIMIZE_FOR_PERFORMANCE y || true
+          fi
+
+          # Polly (optional)
+          if [[ "${{ github.event.inputs.enable_polly }}" == "On" ]]; then
+            set_bool LLVM_POLLY y || true
+            set_bool LD_DEAD_CODE_DATA_ELIMINATION y || true
+          fi
+
+          # Localversion / identity
+          # Use kernel_suffix if provided, else requested KERNEL_NAME
+          if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
+            set_str LOCALVERSION "-${{ github.event.inputs.kernel_suffix }}"
+          else
+            set_str LOCALVERSION "-${{ env.KERNEL_NAME }}"
+          fi
+          set_bool LOCALVERSION_AUTO n
+
+          # Skip check_defconfig (some trees enforce it)
+          sed -i 's/\bcheck_defconfig\b//g' common/build.config.gki || true
+
+          echo "✅ Defconfig configured"
+
+      - name: 📅 Set BUILD_TIME (KBUILD_BUILD_TIMESTAMP)
+        shell: bash
+        run: |
+          set -euo pipefail
+          INPUT_TIME="${{ github.event.inputs.BUILD_TIME }}"
+          if [[ -n "$INPUT_TIME" && "$INPUT_TIME" != "F" && "$INPUT_TIME" != "f" ]]; then
+            DATESTR="$INPUT_TIME"
+          else
+            DATESTR="$(TZ='UTC' date +'%a %b %d %T %Z %Y')"
+          fi
+          echo "KBUILD_BUILD_TIMESTAMP=$DATESTR" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_VERSION=1" >> "$GITHUB_ENV"
+          echo "✅ BUILD_TIME = $DATESTR"
+
+      - name: 🔨 Build Kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel_workspace/kernel_platform
+
+          # If toolchain=aosp, detect clang now (after repo sync)
+          if [[ "${{ github.event.inputs.toolchain }}" == "aosp" ]]; then
+            CLANG_DIR="$(find prebuilts/clang/host/linux-x86 -maxdepth 1 -type d \( -name "clang-r*" -o -name "clang-*" \) | sort | tail -n 1 || true)"
+            if [[ -z "$CLANG_DIR" ]]; then
+              echo "::error::AOSP clang not found under prebuilts/clang/host/linux-x86"
+              exit 1
+            fi
+            echo "Detected clang: $CLANG_DIR"
+            echo "TOOLCHAIN_BIN=$PWD/$CLANG_DIR/bin" >> "$GITHUB_ENV"
+          fi
+
+          if [[ -z "${TOOLCHAIN_BIN:-}" || ! -d "${TOOLCHAIN_BIN:-}" ]]; then
+            echo "::error::TOOLCHAIN_BIN is not set correctly: '${TOOLCHAIN_BIN:-}'"
+            exit 1
+          fi
+
+          export PATH="/usr/lib/ccache:${TOOLCHAIN_BIN}:$PATH"
+          export CC="clang"
+          export LD="ld.lld"
+          export AR="llvm-ar"
+          export NM="llvm-nm"
+          export OBJCOPY="llvm-objcopy"
+          export OBJDUMP="llvm-objdump"
+          export STRIP="llvm-strip"
+
+          # Optional prebuilt tools if present
+          RUSTC_PATH="$PWD/prebuilts/rust/linux-x86/1.73.0b/bin/rustc"
+          PAHOLE_PATH="$PWD/prebuilts/kernel-build-tools/linux-x86/bin/pahole"
+          [[ -x "$RUSTC_PATH" ]] && export RUSTC="$RUSTC_PATH"
+          [[ -x "$PAHOLE_PATH" ]] && export PAHOLE="$PAHOLE_PATH"
+
+          cd common
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 gki_defconfig
+
+          EXTRA_KCFLAGS=""
+          if [[ "${{ github.event.inputs.optimize_level }}" == "O3" ]]; then
+            EXTRA_KCFLAGS="KCFLAGS=-O3"
+          fi
+
+          make -j"$(nproc --all)" O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 \
             CROSS_COMPILE=aarch64-linux-gnu- \
-            CC="ccache clang" \
-            LD=ld.lld HOSTLD=ld.lld \
-            LOCALVERSION="${LOCALVERSION:-}" \
-            KCFLAGS+="${KOPT:-}" \
-            all 2>&1 | tee build.log
+            CC="ccache clang" LD=ld.lld HOSTLD=ld.lld \
+            ${EXTRA_KCFLAGS} \
+            all
 
-      - name: Package artifacts
+          ccache -s
+
+          IMAGE="out/arch/arm64/boot/Image"
+          if [[ ! -f "$IMAGE" ]]; then
+            echo "::error::Build finished but Image not found: $IMAGE"
+            exit 1
+          fi
+          echo "✅ Build OK: $IMAGE"
+
+      - name: 📦 Package AnyKernel3
         shell: bash
-        env:
-          KSU_CHANNEL: ${{ github.event.inputs.ksu_channel }}
-          TOOLCHAIN: ${{ github.event.inputs.toolchain }}
-          DEFCONFIG: ${{ github.event.inputs.defconfig }}
-          PROFILE: ${{ github.event.inputs.optimize_profile }}
-          OPT_LEVEL: ${{ github.event.inputs.optimize_level }}
-          LTO: ${{ github.event.inputs.lto }}
         run: |
           set -euo pipefail
-          OUT="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/out"
-          ART="$GITHUB_WORKSPACE/artifacts"
-          mkdir -p "$ART"
 
-          [ -f "$OUT/arch/arm64/boot/Image" ] && cp -v "$OUT/arch/arm64/boot/Image" "$ART/Image"
-          [ -f "$OUT/.config" ] && cp -v "$OUT/.config" "$ART/config"
-          [ -f "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/build.log" ] && cp -v "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/build.log" "$ART/build.log" || true
+          cd "$GITHUB_WORKSPACE"
 
-          # Optional outputs (if present in this tree)
-          for f in \
-            "$OUT/arch/arm64/boot/Image.gz" \
-            "$OUT/arch/arm64/boot/Image.lz4" \
-            "$OUT/arch/arm64/boot/dtbo.img" \
-            "$OUT/arch/arm64/boot/dtb.img" \
-            "$OUT/arch/arm64/boot/Image.gz-dtb"; do
-            if [ -f "$f" ]; then
-              cp -v "$f" "$ART/$(basename "$f")"
-            fi
-          done
+          rm -rf AnyKernel3
+          git clone --depth=1 https://github.com/mrcxlinux/AnyKernel3
+          rm -rf AnyKernel3/.git
 
-          # Modules (best-effort)
-          MOD_TMP="$ART/modules"
-          mkdir -p "$MOD_TMP"
-          find "$OUT" -type f -name "*.ko" -print0 2>/dev/null | xargs -0 -I{} cp -v "{}" "$MOD_TMP/" 2>/dev/null || true
-          if [ "$(ls -A "$MOD_TMP" 2>/dev/null | wc -l)" -gt 0 ]; then
-            (cd "$MOD_TMP" && tar -czf "$ART/modules.tar.gz" .)
-          else
-            rm -rf "$MOD_TMP" || true
+          cp "kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image" AnyKernel3/Image
+
+          # Create zip
+          ART_BASE="OP13_${{ env.ANDROID_VERSION }}_${{ env.KERNEL_VERSION }}_${{ env.KSUVER }}"
+          if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
+            ART_BASE="${ART_BASE}_SUSFS"
           fi
+          if [[ -n "${{ github.event.inputs.kernel_suffix }}" ]]; then
+            ART_BASE="${ART_BASE}_${{ github.event.inputs.kernel_suffix }}"
+          else
+            ART_BASE="${ART_BASE}_${{ env.KERNEL_NAME }}"
+          fi
+          ART_BASE="$(echo "$ART_BASE" | tr ' /:@' '____')"
 
-          printf "%s\n" \
-            "ANDROID_VERSION=$ANDROID_VERSION" \
-            "KERNEL_VERSION=$KERNEL_VERSION" \
-            "KERNEL_NAME=$KERNEL_NAME" \
-            "TARGET=$TARGET_LABEL" \
-            "MANIFEST=$MANIFEST_FILE" \
-            "KSU_CHANNEL=$KSU_CHANNEL" \
-            "TOOLCHAIN=$TOOLCHAIN" \
-            "DEFCONFIG=$DEFCONFIG" \
-            "PROFILE=$PROFILE" \
-            "OPT_LEVEL=$OPT_LEVEL" \
-            "LTO=$LTO" \
-            > "$ART/build_meta.txt"
+          cd AnyKernel3
+          zip -qr "../${ART_BASE}.zip" .
 
-          ZIP="OP13_${TARGET_LABEL}_${ANDROID_VERSION}_${KERNEL_VERSION}_${KERNEL_NAME}_KSU-Next.zip"
-          (cd "$ART" && zip -r "../$ZIP" .)
-          echo "ZIP_NAME=$ZIP" >> "$GITHUB_ENV"
+          echo "ARTIFACT_ZIP=${ART_BASE}.zip" >> "$GITHUB_ENV"
+          echo "✅ Packaged: ${ART_BASE}.zip"
 
-      - name: Upload artifact
+      - name: 📤 Upload Kernel Zip
         uses: actions/upload-artifact@v4
         with:
-          name: OP13_${{ env.TARGET_LABEL }}_KSU-Next_${{ github.run_number }}
-          path: ${{ env.ZIP_NAME }}
+          name: ${{ env.ARTIFACT_ZIP }}
+          path: ${{ env.ARTIFACT_ZIP }}
 
-      - name: Create release
-        if: ${{ github.event.inputs.make_release == 'true' }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: OP13-${{ env.TARGET_LABEL }}-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}-${{ github.run_number }}
-          name: OP13 ${{ env.TARGET_LABEL }} KernelSU Next (${{ env.ANDROID_VERSION }} / ${{ env.KERNEL_VERSION }})
-          body: |
-            Automated build for OnePlus 13 (SM8750) with KernelSU Next.
-            build_meta.txt is included in the zip.
-          files: ${{ env.ZIP_NAME }}
-
-  build_coloros:
-    name: ColorOS (oneplus_13.xml)
-    if: ${{ github.event.inputs.target_os == 'coloros' || github.event.inputs.target_os == 'both' }}
-    runs-on: ubuntu-22.04
-    env:
-      MANIFEST_URL: https://github.com/OnePlusOSS/kernel_manifest.git
-      MANIFEST_BRANCH: oneplus/sm8750
-      MANIFEST_FILE: oneplus_13.xml
-      TARGET_LABEL: COS
-    steps: *build_steps
+      - name: 📝 Build Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "### OnePlus 13 Kernel Build"
+            echo ""
+            echo "- ANDROID_VERSION: \`${{ env.ANDROID_VERSION }}\`"
+            echo "- KERNEL_VERSION: \`${{ env.KERNEL_VERSION }}\`"
+            echo "- KERNEL_NAME: \`${{ env.KERNEL_NAME }}\`"
+            echo "- KernelSU Next: \`${{ env.KSUVER }}\` (channel: \`${{ github.event.inputs.ksu_channel }}\`)"
+            echo "- SUSFS: \`${{ github.event.inputs.SUSFS }}\`"
+            echo "- BBG: \`${{ github.event.inputs.bbg }}\`"
+            echo "- BBR: \`${{ github.event.inputs.bbr }}\`"
+            echo "- Proxy/IPSet: \`${{ github.event.inputs.proxy }}\`"
+            echo "- ZRAM LZ4: \`${{ github.event.inputs.zram_lz4 }}\`"
+            echo "- ZRAM ZSTD: \`${{ github.event.inputs.zram_zstd }}\`"
+            echo "- Toolchain: \`${{ github.event.inputs.toolchain }}\`"
+            echo "- Optimize: \`${{ github.event.inputs.optimize_level }}\`"
+            echo ""
+            echo "**Artifact:** \`${{ env.ARTIFACT_ZIP }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
