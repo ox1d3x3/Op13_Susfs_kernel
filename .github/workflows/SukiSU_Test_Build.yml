@@ -258,10 +258,19 @@ jobs:
 
           # Run the official setup script from within kernel_platform (expects ./common/).
           curl -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/stable/kernel/setup.sh" | bash -s stable
-
           # Record version + commit (used for naming).
-          if [ -f "KernelSU-Next/kernel/Makefile" ]; then
-            KSUVER="$(grep -Eo 'DKSU_VERSION\s*=\s*[0-9]+' KernelSU-Next/kernel/Makefile | head -n1 | grep -Eo '[0-9]+' || true)"
+          KSUVER=""
+          # Try common version variables across KernelSU-Next revisions
+          for f in "KernelSU-Next/kernel/Makefile" "KernelSU-Next/Makefile" "KernelSU-Next/kernel/Makefile.kernelsu"; do
+            if [ -f "$f" ]; then
+              v="$(grep -Eo '(DKSU_VERSION|KSU_VERSION|KSUN_VERSION)\s*[:?+]?=\s*[0-9]+' "$f" | head -n1 | grep -Eo '[0-9]+' || true)"
+              if [ -n "$v" ]; then KSUVER="$v"; break; fi
+            fi
+          done
+          # Fallback: parse from git tag like v32966 if present
+          if [ -z "$KSUVER" ]; then
+            tag="$(git -C KernelSU-Next tag --points-at HEAD 2>/dev/null | head -n1 || true)"
+            KSUVER="$(echo "$tag" | grep -Eo '[0-9]+' || true)"
           fi
           KSUVER="${KSUVER:-unknown}"
           KSU_COMMIT="$(git -C KernelSU-Next rev-parse --short=8 HEAD)"
@@ -375,113 +384,6 @@ jobs:
             fi
           fi
 
-      - name: Configure kernel options (defconfig)
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
-          DEFCONFIG="common/arch/arm64/configs/gki_defconfig"
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import os, re
-          
-          cfg_path = Path("kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig")
-          text = cfg_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-          
-          def set_kv(opt: str, val: str):
-              # Remove any existing occurrences of opt=...
-              prefix = opt + "="
-              new = [l for l in text if not l.startswith(prefix)]
-              new.append(f"{opt}={val}")
-              return new
-          
-          def ensure(opt: str):
-              # Ensure CONFIG_FOO=y exists (remove unset if present)
-              key = f"CONFIG_{opt}=y"
-              unset = f"# CONFIG_{opt} is not set"
-              new = []
-              found = False
-              for l in text:
-                  if l.strip() == unset:
-            continue
-                  if l.strip() == key:
-            found = True
-                  new.append(l)
-              if not found:
-                  new.append(key)
-              return new
-          
-          def ensure_mod(opt: str):
-              key = f"CONFIG_{opt}=m"
-              unset = f"# CONFIG_{opt} is not set"
-              new = []
-              found = False
-              for l in text:
-                  if l.strip() == unset:
-            continue
-                  if l.strip() == key:
-            found = True
-                  new.append(l)
-              if not found:
-                  new.append(key)
-              return new
-          
-          # Local version string (purely cosmetic; does not change ABI)
-          suffix = os.environ.get("SUFFIX", "").strip()
-          if suffix:
-              # Ensure LOCALVERSION is present and LOCALVERSION_AUTO disabled
-              # Use KEY=VALUE style for Kconfig defconfig parsing
-              # Note: Some trees use CONFIG_LOCALVERSION, others LOCALVERSION; we set both to be safe.
-              # These lines do not break builds if unused.
-              # Add/update:
-              #   CONFIG_LOCALVERSION="-foo"
-              #   CONFIG_LOCALVERSION_AUTO=n
-              #   LOCALVERSION="-foo"
-              #   LOCALVERSION_AUTO=n
-              def upsert(line_prefix, line_value):
-                  global text
-                  new = [l for l in text if not l.startswith(line_prefix)]
-                  new.append(line_value)
-                  text = new
-          
-              upsert("CONFIG_LOCALVERSION=", f'CONFIG_LOCALVERSION="{suffix}"')
-              upsert("CONFIG_LOCALVERSION_AUTO=", "CONFIG_LOCALVERSION_AUTO=n")
-              upsert("LOCALVERSION=", f'LOCALVERSION="{suffix}"')
-              upsert("LOCALVERSION_AUTO=", "LOCALVERSION_AUTO=n")
-          
-          # WildKernel feature toggles (safe, module-friendly)
-          # IP_SET (netfilter ipset support)
-          if os.environ.get("ENABLE_IPSET", "On") == "On":
-              text = ensure("NETFILTER")
-              text = ensure("NETFILTER_XTABLES")
-              text = ensure_mod("IP_SET")
-              text = ensure_mod("IP_SET_HASH_IP")
-              text = ensure_mod("NETFILTER_XT_SET")
-          
-          # TTL target (match/modify TTL / hop-limit)
-          if os.environ.get("ENABLE_TTL", "On") == "On":
-              text = ensure("NETFILTER")
-              text = ensure("NETFILTER_XTABLES")
-              text = ensure_mod("NETFILTER_XT_TARGET_HL")
-              text = ensure_mod("NETFILTER_XT_TARGET_TTL")
-          
-          # HMBird is applied via patches; no defconfig changes required here.
-          
-          cfg_path.write_text("\n".join(text) + "\n", encoding="utf-8")
-          print("gki_defconfig updated safely.")
-          PY
-        env:
-          SUSFS_ON: ${{ github.event.inputs.SUSFS == 'On' && '1' || '0' }}
-          BBG_ON: ${{ github.event.inputs.bbg == 'On' && '1' || '0' }}
-          BBR_ON: ${{ github.event.inputs.bbr == 'On' && '1' || '0' }}
-          ADIOS_ON: ${{ github.event.inputs.adios == 'On' && '1' || '0' }}
-          REKERNEL_ON: ${{ github.event.inputs.rekernel == 'On' && '1' || '0' }}
-          PROXY_ON: ${{ github.event.inputs.proxy == 'On' && '1' || '0' }}
-          TTL_ON: ${{ github.event.inputs.ttl == 'On' && '1' || '0' }}
-          IPSET_ON: ${{ github.event.inputs.ipset == 'On' && '1' || '0' }}
-          SUFFIX: ${{ github.event.inputs.kernel_suffix }}
-          ANDROID_VER: ${{ env.ANDROID_VERSION }}
-
       - name: Set build identity and timestamp (mimic stock)
         run: |
           set -euo pipefail
@@ -536,7 +438,53 @@ jobs:
             CC="ccache clang" LD=ld.lld HOSTLD=ld.lld \
             O=out \
             KCFLAGS+=-O2 \
-            gki_defconfig all
+            gki_defconfig
+
+          # Apply feature toggles safely via scripts/config (no defconfig file editing)
+          CFG="out/.config"
+          if [[ ! -f "$CFG" ]]; then
+            echo "::error::.config not found at $PWD/$CFG"; exit 1
+          fi
+          if [[ ! -x "./scripts/config" ]]; then
+            echo "::error::scripts/config not found"; exit 1
+          fi
+
+          # Localversion suffix (cosmetic)
+          SUFFIX_INPUT="${{ github.event.inputs.kernel_suffix }}"
+          if [[ -n "$SUFFIX_INPUT" ]]; then
+            ./scripts/config --file "$CFG" --set-str LOCALVERSION "-$SUFFIX_INPUT" || true
+            ./scripts/config --file "$CFG" -d LOCALVERSION_AUTO || true
+          fi
+
+          # WildKernels: TMPFS_XATTR + POSIX ACL (Mountify support)
+          ./scripts/config --file "$CFG" -e TMPFS_XATTR -e TMPFS_POSIX_ACL || true
+
+          # TTL support (netfilter targets)
+          if [[ "${{ github.event.inputs.ttl }}" == "On" ]]; then
+            ./scripts/config --file "$CFG" -e NETFILTER -e NETFILTER_XTABLES \
+              -m NETFILTER_XT_TARGET_TTL -m NETFILTER_XT_TARGET_HL || true
+          else
+            ./scripts/config --file "$CFG" -d NETFILTER_XT_TARGET_TTL -d NETFILTER_XT_TARGET_HL || true
+          fi
+
+          # IPSET support (netfilter ipset)
+          if [[ "${{ github.event.inputs.ipset }}" == "On" ]]; then
+            ./scripts/config --file "$CFG" -e NETFILTER -e NETFILTER_XTABLES \
+              -m IP_SET -m IP_SET_HASH_IP -m NETFILTER_XT_SET || true
+          else
+            ./scripts/config --file "$CFG" -d IP_SET -d IP_SET_HASH_IP -d NETFILTER_XT_SET || true
+          fi
+
+          # Finalize config
+          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
+
+          # Build all targets
+          make -j"$(nproc --all)" \
+            LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            CC="ccache clang" LD=ld.lld HOSTLD=ld.lld \
+            O=out \
+            KCFLAGS+=-O2 \
+            all
 
           ccache -s || true
 
