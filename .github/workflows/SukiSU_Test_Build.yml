@@ -1,5 +1,5 @@
 ---
-name: TEST
+name: Build KernelSU Next
 permissions:
   contents: write
 env:
@@ -635,6 +635,6 @@ jobs:
             Artifacts:
             - AnyKernel3 zip
             - zram module zip
-        files: |
-          ./${{ env.ANYKERNEL_ZIP }}
-          ./zram.zip
+          files: |
+            ./${{ env.ANYKERNEL_ZIP }}
+            ./zram.zip
