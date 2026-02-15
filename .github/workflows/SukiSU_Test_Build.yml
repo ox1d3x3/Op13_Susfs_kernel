@@ -263,7 +263,7 @@ jobs:
           # Try common version variables across KernelSU-Next revisions
           for f in "KernelSU-Next/kernel/Makefile" "KernelSU-Next/Makefile" "KernelSU-Next/kernel/Makefile.kernelsu"; do
             if [ -f "$f" ]; then
-              v="$(grep -Eo '(DKSU_VERSION|KSU_VERSION|KSUN_VERSION)\s*[:?+]?=\s*[0-9]+' "$f" | head -n1 | grep -Eo '[0-9]+' || true)"
+              v="$(grep -Eo '(DKSU_VERSION|KSU_VERSION|KSUN_VERSION)[[:space:]]*[:?+]?=[[:space:]]*[0-9]+' \"$f\" | head -n1 | grep -Eo '[0-9]+' | head -n1 || true)"
               if [ -n "$v" ]; then KSUVER="$v"; break; fi
             fi
           done
@@ -274,6 +274,10 @@ jobs:
           fi
           KSUVER="${KSUVER:-unknown}"
           KSU_COMMIT="$(git -C KernelSU-Next rev-parse --short=8 HEAD)"
+          # Sanitize (GITHUB_ENV cannot accept multiline values)
+          KSUVER="$(printf '%s\n' "$KSUVER" | head -n1 | tr -cd '0-9')"
+          if [ -z "$KSUVER" ]; then KSUVER="unknown"; fi
+          KSU_COMMIT="$(printf '%s\n' "$KSU_COMMIT" | head -n1 | tr -d '\r')"
           echo "KSUVER=$KSUVER" >> "$GITHUB_ENV"
           echo "KSU_COMMIT=$KSU_COMMIT" >> "$GITHUB_ENV"
 
