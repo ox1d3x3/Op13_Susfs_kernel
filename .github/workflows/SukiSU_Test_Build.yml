@@ -1,5 +1,4 @@
 name: OP13 KernelSU-Next
-
 env:
   TZ: UTC
   ANDROID_VERSION: android15
@@ -105,27 +104,16 @@ on:
         options: ["On", "Off"]
         default: "On"
 
+      toolchain:
+        description: "Toolchain to use when clang prebuilts are missing from the synced tree"
+        required: true
+        type: choice
+        options: ["aosp", "neutron"]
+        default: "aosp"
+
 permissions:
   contents: write
 
-
-toolchain:
-  description: "Toolchain to use when clang prebuilts are missing from the synced tree"
-  required: true
-  type: choice
-  options:
-    - "aosp"
-    - "neutron"
-  default: "aosp"
-
-publish_release:
-  description: "Publish flashable zip as a GitHub Release asset (avoids artifact wrapper zip)"
-  required: true
-  type: choice
-  options:
-    - "Off"
-    - "On"
-  default: "Off"
 jobs:
   build:
     name: Build OP13 KernelSU-Next (Ultimate)
