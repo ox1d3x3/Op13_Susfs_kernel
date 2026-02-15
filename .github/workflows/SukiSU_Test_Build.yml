@@ -1,5 +1,4 @@
----
-name: KSU
+name: Build KernelSU Next
 permissions:
   contents: write
 env:
@@ -7,7 +6,7 @@ env:
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
   KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
-on:
+"on":
   workflow_dispatch:
     inputs:
       SUSFS:
@@ -18,6 +17,14 @@ on:
           - "On"
           - "Off"
         default: "Off"
+      patch_mode:
+        description: Patch mode (auto skips incompatible patches; strict fails)
+        required: true
+        type: choice
+        options:
+          - "auto"
+          - "strict"
+        default: "auto"
       ksunext_multimanager:
         description: Add extra *KernelSU Next* manager signature (safe, KSU Next only)
         required: true
@@ -119,7 +126,7 @@ on:
 jobs:
   build:
     name: SUSFS ${{ github.event.inputs.SUSFS }} | BBG ${{ github.event.inputs.bbg }} | ADIOS ${{ github.event.inputs.adios }} | Re-Kernel ${{ github.event.inputs.rekernel }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
@@ -345,18 +352,11 @@ jobs:
           echo " ..."
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
             cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
-            cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
-            cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
+            rsync -a ../susfs4ksu/kernel_patches/fs/ ./common/fs/
+            rsync -a ../susfs4ksu/kernel_patches/include/linux/ ./common/include/linux/
           else
             cp ../kernel_patches/susfs/scope_min_manual_hooks_v1.9.patch ./common/
           fi
-
-          mkdir -p ./common/lib/lz4/lz4armv8
-          cp ../kernel_patches/zram/001-lz4.patch ./common/
-          cp ../kernel_patches/zram/lz4armv8.S ./common/lib/lz4/lz4armv8.S
-          cp ../kernel_patches/zram/lz4armv8.S ./common/lib/lz4/lz4armv8/lz4armv8.S
-          cp ../kernel_patches/zram/002-zstd.patch ./common/
-
           if [ "${{ github.event.inputs.UNICODE_BYPASS }}" = "On" ]; then
             cp ../kernel_patches/common/unicode_bypass_fix_6.1+.patch ./common/unicode_bypass_fix.patch
           fi
@@ -364,44 +364,84 @@ jobs:
           echo " ..."
           cd ./common
 
+          PATCH_MODE="${{ github.event.inputs.patch_mode }}"
+
           apply_patch() {
-            local p="$1"
-            local fuzz="${2:-0}"
-            if patch -p1 -R --dry-run -F "$fuzz" < "$p" >/dev/null 2>&1; then
-              echo " Patch ,:$p"
+            local patch_file="$1"
+            local strict="${2:-${PATCH_MODE:-auto}}"  # auto|strict
+
+            if [[ ! -f "$patch_file" ]]; then
+              echo "::error::Patch not found: $patch_file"
+              exit 1
+            fi
+
+            local COMMON_DIR="$(pwd)"
+            local PLATFORM_DIR
+            PLATFORM_DIR="$(cd .. && pwd)"
+
+            # Auto-detect where to apply the patch.
+            # - If patch paths start with common/, apply from kernel_platform root.
+            # - Otherwise apply from common/ (this directory).
+            local ROOT_DIR="$COMMON_DIR"
+            if grep -qE '^diff --git a/common/' "$patch_file"; then
+              ROOT_DIR="$PLATFORM_DIR"
+            fi
+
+            # 1) Already applied?
+            if git -C "$ROOT_DIR" apply --reverse --check "$patch_file" >/dev/null 2>&1; then
+              echo "Patch already applied: $(basename "$patch_file")"
               return 0
             fi
-            if patch -p1 --dry-run -F "$fuzz" < "$p" >/dev/null 2>&1; then
-              echo " Applying: $p"
-              patch -p1 -F "$fuzz" < "$p"
+
+            # 2) Try git apply (best).
+            if git -C "$ROOT_DIR" apply --check "$patch_file" >/dev/null 2>&1; then
+              echo "Applying (git apply): $(basename "$patch_file")"
+              git -C "$ROOT_DIR" apply "$patch_file"
               return 0
             fi
-            echo " Patch /:$p"
-            exit 1
+
+            # 3) Fallback to patch with fuzz and -p levels.
+            for fuzz in 0 1 2 3; do
+              if patch -d "$ROOT_DIR" -p1 --dry-run -F "$fuzz" < "$patch_file" >/dev/null 2>&1; then
+                echo "Applying (patch -p1 -F $fuzz): $(basename "$patch_file")"
+                patch -d "$ROOT_DIR" -p1 -F "$fuzz" < "$patch_file"
+                return 0
+              fi
+              if patch -d "$ROOT_DIR" -p0 --dry-run -F "$fuzz" < "$patch_file" >/dev/null 2>&1; then
+                echo "Applying (patch -p0 -F $fuzz): $(basename "$patch_file")"
+                patch -d "$ROOT_DIR" -p0 -F "$fuzz" < "$patch_file"
+                return 0
+              fi
+            done
+
+            # Not compatible with this tree.
+            echo "::warning::Patch not compatible with this kernel tree (skipped): $(basename "$patch_file")"
+            if [[ "$strict" == "strict" ]]; then
+              echo "::error::Patch failed (strict mode): $patch_file"
+              echo "---- Patch header (first 40 lines) ----"
+              head -n 40 "$patch_file" || true
+              exit 1
+            fi
+            return 0
           }
 
           if [ "${{ github.event.inputs.UNICODE_BYPASS }}" = "On" ]; then
             echo "  Unicode ..."
-            apply_patch unicode_bypass_fix.patch 0
+            apply_patch unicode_bypass_fix.patch
           fi
-
-          echo "  lz4/zstd ..."
-          apply_patch 001-lz4.patch 0
-          apply_patch 002-zstd.patch 0
-
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
             echo "  SUSFS ..."
-            apply_patch 50_add_susfs_in_gki-android15-6.6.patch 0
+            apply_patch 50_add_susfs_in_gki-android15-6.6.patch strict
             cp ../../kernel_patches/69_hide_stuff.patch ./
-            apply_patch 69_hide_stuff.patch 3
+            apply_patch 69_hide_stuff.patch strict
           else
             echo "  MANUAL_HOOK ..."
-            apply_patch scope_min_manual_hooks_v1.9.patch 3
+            apply_patch scope_min_manual_hooks_v1.9.patch strict
           fi
 
           echo "  POLLY..."
           cp ../../kernel_patches/common/EnablePOLLY.patch ./
-          apply_patch EnablePOLLY.patch 3
+          apply_patch EnablePOLLY.patch auto
 
           echo "Done!"
       - name: Configure Kernel Options
@@ -412,26 +452,45 @@ jobs:
 
           DEFCONFIG_PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig"
 
+          # Write config entries safely (avoid duplicate/override spam in defconfig)
+          set_cfg() {
+            local key="$1" val="$2"
+            # Remove existing lines for the symbol
+            sed -i -E "/^(# )?CONFIG_${key}(=| ).*/d" "$DEFCONFIG_PATH" || true
+            if [[ "$val" == "n" ]]; then
+              echo "# CONFIG_${key} is not set" >> "$DEFCONFIG_PATH"
+            else
+              echo "CONFIG_${key}=${val}" >> "$DEFCONFIG_PATH"
+            fi
+          }
+
+          set_cfg_str() {
+            local key="$1" sval="$2"
+            sed -i -E "/^CONFIG_${key}=.*/d" "$DEFCONFIG_PATH" || true
+            echo "CONFIG_${key}=\"${sval}\"" >> "$DEFCONFIG_PATH"
+          }
+
+
           # Add KSU configuration settings
           echo "  KSU ..."
-          echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
+          set_cfg KSU y
 
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
             echo "  SUSFS ..."
-            echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> ./common/arch/arm64/configs/gki_defconfig
+            set_cfg KSU_SUSFS y
+            set_cfg KSU_SUSFS_SUS_PATH y
+            set_cfg KSU_SUSFS_SUS_MOUNT y
+            set_cfg KSU_SUSFS_SUS_KSTAT y
+            set_cfg KSU_SUSFS_SPOOF_UNAME y
+            set_cfg KSU_SUSFS_ENABLE_LOG y
+            set_cfg KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS y
+            set_cfg KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG y
+            set_cfg KSU_SUSFS_OPEN_REDIRECT y
+            set_cfg KSU_SUSFS_SUS_MAP y
           else
             echo "  MANUAL_HOOK..."
             echo "CONFIG_KSU_SUSFS=n" >> ./common/arch/arm64/configs/gki_defconfig
-            echo "CONFIG_KSU_MANUAL_HOOK=y" >> ./common/arch/arm64/configs/gki_defconfig
+            set_cfg KSU_MANUAL_HOOK y
           fi
 
           echo "  Mountify (backslashxx/mountify) "
@@ -622,7 +681,7 @@ jobs:
         run: |
           set -e
           echo "  zram.zip..."
-          curl -L "https://github.com/cctv18/oppo_oplus_realme_sm8750/raw/refs/heads/main/zram.zip" -o "$GITHUB_WORKSPACE/zram.zip"
+          curl --fail --location --retry 5 --retry-all-errors "https://github.com/cctv18/oppo_oplus_realme_sm8750/raw/refs/heads/main/zram.zip" -o "$GITHUB_WORKSPACE/zram.zip"
 
           echo " ..."
           unzip -q "$GITHUB_WORKSPACE/zram.zip" -d "$GITHUB_WORKSPACE/zram"
