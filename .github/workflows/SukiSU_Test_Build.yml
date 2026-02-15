@@ -1,4 +1,5 @@
-name: OP13 KernelSU-Next
+name: OP13 KernelSU-Next Ultimate (OOS16/ColorOS16)
+
 env:
   TZ: UTC
   ANDROID_VERSION: android15
@@ -380,126 +381,95 @@ jobs:
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
           DEFCONFIG="common/arch/arm64/configs/gki_defconfig"
 
-          python3 - <<'PY'
-          from pathlib import Path
+  python3 - <<'PY'
+  from pathlib import Path
+  import os, re
 
-          cfg = Path("common/arch/arm64/configs/gki_defconfig")
-          lines = cfg.read_text(encoding="utf-8", errors="ignore").splitlines()
+cfg_path = Path("kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig")
+text = cfg_path.read_text(encoding="utf-8", errors="ignore").splitlines()
 
-          def set_opt(opt, val):
-                            prefix = opt + "="
-              lines = [l for l in lines if not l.startswith(prefix)]
-              lines.append(f"{opt}={val}")
+def set_kv(opt: str, val: str):
+    # Remove any existing occurrences of opt=...
+    prefix = opt + "="
+    new = [l for l in text if not l.startswith(prefix)]
+    new.append(f"{opt}={val}")
+    return new
 
-          # Localversion suffix (helps identify build)
-          suffix = os.environ.get('SUFFIX','')
-          android_ver = os.environ.get('ANDROID_VER','android15')
-          if suffix:
-              set_opt('CONFIG_LOCALVERSION', f'"-{android_ver}-{suffix}"')
+def ensure(opt: str):
+    # Ensure CONFIG_FOO=y exists (remove unset if present)
+    key = f"CONFIG_{opt}=y"
+    unset = f"# CONFIG_{opt} is not set"
+    new = []
+    found = False
+    for l in text:
+        if l.strip() == unset:
+            continue
+        if l.strip() == key:
+            found = True
+        new.append(l)
+    if not found:
+        new.append(key)
+    return new
 
-          # Core: KernelSU-Next
-          set_opt("CONFIG_KSU", "y")
+def ensure_mod(opt: str):
+    key = f"CONFIG_{opt}=m"
+    unset = f"# CONFIG_{opt} is not set"
+    new = []
+    found = False
+    for l in text:
+        if l.strip() == unset:
+            continue
+        if l.strip() == key:
+            found = True
+        new.append(l)
+    if not found:
+        new.append(key)
+    return new
 
-          # SUSFS vs MANUAL_HOOK
-          # (SUSFS provides better module compatibility; MANUAL_HOOK is fallback.)
-          import os
-          susfs_on = os.environ.get("SUSFS_ON") == "1"
-          if susfs_on:
-              set_opt("CONFIG_KSU_SUSFS", "y")
-              set_opt("CONFIG_KSU_SUSFS_SUS_PATH", "y")
-              set_opt("CONFIG_KSU_SUSFS_SUS_MOUNT", "y")
-              set_opt("CONFIG_KSU_SUSFS_SUS_KSTAT", "y")
-              set_opt("CONFIG_KSU_SUSFS_SPOOF_UNAME", "y")
-              set_opt("CONFIG_KSU_SUSFS_ENABLE_LOG", "y")
-              set_opt("CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS", "y")
-              set_opt("CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG", "y")
-              set_opt("CONFIG_KSU_SUSFS_OPEN_REDIRECT", "y")
-              set_opt("CONFIG_KSU_SUSFS_SUS_MAP", "y")
-              # Disable MANUAL_HOOK when SUSFS is enabled
-              set_opt("CONFIG_KSU_MANUAL_HOOK", "n")
-          else:
-              set_opt("CONFIG_KSU_SUSFS", "n")
-              set_opt("CONFIG_KSU_MANUAL_HOOK", "y")
+# Local version string (purely cosmetic; does not change ABI)
+suffix = os.environ.get("SUFFIX", "").strip()
+if suffix:
+    # Ensure LOCALVERSION is present and LOCALVERSION_AUTO disabled
+    # Use KEY=VALUE style for Kconfig defconfig parsing
+    # Note: Some trees use CONFIG_LOCALVERSION, others LOCALVERSION; we set both to be safe.
+    # These lines do not break builds if unused.
+    # Add/update:
+    #   CONFIG_LOCALVERSION="-foo"
+    #   CONFIG_LOCALVERSION_AUTO=n
+    #   LOCALVERSION="-foo"
+    #   LOCALVERSION_AUTO=n
+    def upsert(line_prefix, line_value):
+        nonlocal text
+        new = [l for l in text if not l.startswith(line_prefix)]
+        new.append(line_value)
+        text = new
 
-          # Mountify support
-          set_opt("CONFIG_TMPFS_XATTR", "y")
-          set_opt("CONFIG_TMPFS_POSIX_ACL", "y")
+    upsert("CONFIG_LOCALVERSION=", f'CONFIG_LOCALVERSION="{suffix}"')
+    upsert("CONFIG_LOCALVERSION_AUTO=", "CONFIG_LOCALVERSION_AUTO=n")
+    upsert("LOCALVERSION=", f'LOCALVERSION="{suffix}"')
+    upsert("LOCALVERSION_AUTO=", "LOCALVERSION_AUTO=n")
 
-          # BBG
-          bbg_on = os.environ.get("BBG_ON") == "1"
-          if bbg_on:
-              set_opt("CONFIG_BBG", "y")
+# WildKernel feature toggles (safe, module-friendly)
+# IP_SET (netfilter ipset support)
+if os.environ.get("ENABLE_IPSET", "On") == "On":
+    text = ensure("NETFILTER")
+    text = ensure("NETFILTER_XTABLES")
+    text = ensure_mod("IP_SET")
+    text = ensure_mod("IP_SET_HASH_IP")
+    text = ensure_mod("NETFILTER_XT_SET")
 
-          # BBR
-          bbr_on = os.environ.get("BBR_ON") == "1"
-          if bbr_on:
-              set_opt("CONFIG_TCP_CONG_ADVANCED", "y")
-              set_opt("CONFIG_TCP_CONG_BBR", "y")
-              set_opt("CONFIG_NET_SCH_FQ", "y")
+# TTL target (match/modify TTL / hop-limit)
+if os.environ.get("ENABLE_TTL", "On") == "On":
+    text = ensure("NETFILTER")
+    text = ensure("NETFILTER_XTABLES")
+    text = ensure_mod("NETFILTER_XT_TARGET_HL")
+    text = ensure_mod("NETFILTER_XT_TARGET_TTL")
 
-          # ADIOS
-          adios_on = os.environ.get("ADIOS_ON") == "1"
-          if adios_on:
-              set_opt("CONFIG_MQ_IOSCHED_ADIOS", "y")
-              set_opt("CONFIG_MQ_IOSCHED_DEFAULT_ADIOS", "y")
+# HMBird is applied via patches; no defconfig changes required here.
 
-          # ReKernel
-          rekernel_on = os.environ.get("REKERNEL_ON") == "1"
-          if rekernel_on:
-              set_opt("CONFIG_REKERNEL", "y")
-
-          # Netfilter helpers (Proxy)
-          proxy_on = os.environ.get("PROXY_ON") == "1"
-          if proxy_on:
-              set_opt("CONFIG_BPF_STREAM_PARSER", "y")
-              set_opt("CONFIG_NETFILTER_XT_MATCH_ADDRTYPE", "y")
-              set_opt("CONFIG_IP6_NF_NAT", "y")
-              set_opt("CONFIG_IP6_NF_TARGET_MASQUERADE", "y")
-
-          # WildKernels: IP_SET
-          ipset_on = os.environ.get("IPSET_ON") == "1"
-          if ipset_on or proxy_on:
-              set_opt("CONFIG_NETFILTER_XT_SET", "y")
-              set_opt("CONFIG_IP_SET", "y")
-              set_opt("CONFIG_IP_SET_MAX", "65534")
-              # Common set types
-              for opt in [
-                  "CONFIG_IP_SET_BITMAP_IP",
-                  "CONFIG_IP_SET_BITMAP_IPMAC",
-                  "CONFIG_IP_SET_BITMAP_PORT",
-                  "CONFIG_IP_SET_HASH_IP",
-                  "CONFIG_IP_SET_HASH_IPMARK",
-                  "CONFIG_IP_SET_HASH_IPPORT",
-                  "CONFIG_IP_SET_HASH_IPPORTIP",
-                  "CONFIG_IP_SET_HASH_IPPORTNET",
-                  "CONFIG_IP_SET_HASH_IPMAC",
-                  "CONFIG_IP_SET_HASH_MAC",
-                  "CONFIG_IP_SET_HASH_NETPORTNET",
-                  "CONFIG_IP_SET_HASH_NET",
-                  "CONFIG_IP_SET_HASH_NETNET",
-                  "CONFIG_IP_SET_HASH_NETPORT",
-                  "CONFIG_IP_SET_HASH_NETIFACE",
-                  "CONFIG_IP_SET_LIST_SET",
-              ]:
-                  set_opt(opt, "y")
-
-          # WildKernels: TTL (netfilter TTL/HL targets)
-          ttl_on = os.environ.get("TTL_ON") == "1"
-          if ttl_on:
-              # Depending on kernel tree, one of these may exist. Defconfig ignores unknown symbols safely.
-              set_opt("CONFIG_NETFILTER_XT_TARGET_TTL", "y")
-              set_opt("CONFIG_NETFILTER_XT_TARGET_HL", "y")
-              set_opt("CONFIG_NETFILTER_XT_MATCH_HL", "y")
-
-          # Optimization defaults (stable daily-driver)
-          set_opt("CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE", "y")
-          # Polly (optional but usually safe with clang; enable by default like your original workflow)
-          set_opt("CONFIG_LLVM_POLLY", "y")
-          set_opt("CONFIG_LD_DEAD_CODE_DATA_ELIMINATION", "y")
-
-          cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
-          print(f"Updated: {cfg}")
-          PY
+cfg_path.write_text("\n".join(text) + "\n", encoding="utf-8")
+print("gki_defconfig updated safely.")
+PY
         env:
           SUSFS_ON: ${{ github.event.inputs.SUSFS == 'On' && '1' || '0' }}
           BBG_ON: ${{ github.event.inputs.bbg == 'On' && '1' || '0' }}
