@@ -609,7 +609,7 @@ jobs:
           echo "KBUILD_BUILD_USER=github-actions" >> "$GITHUB_ENV"
           echo "KBUILD_BUILD_HOST=op13" >> "$GITHUB_ENV"
 
-      - name: Preflight: toolchain sanity check
+      - name: "Preflight: toolchain sanity check"
         shell: bash
         run: |
           set -euo pipefail
