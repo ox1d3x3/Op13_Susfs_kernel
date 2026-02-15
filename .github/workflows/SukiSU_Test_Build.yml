@@ -1,9 +1,9 @@
 ---
-name: TEST
+name: KSU
 permissions:
   contents: write
 env:
-  TZ: Asia/Shanghai
+  TZ: UTC
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
   KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       SUSFS:
-        description: 📦 是否启用SUSFS
+        description: Enable SUSFS
         required: true
         type: choice
         options:
@@ -19,15 +19,15 @@ on:
           - "Off"
         default: "Off"
       ksunext_multimanager:
-        description: 👥 Multimanager 支持（KernelSU Next 生态：weishu KSU、5ec1cff KSU、rsuntk KSU、kowsu、MamboSU、WildKSU 等）
+        description: Add extra *KernelSU Next* manager signature (safe, KSU Next only)
         required: true
         type: choice
         options:
           - "On"
           - "Off"
-        default: "On"
+        default: "Off"
       bbg:
-        description: 🛡️ 否启用BBG基带保护
+        description: Enable Baseband Guard (BBG)
         required: true
         type: choice
         options:
@@ -35,7 +35,7 @@ on:
           - "Off"
         default: "On"
       bbr:
-        description: 📶 是否启用BBR算法(对手机日用无太大意义甚至可能负优化)
+        description: Enable TCP BBR (often minimal benefit on phones)
         required: true
         type: choice
         options:
@@ -43,7 +43,7 @@ on:
           - "Off"
         default: "Off"
       adios:
-        description: '🔧 是否启用ADIOS IO调度器支持(提升IO读写性能)'
+        description: Enable ADIOS I/O scheduler support
         required: true
         type: choice
         options:
@@ -51,7 +51,7 @@ on:
           - "Off"
         default: "On"
       rekernel:
-        description: '⚙️ 是否启用Re-Kernel支持(与Freezer/NoActive等软件配合, 提升应用冻结能力)'
+        description: Enable Re-Kernel support (optional)
         required: true
         type: choice
         options:
@@ -59,7 +59,7 @@ on:
           - "Off"
         default: "Off"
       proxy:
-        description: 🌐 是否添加代理性能优化
+        description: Enable proxy/netfilter/ipset features
         required: true
         type: choice
         options:
@@ -67,7 +67,7 @@ on:
           - "Off"
         default: "On"
       UNICODE_BYPASS:
-        description: 🚀 是否添加Unicode零宽绕过修复补丁(高内核版本不推荐开启, 建议使用 https://t.me/real5ec1cff/271 无痛修复)
+        description: Apply Unicode zero-width bypass fix patch (not recommended on newer kernels; see https://t.me/real5ec1cff/271)
         required: true
         type: choice
         options:
@@ -75,17 +75,17 @@ on:
           - "Off"
         default: "Off"
       kernel_suffix:
-        description: 📝 内核后缀(留空默认,开头别加连字符,勿加空格等影响指令运行的保留字符)
+        description: Kernel suffix (optional; no leading '-' and no spaces)
         required: false
         type: string
         default: ""
       BUILD_TIME:
         type: string
-        description: "📅 自定义构建时间(输入F使用当前UTC时间)"
+        description: "Custom build time (enter F to use current UTC time)"
         required: false
         default: "Thu Dec 11 04:17:27 UTC 2025"
       manifest_branch:
-        description: 🧾 Manifest 分支（语言）| zh=中文 / english=English
+        description: Manifest branch for repo init (default zh)
         required: true
         type: choice
         options:
@@ -93,7 +93,7 @@ on:
           - "english"
         default: "zh"
       ksunext_channel:
-        description: 🧩 KernelSU Next 通道（默认 stable 更适合日用）
+        description: KernelSU Next channel (stable recommended for daily use)
         required: true
         type: choice
         options:
@@ -104,12 +104,12 @@ on:
           - "tag"
         default: "stable"
       ksunext_tag:
-        description: 🏷️ 当通道=tag 时使用（例如 v3.0.0）
+        description: Used only when channel=tag (e.g., v3.0.0)
         required: false
         type: string
         default: ""
       make_release:
-        description: 🚀 是否创建 GitHub Release（发布 AnyKernel3.zip + zram.zip）
+        description: Create a GitHub Release (publish AnyKernel3.zip + zram.zip)
         required: true
         type: choice
         options:
@@ -126,8 +126,8 @@ jobs:
       CCACHE_HARDLINK: "true"
       CCACHE_MAXSIZE: 8G
     steps:
-      - name: 🚀 Maximize Build Space | 最大化构建空间
-        uses: easimon/maximize-build-space@master
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@v10
         with:
           root-reserve-mb: 8192
           temp-reserve-mb: 4096
@@ -136,32 +136,32 @@ jobs:
           remove-haskell: "true"
           remove-codeql: "true"
 
-      - name: ⚙️ Setup Cache Env | 设置缓存环境
+      - name: Setup Cache Env
         run: |
-          echo "🔧 正在设置机型隔离缓存目录..."
+          echo "Setting per-build ccache directory..."
           echo "CCACHE_DIR=$HOME/.ccache_KSUNext" >> $GITHUB_ENV
           mkdir -p "$HOME/.ccache_KSUNext"
 
-          echo "✅ 缓存目录已设置: $HOME/.ccache_KSUNext"
-          
-      - name: 🔐 Configure Git | 配置Git账户
+          echo "ccache dir set: $HOME/.ccache_KSUNext"
+
+      - name: Configure Git
         run: |
-          echo "🔧 正在配置Git用户信息..."
+          echo "Configuring git user..."
           git config --global user.name "GitHub Actions - chenhua13 Kernel"
           git config --global user.email "builder@localhost"
-          echo "✅ Git配置完成"
-          
-      - name: 📦 Cache & Install Dependencies | 缓存 & 安装构建依赖
-        uses: awalsh128/cache-apt-pkgs-action@latest
+          echo "Git configured"
+
+      - name: Cache & Install Dependencies
+        uses: awalsh128/cache-apt-pkgs-action@v1.6.0
         with:
           packages: python3 git curl ccache libelf-dev build-essential flex bison
             libssl-dev libncurses-dev liblz4-tool zlib1g-dev libxml2-utils rsync
             unzip gawk dos2unix
           execute_install_scripts: true
-          
-      - name: 💾 Restore ccache (With SUSFS) | 恢复ccache缓存 (With SUSFS)
+
+      - name: Restore ccache (With SUSFS)
         if: ${{ github.event.inputs.SUSFS == 'On' }}
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ github.ref }}-KSUNext-SUSFS
@@ -169,10 +169,10 @@ jobs:
             ccache-${{ runner.os }}-KSUNext-SUSFS
 
             ccache-${{ runner.os }}-KSUNext-SUSFS
-            
-      - name: 💾 Restore ccache (Without SUSFS) | 恢复ccache缓存 (Without SUSFS)
+
+      - name: Restore ccache (Without SUSFS)
         if: ${{ github.event.inputs.SUSFS == 'Off' }}
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ github.ref }}-KSUNext-NoSUSFS
@@ -180,10 +180,10 @@ jobs:
             ccache-${{ runner.os }}-KSUNext-NoSUSFS
 
             ccache-${{ runner.os }}-KSUNext-NoSUSFS
-            
-      - name: ⚙️ Initialize ccache | 初始化ccache
+
+      - name: Initialize ccache
         run: |
-          echo "🔧 正在初始化ccache..."
+          echo " ccache..."
           INIT_FLAG="${{ env.CCACHE_DIR }}/.ccache_initialized"
 
           if command -v ccache >/dev/null 2>&1; then
@@ -191,48 +191,48 @@ jobs:
               mkdir -p "${{ env.CCACHE_DIR }}"
               ccache -M ${{ env.CCACHE_MAXSIZE }}
               touch "$INIT_FLAG"
-              echo "✅ ccache初始化完成"
+              echo "Done!"
             else
-              echo "ℹ️ ccache已存在，跳过初始化"
+              echo " ccache,"
             fi
           else
-            echo "⚠️ 未找到ccache命令，跳过初始化"
+            echo " ccache,"
           fi
-          # 显示缓存统计
+          #
           ccache -s
-          echo "✅ ccache初始化流程完成"
-          
-      - name: 📥 Install Repo Tool | 安装Repo工具
+          echo "Done!"
+
+      - name: Install Repo Tool
         run: |
-          echo "⬇️ 正在下载repo工具..."
+          echo " repo..."
           curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > ~/repo
           chmod a+x ~/repo
           sudo mv ~/repo /usr/local/bin/repo
 
-          echo "✅ repo工具安装完成"
-          
-      - name: 📥 Install Neutron Clang Tool | 安装Neutron Clang工具
+          echo "Neutron clang toolchain installed."
+
+      - name: Install Neutron Clang Tool
         run: |
-          echo "⬇️ 正在下载rneutron clang具..."
+          echo " rneutron clang..."
           mkdir -p "$HOME/toolchains/neutron-clang"
           cd "$HOME/toolchains/neutron-clang"
           bash <(curl -s "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman") -S
 
-          echo "✅ neutron clang工具安装完成"
-          
-      - name: "⬇️ Clone Kernel Source | 克隆内核源码"
+          echo "Neutron clang toolchain installed."
+
+      - name: Clone Kernel Source
         run: |
           mkdir kernel_workspace && cd kernel_workspace
 
-          echo "🌐 正在初始化内核仓库..."
+          echo "Initializing kernel manifest..."
           repo init -u https://github.com/mrcxlinux/actions_oplus_sm8750.git -b refs/heads/${{ github.event.inputs.manifest_branch }} -m manifest.xml --depth=1
 
-          echo "🔄 同步代码库(使用$(nproc --all)线程)..."
+          echo "Syncing repositories..."
           repo sync -c -j$(nproc --all) --no-tags --no-clone-bundle --force-sync
-          
+
           rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
           rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
-          
+
           # Remove -dirty in kernel version
           sed -i 's/ -dirty//g' kernel_platform/common/scripts/setlocalversion
           sed -i 's/ -dirty//g' kernel_platform/msm-kernel/scripts/setlocalversion
@@ -241,32 +241,32 @@ jobs:
           sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' kernel_platform/msm-kernel/scripts/setlocalversion
           sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' kernel_platform/external/dtc/scripts/setlocalversion
 
-          echo "✅ 内核配置完成"
-          
-      - name: ⚡ Setup Baseband-guard | 配置 Baseband-guard
+          echo "Done!"
+
+      - name: Setup Baseband-guard
         if: ${{ github.event.inputs.bbg == 'On' }}
         run: |
           set -e
           cd kernel_workspace/kernel_platform/common
 
-          echo "🛠️ 正在设置BBG..."
+          echo " BBG..."
           curl -sSL https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh -o setup.sh
 
-          bash setup.sh     
-              
-      - name: "⚡ Setup KernelSU Next | 配置 KernelSU Next"
+          bash setup.sh
+
+      - name: Setup KernelSU Next
         run: |
           set -euo pipefail
           cd kernel_workspace/kernel_platform
 
-          echo "🛠️ KernelSU Next 安装：channel=${{ github.event.inputs.ksunext_channel }}"
+          echo " KernelSU Next :channel=${{ github.event.inputs.ksunext_channel }}"
 
           CHANNEL="${{ github.event.inputs.ksunext_channel }}"
           TAG="${{ github.event.inputs.ksunext_tag }}"
 
           if [[ "$CHANNEL" == "tag" ]]; then
             if [[ -z "$TAG" ]]; then
-              echo "❌ channel=tag 需要填写 ksunext_tag（例如 v3.0.0）"
+              echo " channel=tag  ksunext_tag( v3.0.0)"
               exit 1
             fi
             curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "$TAG"
@@ -279,7 +279,7 @@ jobs:
 
           cd KernelSU-Next
 
-          # 生成稳定 DKSU_VERSION：提交数 + 30000（失败则保留原值）
+          #  DKSU_VERSION: + 30000()
           if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
             COUNT="$(git rev-list --count HEAD || true)"
             if [[ -n "$COUNT" ]]; then
@@ -293,25 +293,56 @@ jobs:
           fi
 
           if [[ "${{ github.event.inputs.ksunext_multimanager }}" == "On" ]]; then
-            echo "📦 启用 multimanager 支持..."
-            curl -L "https://raw.githubusercontent.com/mrcxlinux/kernel_patches/refs/heads/main/ksun/kernelsu-next_multimanager.patch" -o "kernelsu-next_multimanager.patch"
-            patch -p1 < kernelsu-next_multimanager.patch
+            echo "Enabling extra KernelSU Next manager signature compatibility (KSU Next only)..."
+            APK_FILE="kernel/apk_sign.c"
+            # Known official KernelSU Next manager v2 signature seen in upstream build logs
+            EXTRA_SIG_SIZE="0x3e6"
+            EXTRA_SIG_HASH="79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7"
+            if [[ -f "$APK_FILE" ]]; then
+              if grep -q "$EXTRA_SIG_HASH" "$APK_FILE"; then
+                echo "Signature already present; skipping."
+              else
+                python3 - <<'PY'
+          import pathlib, re
+          p = pathlib.Path('kernel/apk_sign.c')
+          s = p.read_text(encoding='utf-8', errors='ignore')
+          size = '0x3e6'
+          h = '79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7'
+          pat = r"if\s*\(\s*check_v2_signature\(path,\s*size,\s*hash\)\s*\)\s*\{"
+          m = re.search(pat, s)
+          if not m:
+              pat2 = r"check_v2_signature\(path,\s*size,\s*hash\)"
+              m = re.search(pat2, s)
+          if not m:
+              print('WARNING: could not locate check_v2_signature gate in kernel/apk_sign.c; skipping'); raise SystemExit(0)
+          needle = 'check_v2_signature(path, size, hash)'
+          replacement = f"{needle} || check_v2_signature(path, {size}, \"{h}\")"
+          if needle not in s:
+              print('WARNING: expected pattern not found; skipping'); raise SystemExit(0)
+          s2 = s.replace(needle, replacement, 1)
+          p.write_text(s2, encoding='utf-8')
+          print('Patched kernel/apk_sign.c with extra KernelSU Next signature')
+          PY
+              fi
+            else
+              echo "::warning::KernelSU-Next kernel/apk_sign.c not found; skipping extra signature step."
+            fi
           fi
 
-          echo "✅ KernelSU Next 配置完成"
-      - name: "🔧 Setup Patches | 配置补丁"
+          echo "Done!"
+      - name: Setup Patches
         run: |
           set -euo pipefail
           cd kernel_workspace
 
-          echo "⬇️ 下载所需补丁..."
+          echo " ..."
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
             git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 --depth=1
           fi
           git clone https://github.com/mrcxlinux/kernel_patches.git --depth=1
 
           cd kernel_platform
-          echo "📝 复制补丁文件..."
+          echo " ..."
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
             cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
             cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
@@ -330,63 +361,63 @@ jobs:
             cp ../kernel_patches/common/unicode_bypass_fix_6.1+.patch ./common/unicode_bypass_fix.patch
           fi
 
-          echo "🔧 应用补丁..."
+          echo " ..."
           cd ./common
 
           apply_patch() {
             local p="$1"
             local fuzz="${2:-0}"
             if patch -p1 -R --dry-run -F "$fuzz" < "$p" >/dev/null 2>&1; then
-              echo "ℹ️ Patch 已应用，跳过：$p"
+              echo " Patch ,:$p"
               return 0
             fi
             if patch -p1 --dry-run -F "$fuzz" < "$p" >/dev/null 2>&1; then
-              echo "✅ Applying: $p"
+              echo " Applying: $p"
               patch -p1 -F "$fuzz" < "$p"
               return 0
             fi
-            echo "❌ Patch 冲突/无法应用：$p"
+            echo " Patch /:$p"
             exit 1
           }
 
           if [ "${{ github.event.inputs.UNICODE_BYPASS }}" = "On" ]; then
-            echo "📦 应用 Unicode 零宽绕过修复补丁..."
+            echo "  Unicode ..."
             apply_patch unicode_bypass_fix.patch 0
           fi
 
-          echo "📦 应用 lz4/zstd 补丁..."
+          echo "  lz4/zstd ..."
           apply_patch 001-lz4.patch 0
           apply_patch 002-zstd.patch 0
 
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-            echo "📦 应用 SUSFS 补丁..."
+            echo "  SUSFS ..."
             apply_patch 50_add_susfs_in_gki-android15-6.6.patch 0
             cp ../../kernel_patches/69_hide_stuff.patch ./
             apply_patch 69_hide_stuff.patch 3
           else
-            echo "📦 应用 MANUAL_HOOK 补丁..."
+            echo "  MANUAL_HOOK ..."
             apply_patch scope_min_manual_hooks_v1.9.patch 3
           fi
 
-          echo "📦 设置 POLLY..."
+          echo "  POLLY..."
           cp ../../kernel_patches/common/EnablePOLLY.patch ./
           apply_patch EnablePOLLY.patch 3
 
-          echo "✅ 所有补丁应用完成"
-      - name: ⚙️ Configure Kernel Options | 配置内核选项
+          echo "Done!"
+      - name: Configure Kernel Options
         run: |
           cd kernel_workspace/kernel_platform
 
-          echo "⚙️ 正在配置内核编译选项..."
+          echo " ..."
 
           DEFCONFIG_PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig"
 
           # Add KSU configuration settings
-          echo "📦 启用 KSU 支持..."
-          echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig  
-            
+          echo "  KSU ..."
+          echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
+
           if [ "${{ github.event.inputs.SUSFS }}" == "On" ]; then
-            echo "📦 启用 SUSFS 功能..."
+            echo "  SUSFS ..."
             echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -397,25 +428,25 @@ jobs:
             echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> ./common/arch/arm64/configs/gki_defconfig
-          else 
-            echo "📦 启用 MANUAL_HOOK..."
+          else
+            echo "  MANUAL_HOOK..."
             echo "CONFIG_KSU_SUSFS=n" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_KSU_MANUAL_HOOK=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
 
-          echo "📦 添加对 Mountify (backslashxx/mountify) 模块的支持"
+          echo "  Mountify (backslashxx/mountify) "
           echo "CONFIG_TMPFS_XATTR=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> ./common/arch/arm64/configs/gki_defconfig
 
 
           if [ "${{ github.event.inputs.bbg }}" == "On" ]; then
-            echo "⚡ 配置 BBG 中..."
+            echo "  BBG ..."
             echo 'CONFIG_BBG=y' >> ./common/arch/arm64/configs/gki_defconfig
             echo 'CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,integrity,selinux,smack,tomoyo,apparmor,bpf,baseband_guard"' >> ./common/arch/arm64/configs/gki_defconfig
-          fi          
+          fi
 
           if [ "${{ github.event.inputs.bbr }}" == "On" ]; then
-            echo "🌐 启用 BBR 网络算法..."
+            echo "  BBR ..."
             echo "CONFIG_TCP_CONG_ADVANCED=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_TCP_CONG_BBR=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_NET_SCH_FQ=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -423,19 +454,19 @@ jobs:
             echo "CONFIG_TCP_CONG_WESTWOOD=n" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_TCP_CONG_HTCP=n" >> ./common/arch/arm64/configs/gki_defconfig
           fi
-                 
+
           # Add O2 config
-          echo "📦 设置 O2..."
+          echo "  O2..."
           echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> ./common/arch/arm64/configs/gki_defconfig
-          
+
           # Enable POLLY in LLVM
-          echo "📦 设置 POLLY..."
+          echo "  POLLY..."
           echo "CONFIG_LLVM_POLLY=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_LD_DEAD_CODE_DATA_ELIMINATION=y" >> ./common/arch/arm64/configs/gki_defconfig
 
           if [ "${{ github.event.inputs.proxy }}" == "On" ]; then
             # Add proxy config
-            echo "📦 加入代理优化..."
+            echo " ..."
             echo "CONFIG_BPF_STREAM_PARSER=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_NETFILTER_XT_SET=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -462,28 +493,28 @@ jobs:
           fi
 
           if [ "${{ github.event.inputs.adios }}" == "On" ]; then
-            echo "📦 正在设置 ADIOS..."
+            echo "  ADIOS..."
             echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> ./common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
 
           if [ "${{ github.event.inputs.rekernel }}" == "On" ]; then
-            echo "📦 正在设置 Re-Kernel..."
+            echo "  Re-Kernel..."
             echo "CONFIG_REKERNEL=y" >> ./common/arch/arm64/configs/gki_defconfig
           fi
 
-          #跳过将uapi标准头安装到 usr/include 目录的不必要操作，节省编译时间
+          #uapi usr/include ,
           echo "CONFIG_HEADERS_INSTALL=n" >> ./common/arch/arm64/configs/gki_defconfig
 
           # Remove check_defconfig
           sed -i 's/check_defconfig//' ./common/build.config.gki
 
-          echo "✅ 内核配置更新完成"
-          
-      - name: 📦 Add build name | 添加制作名称
+          echo "Done!"
+
+      - name: Add build name
         run: |
           set -euo pipefail
-          echo "📦 设置内核版本后缀 (LOCALVERSION)..."
+          echo "  (LOCALVERSION)..."
 
           cd $GITHUB_WORKSPACE/kernel_workspace/kernel_platform/
 
@@ -501,8 +532,8 @@ jobs:
           sed -i '/^CONFIG_LOCALVERSION=/d' "$DEFCONFIG" || true
           echo "CONFIG_LOCALVERSION=\"-${SUFFIX}\"" >> "$DEFCONFIG"
 
-          echo "✅ LOCALVERSION=-${SUFFIX}"
-      - name: 📅 Set up custom BUILD_TIME | 设置自定义 BUILD_TIME
+          echo " LOCALVERSION=-${SUFFIX}"
+      - name: Set up custom BUILD_TIME
         shell: bash
         run: |
           set -euo pipefail
@@ -518,10 +549,10 @@ jobs:
           echo "KBUILD_BUILD_VERSION=1" >> "$GITHUB_ENV"
           echo "KBUILD_BUILD_USER=github-actions" >> "$GITHUB_ENV"
           echo "KBUILD_BUILD_HOST=op13" >> "$GITHUB_ENV"
-      - name: 🔨 Build Kernel | 编译内核
+      - name: Build Kernel
         run: |
           set -euo pipefail
-          echo "🏗️ 开始内核编译..."
+          echo " ..."
 
           export PATH="/usr/lib/ccache:$HOME/toolchains/neutron-clang/bin:$PATH"
           export CCACHE_DIR="${{ env.CCACHE_DIR }}"
@@ -531,25 +562,25 @@ jobs:
 
           make -j"$(nproc --all)"       LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-       CC="ccache clang" LD=ld.lld HOSTLD=ld.lld       O=out KCFLAGS+=-O2       gki_defconfig all
 
-          echo "✅ 内核编译完成"
+          echo "Done!"
           ccache -s || true
-      - name: 📦 Package Kernel | 打包内核
+      - name: Package Kernel
         run: |
           set -euo pipefail
-          echo "📦 准备AnyKernel3打包环境..."
+          echo " AnyKernel3..."
           rm -rf AnyKernel3
           git clone https://github.com/mrcxlinux/AnyKernel3 --depth=1
           rm -rf ./AnyKernel3/.git
 
           IMAGE_PATH="$(find "./kernel_workspace/kernel_platform/common/out/" -name "Image" | head -n 1 || true)"
           if [[ -z "$IMAGE_PATH" || ! -f "$IMAGE_PATH" ]]; then
-            echo "❌ 未找到 Image，请检查编译是否成功。"
+            echo "  Image,."
             exit 1
           fi
 
-          echo "✅ Image located: $IMAGE_PATH"
+          echo " Image located: $IMAGE_PATH"
           cp "$IMAGE_PATH" ./AnyKernel3/Image
-      - name: 🧠 Set Artifact Name | 设置产物名称
+      - name: Set Artifact Name
         id: set_name
         run: |
           set -euo pipefail
@@ -571,8 +602,8 @@ jobs:
           fi
 
           echo "ARTIFACT_NAME=${FINAL_NAME}" >> "$GITHUB_OUTPUT"
-          echo "✅ Artifact: ${FINAL_NAME}"
-      - name: 📦 Zip AnyKernel3 | 打包 AnyKernel3.zip
+          echo " Artifact: ${FINAL_NAME}"
+      - name: Zip AnyKernel3
         run: |
           set -euo pipefail
           ZIP_NAME="${{ steps.set_name.outputs.ARTIFACT_NAME }}.zip"
@@ -580,44 +611,44 @@ jobs:
           zip -qr "../${ZIP_NAME}" .
           cd ..
           echo "ANYKERNEL_ZIP=${ZIP_NAME}" >> "$GITHUB_ENV"
-          echo "✅ Created ${ZIP_NAME}"
+          echo " Created ${ZIP_NAME}"
 
-      - name: 📤 Upload AnyKernel3.zip | 上传 AnyKernel3.zip
+      - name: Upload AnyKernel3.zip
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.set_name.outputs.ARTIFACT_NAME }}-AnyKernel3
           path: ./${{ env.ANYKERNEL_ZIP }}
-      - name: 📝 Make ZRAM module | 制作 ZRAM 模块
+      - name: Make ZRAM module
         run: |
           set -e
-          echo "📥 正在下载 zram.zip…"
+          echo "  zram.zip..."
           curl -L "https://github.com/cctv18/oppo_oplus_realme_sm8750/raw/refs/heads/main/zram.zip" -o "$GITHUB_WORKSPACE/zram.zip"
-          
-          echo "📦 正在解压…"
+
+          echo " ..."
           unzip -q "$GITHUB_WORKSPACE/zram.zip" -d "$GITHUB_WORKSPACE/zram"
-          
-          echo "🔁 正在替换 zram.ko…"
+
+          echo "  zram.ko..."
           ZRAM_KO="./kernel_workspace/kernel_platform/common/out/drivers/block/zram/zram.ko"
           if [[ ! -f "$ZRAM_KO" ]]; then
-            echo "❌ 未找到 zram.ko：$ZRAM_KO"
+            echo "ERROR: zram.ko not found: $ZRAM_KO"
             exit 1
           fi
           find "$GITHUB_WORKSPACE/zram" -name "zram.ko" -exec cp "$ZRAM_KO" {} \;
           rm -rf $GITHUB_WORKSPACE/zram.zip
-          
-          echo "📦 正在重新打包 zip…"
+
+          echo "Repacking zip..."
           cd "$GITHUB_WORKSPACE/zram"
           zip -qr "../zram.zip" .
-          
-          echo "✅ 完成！"
 
-      - name: 📤 Upload zram.zip | 上传 zram.zip
+          echo "Done!"
+
+      - name: Upload zram.zip
         uses: actions/upload-artifact@v4
         with:
           name: zram-module-${{ steps.set_name.outputs.ARTIFACT_NAME }}.zip
           path: ./zram.zip
 
-      - name: 🚀 Create GitHub Release | 发布 Release
+      - name: Create GitHub Release
         if: ${{ github.event.inputs.make_release == 'On' }}
         uses: softprops/action-gh-release@v2
         with:
