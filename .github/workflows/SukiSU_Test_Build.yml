@@ -120,30 +120,6 @@ jobs:
     name: Build OP13 KernelSU-Next (Ultimate)
     runs-on: ubuntu-24.04
     steps:
-- name: Fix overwriter script permissions (avoid convert_configs.sh permission denied)
-  shell: bash
-  run: |
-    set -euo pipefail
-    cd kernel_workspace/kernel_platform/common
-
-    # The build runs these scripts directly (not via 'sh script'), so they MUST be executable.
-    if [[ -d "drivers/of/overwriter/overwrite_configs" ]]; then
-      echo "Found overwriter scripts; fixing permissions..."
-      chmod -R u+rx,go+rx drivers/of/overwriter/overwrite_configs || true
-      find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -print -exec chmod +x {} \; || true
-
-      # Guard against CRLF line endings
-      if command -v dos2unix >/dev/null 2>&1; then
-        find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -print -exec dos2unix {} \; || true
-      else
-        find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -print -exec sed -i 's/\r$//' {} \; || true
-      fi
-
-      ls -la drivers/of/overwriter/overwrite_configs | sed -n '1,60p' || true
-    else
-      echo "No overwriter scripts directory found; skipping."
-    fi
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -382,6 +358,15 @@ jobs:
 
           # ZRAM (LZ4/ZSTD) optional patches from mrcxlinux (best-effort).
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+          # Fix overwriter script permissions (avoid convert_configs.sh permission denied)
+          if [[ -d "drivers/of/overwriter/overwrite_configs" ]]; then
+            echo "Fixing overwriter scripts permissions..."
+            chmod -R u+rx,go+rx drivers/of/overwriter/overwrite_configs || true
+            find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -exec chmod +x {} \; || true
+            # Strip CRLF (portable)
+            find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -exec perl -pi -e 's/\\r$//' {} \\; || true
+          fi
+
           apply_patch "../mrcx_patches/zram/001-lz4.patch"
           apply_patch "../mrcx_patches/zram/002-zstd.patch"
           # If asm source exists in repo, copy it (best-effort)
@@ -449,6 +434,14 @@ jobs:
           export PATH="/usr/lib/ccache:$PATH"
 
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+          # Fix overwriter script permissions (avoid convert_configs.sh permission denied)
+          if [[ -d "drivers/of/overwriter/overwrite_configs" ]]; then
+            echo "Fixing overwriter scripts permissions..."
+            chmod -R u+rx,go+rx drivers/of/overwriter/overwrite_configs || true
+            find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -exec chmod +x {} \; || true
+            find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -exec perl -pi -e 's/\\r$//' {} \; || true
+          fi
+
           mkdir -p out
 
           # Use prebuilts shipped with the manifest when available (more compatible than system packages).
