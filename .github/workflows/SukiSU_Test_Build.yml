@@ -1,4 +1,5 @@
-name: KSU
+name: Test
+
 permissions:
   contents: write
 
@@ -675,10 +676,23 @@ jobs:
           name: OP13_${{ inputs.OP_MODEL }}_${{ inputs.ANDROID_VERSION }}_${{ inputs.KERNEL_VERSION }}_${{ inputs.KERNEL_NAME }}${{ inputs.KERNEL_SUFFIX != '' && format('-{0}', inputs.KERNEL_SUFFIX) || '' }}_KSUN-${{ inputs.KSU_REF }}_Profile-${{ inputs.PROFILE }}_O-${{ inputs.OPTIMIZE_LEVEL }}_LTO-${{ inputs.LTO }}_BBR-${{ inputs.BBR }}_LZ4ZRAM-${{ inputs.FORCE_LZ4_ZRAM }}
           path: artifacts/*
 
+      - name: Compute release metadata
+        id: relmeta
+        if: ${{ inputs.MAKE_RELEASE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.RELEASE_TAG }}" ]]; then
+            echo "tag=${{ inputs.RELEASE_TAG }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=op13-ksun-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "relname=OP13 KSUN build #${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         if: ${{ inputs.MAKE_RELEASE }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.RELEASE_TAG != '' && inputs.RELEASE_TAG || format('op13-ksun-{0}', github.run_number) }}
-          name: ${{ format('OP13 KSUN build #{0}', github.run_number) }}
+          tag_name: ${{ steps.relmeta.outputs.tag }}
+          name: ${{ steps.relmeta.outputs.relname }}
           files: artifacts/*
