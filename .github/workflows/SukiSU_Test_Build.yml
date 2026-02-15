@@ -188,27 +188,62 @@ jobs:
           repo init -u "$REPO_URL" -b "$MANIFEST_BRANCH" -m "$MANIFEST_FILE" --depth=1
           repo sync -c -j"$(nproc)" --no-tags --no-clone-bundle
 
-      - name: Setup AOSP Clang (from kernel prebuilts)
-        run: |
-          set -euo pipefail
-          # Prefer clang-r510928 (matches many OOS16/Oplus builds); fallback to newest available.
-          BASE="$GITHUB_WORKSPACE/kernel_workspace/prebuilts/clang/host/linux-x86"
-          if [ ! -d "$BASE" ]; then
-            echo "::error::Clang prebuilts not found at $BASE"
-            exit 1
-          fi
-          if [ -d "$BASE/clang-r510928" ]; then
-            CLANG_DIR="$BASE/clang-r510928"
-          else
-            CLANG_DIR="$(ls -d "$BASE"/clang-* 2>/dev/null | sort | tail -n1 || true)"
-          fi
-          if [ -z "${CLANG_DIR:-}" ] || [ ! -d "$CLANG_DIR" ]; then
-            echo "::error::No clang-* directory found in $BASE"
-            exit 1
-          fi
-          echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
-          clang --version
+      - name: Setup toolchain (auto-detect or download)
+  shell: bash
+  run: |
+    set -euo pipefail
+    echo "Selected toolchain: ${{ github.event.inputs.toolchain }}"
 
+    # 1) Prefer clang prebuilts shipped with the synced tree (paths vary across manifests)
+    CANDIDATES=(
+      "$GITHUB_WORKSPACE/kernel_workspace/prebuilts/clang/host/linux-x86/clang-r510928"
+      "$GITHUB_WORKSPACE/kernel_workspace/prebuilts/clang/host/linux-x86"
+      "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928"
+      "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86"
+      "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/prebuilts/clang/host/linux-x86/clang-r510928"
+      "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/prebuilts/clang/host/linux-x86"
+    )
+
+    FOUND=""
+    for p in "${CANDIDATES[@]}"; do
+      if [[ -x "$p/bin/clang" ]]; then
+        FOUND="$p"
+        break
+      fi
+    done
+
+    if [[ -n "$FOUND" ]]; then
+      echo "Using tree clang at: $FOUND"
+      echo "PATH=$FOUND/bin:$PATH" >> "$GITHUB_ENV"
+    else
+      echo "Tree clang prebuilts not found; downloading toolchain..."
+      mkdir -p "$HOME/toolchains"
+
+      if [[ "${{ github.event.inputs.toolchain }}" == "neutron" ]]; then
+        # Neutron clang (requires ubuntu-24.04 runner due to glibc)
+        git clone --depth=1 https://github.com/Neutron-Toolchains/clang.git "$HOME/toolchains/neutron-clang"
+        echo "PATH=$HOME/toolchains/neutron-clang/bin:$PATH" >> "$GITHUB_ENV"
+      else
+        # AOSP prebuilt clang (matches WildKernels style; pick r510928 when available)
+        git clone --depth=1 --filter=blob:none https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 "$HOME/toolchains/aosp-clang"
+        BASE="$HOME/toolchains/aosp-clang"
+        if [[ -d "$BASE/clang-r510928" ]]; then
+          CLANG_DIR="$BASE/clang-r510928"
+        else
+          CLANG_DIR="$(ls -d "$BASE"/clang-* 2>/dev/null | sort | tail -n 1 || true)"
+        fi
+        if [[ -z "${CLANG_DIR:-}" || ! -x "$CLANG_DIR/bin/clang" ]]; then
+          echo "::error::AOSP clang folder not found or clang not executable under $BASE"
+          ls -la "$BASE" || true
+          exit 1
+        fi
+        echo "Using AOSP clang at: $CLANG_DIR"
+        echo "PATH=$CLANG_DIR/bin:$PATH" >> "$GITHUB_ENV"
+      fi
+    fi
+
+    echo "clang path: $(command -v clang || true)"
+    clang --version
       - name: Setup KernelSU-Next (stable)
         run: |
           set -euo pipefail
