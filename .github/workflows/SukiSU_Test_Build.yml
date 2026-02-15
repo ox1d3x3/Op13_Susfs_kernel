@@ -92,14 +92,6 @@ env:
         description: "Custom build time (enter F to use current UTC time)"
         required: false
         default: "Thu Dec 11 04:17:27 UTC 2025"
-      manifest_branch:
-        description: "Source manifest language (use english for fully-English logs)"
-        required: true
-        type: choice
-        default: "english"
-        options:
-          - "english"
-          - "zh"
       ksunext_channel:
         description: KernelSU Next channel (stable recommended for daily use)
         required: true
@@ -233,7 +225,7 @@ jobs:
           mkdir kernel_workspace && cd kernel_workspace
 
           echo "Initializing kernel manifest..."
-          repo init -u https://github.com/mrcxlinux/actions_oplus_sm8750.git -b refs/heads/${{ github.event.inputs.manifest_branch }} -m manifest.xml --depth=1
+          repo init -u https://github.com/mrcxlinux/actions_oplus_sm8750.git -b zh -m manifest.xml --depth=1
 
           echo "Syncing repositories..."
           repo sync -c -j$(nproc --all) --no-tags --no-clone-bundle --force-sync
