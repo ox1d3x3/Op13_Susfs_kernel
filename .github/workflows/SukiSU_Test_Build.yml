@@ -5,6 +5,7 @@ env:
   TZ: UTC
   ANDROID_VERSION: android15
   KERNEL_VERSION: "6.6"
+  KERNEL_BASE_EXPECTED: "6.6.89"
   KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
 "on":
   workflow_dispatch:
@@ -92,13 +93,13 @@ env:
         required: false
         default: "Thu Dec 11 04:17:27 UTC 2025"
       manifest_branch:
-        description: Manifest branch for repo init (default zh)
+        description: "Source manifest language (use english for fully-English logs)"
         required: true
         type: choice
+        default: "english"
         options:
-          - "zh"
           - "english"
-        default: "zh"
+          - "zh"
       ksunext_channel:
         description: KernelSU Next channel (stable recommended for daily use)
         required: true
@@ -606,8 +607,8 @@ jobs:
           fi
           echo "KBUILD_BUILD_TIMESTAMP=${DATESTR}" >> "$GITHUB_ENV"
           echo "KBUILD_BUILD_VERSION=1" >> "$GITHUB_ENV"
-          echo "KBUILD_BUILD_USER=github-actions" >> "$GITHUB_ENV"
-          echo "KBUILD_BUILD_HOST=op13" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_USER=OnePlus" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_HOST=ubuntu-build" >> "$GITHUB_ENV"
 
       - name: "Preflight: toolchain sanity check"
         shell: bash
@@ -626,24 +627,110 @@ jobs:
       - name: Build Kernel
         run: |
           set -euo pipefail
-          echo " ..."
+          echo "Building kernel (KSU Next, android15 / 6.6.x)..."
 
           export PATH="/usr/lib/ccache:$HOME/toolchains/neutron-clang/bin:$PATH"
-          export CCACHE_DIR="${{ env.CCACHE_DIR }}"
           ccache -s || true
+
+          # Use the exact suffix requested (defaults to env.KERNEL_NAME)
+          SUFFIX="${{ github.event.inputs.kernel_suffix }}"
+          if [[ -z "$SUFFIX" ]]; then
+            SUFFIX="${{ env.KERNEL_NAME }}"
+          fi
+          SUFFIX="${SUFFIX// /_}"
 
           cd kernel_workspace/kernel_platform/common
+          OUT=out
 
-          make -j"$(nproc --all)"       LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-       CC="ccache clang" LD=ld.lld HOSTLD=ld.lld       O=out KCFLAGS+=-O2       gki_defconfig all
+          # Ensure stale configs can't re-enable LOCALVERSION_AUTO (prevents the dreaded trailing '+')
+          rm -f "$OUT/.config" "$OUT/include/config/kernel.release" "$OUT/include/generated/utsrelease.h" 2>/dev/null || true
 
-          echo "Done!"
+          echo "Generating gki_defconfig..."
+          make O="$OUT" LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD=ld.lld HOSTLD=ld.lld gki_defconfig
+
+          echo "Forcing exact kernel release suffix (no SCM auto versioning)..."
+          CFG="./scripts/config"
+          if [[ ! -f "$CFG" || ! -f "$OUT/.config" ]]; then
+            echo "::error::Missing scripts/config or $OUT/.config"
+            exit 1
+          fi
+
+          "$CFG" --file "$OUT/.config" --disable LOCALVERSION_AUTO || true
+          "$CFG" --file "$OUT/.config" --set-str LOCALVERSION "-${SUFFIX}"
+          make O="$OUT" LLVM=1 LLVM_IAS=1 ARCH=arm64 olddefconfig
+
+          KERNEL_RELEASE="$(make -s O="$OUT" kernelrelease)"
+          echo "KERNEL_RELEASE=$KERNEL_RELEASE" >> "$GITHUB_ENV"
+          echo "Kernel release: $KERNEL_RELEASE"
+
+          # Guard & auto-fix: '+' usually means SCM dirty suffixing and can cause vendor module vermagic mismatch / bootloops.
+          if [[ "$KERNEL_RELEASE" == *"+"* ]]; then
+            echo "::warning::KERNEL_RELEASE contains '+': $KERNEL_RELEASE"
+            echo "Attempting auto-fix: strip SCM metadata and re-evaluate kernelrelease..."
+            rm -rf .git 2>/dev/null || true
+            KERNEL_RELEASE="$(make -s O="$OUT" kernelrelease)"
+            echo "KERNEL_RELEASE=$KERNEL_RELEASE" >> "$GITHUB_ENV"
+            echo "Kernel release (after fix): $KERNEL_RELEASE"
+            if [[ "$KERNEL_RELEASE" == *"+"* ]]; then
+              echo "::error::KERNEL_RELEASE still contains '+': $KERNEL_RELEASE"
+              exit 1
+            fi
+          fi
+
+          # Sanity guard for base version (must match device kernel line)
+          if [[ "$KERNEL_RELEASE" != "${KERNEL_BASE_EXPECTED}"* ]]; then
+            echo "::error::Unexpected kernel base version (expected ${KERNEL_BASE_EXPECTED}.x): $KERNEL_RELEASE"
+            exit 1
+          fi
+
+          echo "Compiling..."
+          make -j"$(nproc --all)" O="$OUT" LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD=ld.lld HOSTLD=ld.lld KCFLAGS+=-O2 all
+
+          echo "Build completed."
           ccache -s || true
+
+      - name: Build Summary
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          echo "Creating build summary..."
+          export PATH="/usr/lib/ccache:$HOME/toolchains/neutron-clang/bin:$PATH"
+          IMAGE_PATH="$(find "./kernel_workspace/kernel_platform/common/out/" -name "Image" | head -n 1 || true)"
+          if [[ -z "$IMAGE_PATH" || ! -f "$IMAGE_PATH" ]]; then
+            echo "::warning::Image not found; skipping summary."
+            exit 0
+          fi
+
+          LINUX_LINE="$(strings -n 8 "$IMAGE_PATH" | grep -m 1 -E '^Linux version ' || true)"
+          SHA256="$(sha256sum "$IMAGE_PATH" | awk '{print $1}')"
+
+          {
+            echo "## 🎯 Kernel Build Summary"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|---|---|"
+            echo "| Model | OP13 |"
+            echo "| OS Version | OOS16 / ColorOS16 (android15) |"
+            echo "| Kernel Version | ${KERNEL_RELEASE:-} |"
+            echo "| Kernel Name (suffix) | ${KERNEL_NAME:-} |"
+            echo "| KSU Next Version | ${KSUVER:-} |"
+            echo "| KSU Next Commit | ${KSU_COMMIT:-} |"
+            echo "| SUSFS Enabled | ${{ github.event.inputs.SUSFS }} |"
+            echo "| Compiler | $(clang --version 2>/dev/null | head -n 1 || echo clang) |"
+            echo "| Image SHA256 | ${SHA256} |"
+            if [[ -n "$LINUX_LINE" ]]; then
+              echo "| Kernel Uname | ${LINUX_LINE} |"
+            fi
+            echo ""
+            echo "> Note: A trailing '+' in Kernel Version usually indicates SCM dirty suffixing and can cause vendor module vermagic mismatch / bootloops. This workflow attempts an auto-fix; if it can't remove '+', it fails the build to avoid producing a bootloop-prone kernel."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Package Kernel
         run: |
           set -euo pipefail
           echo " AnyKernel3..."
           rm -rf AnyKernel3
-          git clone https://github.com/mrcxlinux/AnyKernel3 --depth=1
+          git clone https://github.com/osm0sis/AnyKernel3 --depth=1
           rm -rf ./AnyKernel3/.git
 
           IMAGE_PATH="$(find "./kernel_workspace/kernel_platform/common/out/" -name "Image" | head -n 1 || true)"
@@ -682,6 +769,20 @@ jobs:
           set -euo pipefail
           ZIP_NAME="${{ steps.set_name.outputs.ARTIFACT_NAME }}.zip"
           cd AnyKernel3
+          # Sanity checks: recovery expects update-binary at the exact path below
+          if [[ ! -f "META-INF/com/google/android/update-binary" ]]; then
+            echo "::error::Missing META-INF/com/google/android/update-binary in AnyKernel3 template."
+            echo "Use a proper AnyKernel3 template (osm0sis/AnyKernel3 includes it) and make sure META-INF is not removed."
+            exit 1
+          fi
+          if [[ ! -f "META-INF/com/google/android/updater-script" ]]; then
+            echo "::warning::META-INF/com/google/android/updater-script is missing; some recoveries may refuse to flash."
+          fi
+          if [[ ! -f "anykernel.sh" || ! -f "Image" ]]; then
+            echo "::error::AnyKernel3 root is missing anykernel.sh or Image."
+            exit 1
+          fi
+
           zip -qr "../${ZIP_NAME}" .
           cd ..
           echo "ANYKERNEL_ZIP=${ZIP_NAME}" >> "$GITHUB_ENV"
