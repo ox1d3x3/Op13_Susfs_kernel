@@ -1,4 +1,4 @@
-name: KSU
+name: Build Greatest Kernel (OP13 GKI)
 permissions:
   contents: write
 env:
@@ -164,353 +164,43 @@ jobs:
       ROOT_SOL: ksu-next
       SUSFS_KSUN_SUPPORTED: '0'
     steps:
-    - name: 🚀 Maximize Build Space
-      uses: easimon/maximize-build-space@v9
-      with:
-        root-reserve-mb: 8192
-        temp-reserve-mb: 4096
-        remove-dotnet: 'true'
-        remove-android: 'true'
-        remove-haskell: 'true'
-        remove-codeql: 'true'
-    - name: ⚙️ Setup Cache Env
-      run: 'echo "🔧 Setting up device-isolated cache directory..."
+    -name: Terminal / PTY sanity (defconfig-level)
+    shell: bash
+    run: |
+          set -euo pipefail
+          cd "$KERNEL_DIR/common"
 
-        echo "CCACHE_DIR=$HOME/.ccache_ksun" >> $GITHUB_ENV
+          echo "---- Terminal/PTTY sanity ----"
+          # We only *warn* if a symbol isn't present in this tree; we don't want syntax errors or hard failures here.
+          # PTY support:
+          if grep -Rqs 'config PTY' Kconfig arch/*/Kconfig 2>/dev/null; then
+            echo 'CONFIG_PTY=y' >> arch/arm64/configs/gki_defconfig
+          else
+            echo "::warning::PTY symbol not present in this tree's Kconfig; skipping PTY enable."
+          fi
 
-        mkdir -p "$HOME/.ccache_ksun"
+          # DEVPTS support:
+          if grep -Rqs 'config DEVPTS_FS' Kconfig arch/*/Kconfig 2>/dev/null; then
+            echo 'CONFIG_DEVPTS_FS=y' >> arch/arm64/configs/gki_defconfig
+          else
+            echo "::warning::DEVPTS_FS symbol not present in this tree's Kconfig; skipping DEVPTS enable."
+          fi
 
-        echo "✅ Cache directory set: $HOME/.ccache_ksun"
+          # Re-run defconfig to materialize into .config (non-fatal if symbols missing)
+          mkdir -p out
+          make O=out ARCH=arm64 gki_defconfig
 
-        '
-    - name: 🔐 Configure Git
-      run: 'echo "🔧 Configuring Git user info..."
+          # Minimal verification: if symbol exists, ensure it's enabled.
+          if grep -Rqs 'config PTY' Kconfig arch/*/Kconfig 2>/dev/null; then
+            grep -q '^CONFIG_PTY=y$' out/.config || (echo "::error::PTY symbol present but not enabled in .config" && exit 2)
+          fi
+          if grep -Rqs 'config DEVPTS_FS' Kconfig arch/*/Kconfig 2>/dev/null; then
+            grep -q '^CONFIG_DEVPTS_FS=y$' out/.config || (echo "::error::DEVPTS_FS symbol present but not enabled in .config" && exit 2)
+          fi
 
-        git config --global user.name "GitHub Actions - Ox1d3x3_SUS Kernel"
+          echo "✅ PTY/devpts sanity step completed."
 
-        git config --global user.email "builder@localhost"
-
-        echo "✅ Git config complete"
-
-        '
-    - name: 🌐 Default Network Optimization
-      run: 'echo "CURL_OPTS=--retry 5 --retry-all-errors --connect-timeout 20 --max-time
-        1200" >> "$GITHUB_ENV"
-
-
-        # Make APT more resilient (retries + sane timeouts)
-
-        echo ''Acquire::Retries "5";'' | sudo tee /etc/apt/apt.conf.d/80-retries
-
-        echo ''Acquire::http::Timeout "30";'' | sudo tee -a /etc/apt/apt.conf.d/80-retries
-
-        echo ''Acquire::https::Timeout "30";'' | sudo tee -a /etc/apt/apt.conf.d/80-retries
-
-
-        # Git fetch speed + resilience
-
-        git config --global protocol.version 2
-
-        git config --global fetch.parallel 8
-
-        git config --global submodule.fetchJobs 8
-
-        git config --global http.lowSpeedLimit 1000
-
-        git config --global http.lowSpeedTime 60
-
-        git config --global core.compression 0
-
-
-        echo "✅ Default network optimizations enabled"
-
-        '
-    - name: 📦 Cache & Install Dependencies
-      uses: awalsh128/cache-apt-pkgs-action@v1.6.0
-      with:
-        packages: python3 git curl ccache libelf-dev build-essential flex bison libssl-dev
-          libncurses-dev liblz4-tool zlib1g-dev libxml2-utils rsync unzip gawk dos2unix
-          gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
-        execute_install_scripts: true
-    - name: 💾 Restore ccache (With SUSFS)
-      if: ${{ (github.event.inputs.SUSFS || 'Off') == 'On' && github.event.inputs.clean_build
-        != 'true' }}
-      uses: actions/cache@v4
-      with:
-        path: /home/runner/.ccache_ksun
-        key: ccache-${{ runner.os }}-${{ github.ref }}-ksun-SUSFS
-        restore-keys: 'ccache-${{ runner.os }}-ksun-SUSFS
-
-          ccache-${{ runner.os }}-
-
-          '
-    - name: 💾 Restore ccache (Without SUSFS)
-      if: ${{ (github.event.inputs.SUSFS || 'Off') == 'Off' }}
-      uses: actions/cache@v4
-      with:
-        path: /home/runner/.ccache_ksun
-        key: ccache-${{ runner.os }}-${{ github.ref }}-ksun-NoSUSFS
-        restore-keys: 'ccache-${{ runner.os }}-ksun-NoSUSFS
-
-          ccache-${{ runner.os }}-
-
-          '
-    - name: ⚙️ Initialize ccache
-      run: "echo \"\U0001F527 Initializing ccache...\"\n# option: clean build disables\
-        \ ccache usage\nif [ \"${{ github.event.inputs.clean_build }}\" = \"true\"\
-        \ ]; then\n  export CCACHE_DISABLE=1\n  echo \"\U0001F9FC clean_build=true\
-        \ -> CCACHE_DISABLE=1\"\nfi\nINIT_FLAG=\"$CCACHE_DIR/.ccache_initialized\"\
-        \n\nif command -v ccache >/dev/null 2>&1; then\n  if [ ! -f \"$INIT_FLAG\"\
-        \ ]; then\n    mkdir -p \"$CCACHE_DIR\"\n    ccache -M $CCACHE_MAXSIZE\n \
-        \   touch \"$INIT_FLAG\"\n    echo \"✅ ccache initialized\"\n  else\n    echo\
-        \ \"ℹ️ ccache already initialized, skipping\"\n  fi\nelse\n  echo \"⚠️ ccache\
-        \ not found, skipping initialization\"\nfi\n# Show ccache statistics\nccache\
-        \ -s\necho \"✅ ccache initialization flow complete\"\n"
-    - name: 📥 Install Repo Tool
-      run: 'echo "⬇️ Downloading repo tool..."
-
-        curl $CURL_OPTS -fsSL https://storage.googleapis.com/git-repo-downloads/repo
-        > ~/repo
-
-        chmod a+x ~/repo
-
-        sudo mv ~/repo /usr/local/bin/repo
-
-        echo "✅ repo tool installed"
-
-        '
-    - name: 📥 Install Neutron Clang Tool
-      run: 'echo "⬇️ Downloading Neutron clang tool..."
-
-        mkdir -p "$HOME/toolchains/neutron-clang"
-
-        cd "$HOME/toolchains/neutron-clang"
-
-        bash <(curl $CURL_OPTS -fsSL "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman")
-        -S
-
-        echo "✅ Neutron clang tool installed"
-
-        '
-    - name: ⬇️ Clone Kernel Source
-      run: 'mkdir -p "$GITHUB_WORKSPACE/kernel_workspace" && cd "$GITHUB_WORKSPACE/kernel_workspace"
-
-
-        echo "🌐 Initializing kernel repo..."
-
-        repo init -u https://github.com/mrcxlinux/actions_oplus_sm8750.git -b refs/heads/zh
-        -m manifest.xml --depth=1
-
-
-        echo "🔄 Syncing repos (using $(nproc --all) threads)..."
-
-        repo sync -c -j$(nproc --all) --no-tags --no-clone-bundle --force-sync
-
-
-        rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No
-        protected exports!"
-
-        rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo
-        "No protected exports!"
-
-
-        # Remove -dirty in kernel version
-
-        sed -i ''s/ -dirty//g'' kernel_platform/common/scripts/setlocalversion
-
-        sed -i ''s/ -dirty//g'' kernel_platform/msm-kernel/scripts/setlocalversion
-
-        sed -i ''s/ -dirty//g'' kernel_platform/external/dtc/scripts/setlocalversion
-
-        sed -i ''$i res=$(echo "$res" | sed ''\''''s/-dirty//g''\'''')'' kernel_platform/common/scripts/setlocalversion
-
-        sed -i ''$i res=$(echo "$res" | sed ''\''''s/-dirty//g''\'''')'' kernel_platform/msm-kernel/scripts/setlocalversion
-
-        sed -i ''$i res=$(echo "$res" | sed ''\''''s/-dirty//g''\'''')'' kernel_platform/external/dtc/scripts/setlocalversion
-
-
-        echo "✅ Kernel setup complete"
-
-        '
-    - name: ⚡ Setup Baseband-guard
-      if: ${{ github.event.inputs.bbg == 'On' }}
-      run: "set -e\ncd \"$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common\"\
-        \n\necho \"\U0001F6E0️ Setting up BBG...\"\ncurl $CURL_OPTS -fsSL https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh\
-        \ -o setup.sh\nbash setup.sh \n"
-    - name: ⚡ Integrate KernelSU Next (KSUN only)
-      run: "set -euo pipefail\n\ncd \"$GITHUB_WORKSPACE/kernel_workspace/kernel_platform\"\
-        \n\necho \"\U0001F9E9 Root: KernelSU Next only.\"\necho \"ROOT_SOL=ksu-next\"\
-        \ >> \"$GITHUB_ENV\"\n\n# If the kernel tree already contains KernelSU (common/drivers/kernelsu),\n\
-        # running setup.sh again can double-patch files and break the build.\nBUILTIN_KSU=0\n\
-        if [ -d \"./common/drivers/kernelsu\" ]; then\n  BUILTIN_KSU=1\n  echo \"\
-        ℹ️ Detected existing integration: ./common/drivers/kernelsu\"\nfi\n\nKSU_DIR=\"\
-        \"\nKSUVER=\"\"\n\nif [ \"${BUILTIN_KSU}\" = \"1\" ]; then\n  KSU_DIR=\"./common/drivers/kernelsu\"\
-        \n  KSUVER=\"builtin\"\nelse\n  cd common\n\n  CHANNEL=\"${KSU_CHANNEL:-stable}\"\
-        \n  REF=\"${KSU_REF:-}\"\n\n  echo \"\U0001F527 KernelSU Next integration:\
-        \ channel=${CHANNEL} ref=${REF:-<none>}\"\n\n  SETUP_URL=\"https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh\"\
-        \n  echo \"⬇️ Fetching KernelSU Next setup.sh ...\"\n  curl $CURL_OPTS -fsSL\
-        \ -o /tmp/ksun_setup.sh \"$SETUP_URL\"\n  test -s /tmp/ksun_setup.sh || {\
-        \ echo \"::error::Downloaded setup.sh is empty\"; exit 1; }\n  grep -q \"\
-        KernelSU\" /tmp/ksun_setup.sh || { echo \"::error::Downloaded setup.sh does\
-        \ not look like KernelSU script\"; head -n 5 /tmp/ksun_setup.sh; exit 1; }\n\
-        \n  case \"${CHANNEL}\" in\n    stable|dev|legacy)\n      bash /tmp/ksun_setup.sh\
-        \ \"${CHANNEL}\"\n      ;;\n    tag)\n      if [ -z \"${REF}\" ]; then\n \
-        \       echo \"::error::ksu_channel=tag requires ksu_ref (tag/commit), e.g.\
-        \ v3.0.0\"\n        exit 1\n      fi\n      bash /tmp/ksun_setup.sh \"${REF}\"\
-        \n      ;;\n    *)\n      echo \"::error::Unknown ksu_channel='${CHANNEL}'.\
-        \ Use stable/dev/legacy/tag\"\n      exit 1\n      ;;\n  esac\n\n  # Prefer\
-        \ locating the KernelSU Next directory under common\n  if [ -d \"./KernelSU-Next\"\
-        \ ]; then\n    KSU_DIR=\"$(pwd)/KernelSU-Next\"\n  elif [ -d \"./KernelSU\"\
-        \ ]; then\n    # Some setups may name it KernelSU; keep it for safety\n  \
-        \  KSU_DIR=\"$(pwd)/KernelSU\"\n  else\n    # Best-effort search\n    KSU_DIR=\"\
-        $(find . -maxdepth 4 -type d -name 'KernelSU-Next' -o -name 'KernelSU' | head\
-        \ -n 1 || true)\"\n    [ -n \"${KSU_DIR}\" ] && KSU_DIR=\"$(pwd)/${KSU_DIR#./}\"\
-        \n  fi\n\n  cd ..\nfi\n\necho \"KSU_DIR=${KSU_DIR}\" >> \"$GITHUB_ENV\"\n\n\
-        if [ -n \"${KSUVER}\" ]; then\n  echo \"KSUVER=${KSUVER}\" >> \"$GITHUB_ENV\"\
-        \nelif [ -n \"${KSU_DIR}\" ] && [ -d \"${KSU_DIR}/.git\" ]; then\n  echo \"\
-        KSUN repo HEAD: $(git -C \"${KSU_DIR}\" rev-parse --short=12 HEAD)\"\n  KSUVER=\"\
-        $(git -C \"${KSU_DIR}\" describe --tags --always --dirty 2>/dev/null || git\
-        \ -C \"${KSU_DIR}\" rev-parse --short=12 HEAD)\"\n  echo \"KSUVER=${KSUVER}\"\
-        \ >> \"$GITHUB_ENV\"\nelse\n  echo \"KSUVER=patched\" >> \"$GITHUB_ENV\"\n\
-        fi\n\ncd \"$GITHUB_WORKSPACE/kernel_workspace\"\n"
-    - name: ⚙️ Configure Kernel Options
-      run: "set -e\ncd \"$GITHUB_WORKSPACE/kernel_workspace/kernel_platform\"\n\n\
-        echo \"⚙️ Configuring kernel build options (stable + daily balanced)...\"\n\
-        DEFCONFIG=\"./common/arch/arm64/configs/gki_defconfig\"\nif [ ! -f \"$DEFCONFIG\"\
-        \ ]; then\n  echo \"❌ gki_defconfig not found: $DEFCONFIG\"\n  exit 1\nfi\n\
-        \n# Idempotent defconfig writer (prevents duplicate overrides / reassign warnings)\n\
-        defcfg_set() {\n  local key=\"$1\"\n  local val=\"$2\"\n  # Remove old value\
-        \ and '# ... is not set'\n  sed -i -E \"/^CONFIG_${key}=.*/d;/^# CONFIG_${key}\
-        \ is not set/d\" \"$DEFCONFIG\" || true\n  if [ \"$val\" = \"y\" ] || [ \"\
-        $val\" = \"m\" ]; then\n    echo \"CONFIG_${key}=${val}\" >> \"$DEFCONFIG\"\
-        \n  elif [ \"$val\" = \"n\" ]; then\n    echo \"# CONFIG_${key} is not set\"\
-        \ >> \"$DEFCONFIG\"\n  else\n    # String values must be passed with quotes,\
-        \ e.g. '\"bbr\"'\n    echo \"CONFIG_${key}=${val}\" >> \"$DEFCONFIG\"\n  fi\n\
-        }\n\necho \"\U0001F4E6 Enabling KernelSU Next (KSUN)...\" \ndefcfg_set KSU\
-        \ y\n\n\n# Useful for debugging user reports (\"what config did you ship?\"\
-        )\ndefcfg_set IKCONFIG y\ndefcfg_set IKCONFIG_PROC y\n\n# Terminal/PTTY safety\
-        \ (prevents terminal apps failing/crashing on some builds)\n# Terminals rely\
-        \ on UNIX98 PTYs + devpts (/dev/ptmx). Some trees also expose LEGACY_PTYS\
-        \ or PTY.\ndefcfg_set TTY y\ndefcfg_set UNIX98_PTYS y\n\n# Only set PTY/LEGACY_PTYS\
-        \ if this tree actually defines them (avoid unknown-symbol noise)\nif grep\
-        \ -Rqs --include='Kconfig*' '^\\s*config\\s\\+PTY\\b' ./common; then\n  defcfg_set\
-        \ PTY y\nelif grep -Rqs --include='Kconfig*' '^\\s*config\\s\\+LEGACY_PTYS\\\
-        b' ./common; then\n  # Not required for Termux, but harmless\n  defcfg_set\
-        \ LEGACY_PTYS y\nfi\n\n# DEVPTS symbol detection (fallback if tree differs)\n\
-        if grep -Rqs --include='Kconfig*' '^\\s*config\\s\\+DEVPTS_FS\\b' ./common;\
-        \ then\n  defcfg_set DEVPTS_FS y\n  defcfg_set DEVPTS_MULTIPLE_INSTANCES y\n\
-        elif grep -Rqs --include='Kconfig*' '^\\s*config\\s\\+DEVPTS\\b' ./common;\
-        \ then\n  defcfg_set DEVPTS y\nelse\n  echo \"⚠️ DEVPTS config symbol not\
-        \ found in Kconfig (tree-specific). Skipping explicit DEVPTS enable.\"\nfi\n\
-        \n# Root hooks\nif [ \"${ROOT_SOL}\" = \"none\" ]; then\n  echo \"\U0001F4E6\
-        \ Root disabled → disabling KernelSU hooks\"\n  defcfg_set KSU_MANUAL_HOOK\
-        \ n\nelse\n  echo \"\U0001F4E6 Enabling KernelSU manual hook (no SUSFS features)\"\
-        \n  defcfg_set KSU_MANUAL_HOOK y\nfi\n\ndefcfg_try_set() {\n  local key=\"\
-        $1\"\n  local val=\"$2\"\n  if grep -Rqs --include='Kconfig*' \"^\\s*config\\\
-        s\\+${key}\\b\" ./common; then\n    defcfg_set \"${key}\" \"${val}\"\n  fi\n\
-        }\n\n# Optional: keep a sane default TCP congestion control if user didn't\
-        \ enable BBR\nif [ \"$BBR\" != \"On\" ]; then\n  # Ensure CUBIC exists (nearly\
-        \ universal)\n  defcfg_set TCP_CONG_CUBIC y\nfi\n\n\n# Polly is great for\
-        \ benchmark builds, but can cause rare miscompiles; keep it for \"highest\"\
-        \ only.\nif [ \"$PROFILE\" = \"highest\" ]; then\n  defcfg_set LLVM_POLLY\
-        \ y\nelse\n  defcfg_set LLVM_POLLY n\nfi\n\n# Optional BBR (mostly for Wi-Fi/5G\
-        \ throughput tests; can be negative for daily use)\nif [ \"$BBR\" = \"On\"\
-        \ ]; then\n  echo \"\U0001F4F6 Enabling BBR...\"\n  defcfg_set TCP_CONG_CUBIC\
-        \ y\n  defcfg_set TCP_CONG_BBR y\n  defcfg_set DEFAULT_BBR y\n  defcfg_set\
-        \ DEFAULT_TCP_CONG '\"bbr\"'\nfi\n\n# Optional BBG (safe-mode) — auto-detect\
-        \ symbol + LSM name and patch defconfig cleanly\nif [ \"$BBG\" = \"On\" ];\
-        \ then\n  echo \"\U0001F6E1️ Configuring BBG (Baseband Guard) — safe mode...\"\
-        \n  python3 - <<'PY'\nfrom pathlib import Path\nimport os, re\n\nws = Path(os.environ[\"\
-        GITHUB_WORKSPACE\"])\ndefconfig = ws / \"kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig\"\
-        \ncommon_root = defconfig.parents[3] # .../kernel_platform/common\nsecurity_dir\
-        \ = common_root / \"security\"\n\ndef read_text(p: Path) -> str:\n    try:\n\
-        \        return p.read_text(errors=\"ignore\")\n    except Exception:\n  \
-        \      return \"\"\n\ndef ensure_cfg(lines, key, val):\n    out = []\n   \
-        \ for l in lines:\n        if l.startswith(f\"CONFIG_{key}=\") or l.startswith(f\"\
-        # CONFIG_{key} is not set\"):\n            continue\n        out.append(l)\n\
-        \    if val in (\"y\", \"m\", \"n\"):\n        if val == \"n\":\n        \
-        \    out.append(f\"# CONFIG_{key} is not set\")\n        else:\n         \
-        \   out.append(f\"CONFIG_{key}={val}\")\n    else:\n        out.append(f\"\
-        CONFIG_{key}=\" + val)\n    return out\n\n# detect BBG config symbol (varies\
-        \ by patch)\ncandidates = [\"BBG\", \"SECURITY_BASEBAND_GUARD\", \"BASEBAND_GUARD\"\
-        ]\nfound_syms = set()\nif security_dir.exists():\n    for kcfg in security_dir.rglob(\"\
-        Kconfig\"):\n        txt = read_text(kcfg)\n        for sym in candidates:\n\
-        \            if re.search(rf\"^\\s*config\\s+{re.escape(sym)}\\b\", txt, flags=re.M):\n\
-        \                found_syms.add(sym)\nbbg_sym = next((s for s in candidates\
-        \ if s in found_syms), \"BBG\")\n\n# detect LSM name (string must match DEFINE_LSM(<name>))\n\
-        lsm_name = None\nif security_dir.exists():\n    for cfile in security_dir.rglob(\"\
-        *.c\"):\n        txt = read_text(cfile)\n        for name in re.findall(r\"\
-        DEFINE_LSM\\(\\s*([A-Za-z0-9_]+)\\s*\\)\", txt):\n            if \"baseband\"\
-        \ in name.lower() or name.lower() == \"bbg\" or name.lower().startswith(\"\
-        bbg_\"):\n                lsm_name = name\n                break\n       \
-        \ if lsm_name:\n            break\nif not lsm_name:\n    lsm_name = \"baseband_guard\"\
-        \n\nlines = defconfig.read_text(errors=\"ignore\").splitlines()\nlines = ensure_cfg(lines,\
-        \ \"SECURITY\", \"y\")\nlines = ensure_cfg(lines, \"SECURITYFS\", \"y\")\n\
-        lines = ensure_cfg(lines, bbg_sym, \"y\")\n\n# Update CONFIG_LSM ordering:\
-        \ insert after selinux, keep de-dup\nlsm_vals = []\nfor l in lines:\n    if\
-        \ l.startswith('CONFIG_LSM=\"'):\n        m = re.match(r'CONFIG_LSM=\"([^\"\
-        ]*)\"', l)\n        if m:\n            lsm_vals = [x.strip() for x in m.group(1).split(',')\
-        \ if x.strip()]\nif not lsm_vals:\n    lsm_vals = [\"landlock\",\"lockdown\"\
-        ,\"yama\",\"integrity\",\"selinux\",\"bpf\"]\nseen=set(); dedup=[]\nfor x\
-        \ in lsm_vals:\n    if x not in seen:\n        dedup.append(x); seen.add(x)\n\
-        lsm_vals = dedup\nif lsm_name not in lsm_vals:\n    if \"selinux\" in lsm_vals:\n\
-        \        lsm_vals.insert(lsm_vals.index(\"selinux\")+1, lsm_name)\n    else:\n\
-        \        lsm_vals.append(lsm_name)\nif \"selinux\" in lsm_vals and lsm_name\
-        \ in lsm_vals and lsm_vals.index(lsm_name) < lsm_vals.index(\"selinux\"):\n\
-        \    lsm_vals.remove(lsm_name)\n    lsm_vals.insert(lsm_vals.index(\"selinux\"\
-        )+1, lsm_name)\nlsm_line = 'CONFIG_LSM=\"' + ','.join(lsm_vals) + '\"'\nlines\
-        \ = [l for l in lines if not l.startswith('CONFIG_LSM=\"')]\nlines.append(lsm_line)\n\
-        \n# Safe-mode: disable BBG_* options that can break SELinux transitions\n\
-        symbols=set()\nif security_dir.exists():\n    for kcfg in security_dir.rglob(\"\
-        Kconfig\"):\n        txt = read_text(kcfg)\n        for sym in re.findall(r\"\
-        ^\\s*config\\s+(BBG_[A-Za-z0-9_]+)\\b\", txt, flags=re.M):\n            symbols.add(sym)\n\
-        susp = sorted([s for s in symbols if re.search(r\"(SELINUX|DOMAIN|TRANSITION|CONTEXT|TRUST)\"\
-        , s)])\nfor sym in susp:\n    lines = ensure_cfg(lines, sym, \"n\")\n\ndefconfig.write_text(\"\
-        \\n\".join(lines).rstrip()+\"\\n\")\nprint('BBG enabled symbol :', bbg_sym)\n\
-        print('BBG LSM name :', lsm_name)\nprint('CONFIG_LSM :', lsm_line)\nPY\nfi\n\
-        \necho \"✅ Kernel config options updated\"\necho \"---- Tail of gki_defconfig\
-        \ (last 80) ----\"\ntail -n 80 \"$DEFCONFIG\" || true\n"
-    - name: ⚠️ SUSFS note
-      if: ${{ inputs.SUSFS == 'On' }}
-      run: echo "::warning::SUSFS was requested, but this workflow intentionally does
-        not enable SUSFS/stealth filesystem features. Building with KernelSU Next
-        only."
-    - name: 🔎 Verify KSU/SUSFS config (pre-build)
-      run: "\nset -e\n\ncd \"$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common\"\
-        \n\n\n# Generate .config from gki_defconfig so we can verify the effective\
-        \ settings\n\nmake O=out ARCH=arm64 gki_defconfig\n\n\n\ngrep -nE '^CONFIG_KSU(=|_)|^CONFIG_KPM(=|_)|^CONFIG_KSU_SUSFS(=|_)'\
-        \ out/.config || true # Terminal apps sanity (PTY/devpts)\necho \"---- Terminal/PTTY\
-        \ sanity ----\"\n\nmust_y() {\n  local sym=\"$1\"\n  if ! grep -q \"^${sym}=y\"\
-        \ out/.config; then\n    echo \"❌ Missing ${sym}=y in out/.config — terminal\
-        \ emulators may crash or fail to start.\"\n    exit 1\n  fi\n}\n\nmust_y CONFIG_TTY\n\
-        # CONFIG_PTY is not present on all trees; only enforce if it exists.\nif grep\
-        \ -q \"^CONFIG_PTY=\" out/.config; then\n  must_y CONFIG_PTY\nfi\nmust_y CONFIG_UNIX98_PTYS\n\
-        \n# DEVPTS symbol may differ by tree; validate if present/known\nif grep -q\
-        \ \"^CONFIG_DEVPTS_FS=\" out/.config; then\n  must_y CONFIG_DEVPTS_FS\n  if\
-        \ grep -q \"^CONFIG_DEVPTS_MULTIPLE_INSTANCES=\" out/.config; then\n    must_y\
-        \ CONFIG_DEVPTS_MULTIPLE_INSTANCES\n  fi\nelif grep -q \"^CONFIG_DEVPTS=\"\
-        \ out/.config; then\n  must_y CONFIG_DEVPTS\nelse\n  # If the symbol exists\
-        \ in Kconfig but isn't in .config, that's a real issue.\n  if grep -Rqs --include='Kconfig*'\
-        \ '^\\s*config\\s\\+DEVPTS_FS\\b' .; then\n    echo \"❌ Kconfig contains DEVPTS_FS\
-        \ but it didn't land in out/.config. Check dependencies (PTY/UNIX98_PTYS)\
-        \ and defconfig edits.\"\n    exit 1\n  elif grep -Rqs --include='Kconfig*'\
-        \ '^\\s*config\\s\\+DEVPTS\\b' .; then\n    echo \"❌ Kconfig contains DEVPTS\
-        \ but it didn't land in out/.config. Check dependencies and defconfig edits.\"\
-        \n    exit 1\n  else\n    echo \"⚠️ DEVPTS symbol not present in this tree's\
-        \ Kconfig; skipping strict DEVPTS check.\"\n  fi\nfi\n\necho \"✅ PTY/devpts\
-        \ OK\"\n\nfi\n\n\necho \"---- LZ4 sanity ----\"\n\nif [ -f lib/lz4/lz4armv8/lz4armv8.S\
-        \ ]; then\n  echo \"✅ Found lib/lz4/lz4armv8/lz4armv8.S\"\nelse\n  echo \"\
-        ::warning::Missing lib/lz4/lz4armv8/lz4armv8.S (this tree references arm64\
-        \ asm LZ4).\"\n  echo \"::warning::Auto-disabling arm64 asm LZ4 and falling\
-        \ back to generic C implementation.\"\n  # Remove lz4armv8 references from\
-        \ Kbuild/Makefile if present (best-effort)\n  for f in lib/lz4/Makefile lib/lz4/Kbuild\
-        \ lib/lz4/Kconfig lib/Makefile; do\n    if [ -f \"$f\" ]; then\n      sed\
-        \ -i '/lz4armv8/d' \"$f\"\n    fi\n  done\n\n  if grep -RIn 'lz4armv8' lib\
-        \ >/dev/null 2>&1; then\n    echo \"::error::Still found lz4armv8 references\
-        \ after patch; showing first 30 lines:\"\n    grep -RIn --max-count=30 'lz4armv8'\
-        \ lib || true\n    exit 1\n  fi\n\n  echo \"✅ lz4armv8 references removed;\
-        \ build will proceed.\"\nfi\n"
-    - name: 🏷️ Set Kernel Localversion (stable)
+      - name: 🏷️ Set Kernel Localversion (stable)
       shell: bash
       run: "set -euo pipefail\ncd \"$GITHUB_WORKSPACE/kernel_workspace/kernel_platform\"\
         \n\nDEFCONFIG=\"$PWD/common/arch/arm64/configs/gki_defconfig\"\nif [ ! -f\
@@ -533,9 +223,9 @@ jobs:
         , lv)\n\ndefconfig.write_text(\"\\n\".join(lines) + \"\\n\")\nprint(\"Patched:\"\
         , defconfig)\nPY\n\necho \"---- localversion lines (tail) ----\"\ntail -n\
         \ 60 \"$DEFCONFIG\" | grep -E \"LOCALVERSION\" || true\n"
-    - name: 📅 Set up custom BUILD_TIME
-      shell: bash
-      run: "INPUT_TIME=\"${{ github.event.inputs.BUILD_TIME }}\"\nif [[ -n \"$INPUT_TIME\"\
+    -name: 📅 Set up custom BUILD_TIME
+    shell: bash
+    run: "INPUT_TIME=\"${{ github.event.inputs.BUILD_TIME }}\"\nif [[ -n \"$INPUT_TIME\"\
         \ && \"$INPUT_TIME\" != \"F\" && \"$INPUT_TIME\" != \"f\" ]]; then\n  DATESTR=\"\
         $INPUT_TIME\"\n  echo \"Using input BUILD_TIME: $DATESTR\"\nelse\n  DATESTR=\"\
         $(TZ='Australia/Perth' date +'%a %b %d %T %Z %Y')\"\n  echo \"Using Perth\
@@ -549,10 +239,10 @@ jobs:
         \     perl -0777 -pi -e \"s{cat <<EOF}{cat <<EOF\\n#undef UTS_VERSION\\n#define\
         \ UTS_VERSION \\\"#1 SMP PREEMPT $DATESTR\\\" } unless /UTS_VERSION/\" \"\
         $f\"\n    fi\n  fi\ndone\n"
-    - name: 🧩 Fix missing lz4armv8 (if needed)
-      if: ${{ github.event.inputs.LZ4 == 'On' }}
-      shell: bash
-      run: "set -euo pipefail\ncd \"$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common\"\
+    -name: 🧩 Fix missing lz4armv8 (if needed)
+    if: ${{ github.event.inputs.LZ4 == 'On' }}
+    shell: bash
+    run: "set -euo pipefail\ncd \"$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common\"\
         \n\nNEED_DIR=\"lib/lz4/lz4armv8\"\nASM=\"$NEED_DIR/lz4armv8.S\"\nHDR=\"$NEED_DIR/lz4armv8.h\"\
         \n\nif [ -f \"$ASM\" ] && [ -f \"$HDR\" ]; then\n  echo \"✅ lz4armv8 sources\
         \ present\"\n  exit 0\nfi\n\necho \"⚠️ lz4armv8 sources missing — attempting\
@@ -560,8 +250,8 @@ jobs:
         \ \"https://raw.githubusercontent.com/torvalds/linux/v6.6/lib/lz4/lz4armv8/lz4armv8.S\"\
         \ncurl -fsSL -o \"$HDR\" \"https://raw.githubusercontent.com/torvalds/linux/v6.6/lib/lz4/lz4armv8/lz4armv8.h\"\
         \n\ntest -s \"$ASM\" && test -s \"$HDR\"\necho \"✅ Restored $ASM and $HDR\""
-    - name: 🗜️ Default ZRAM compression to LZ4
-      run: "set -e\necho \"\U0001F5DC️ Forcing ZRAM default compressor to LZ4 (kernel-side\
+    -name: 🗜️ Default ZRAM compression to LZ4
+    run: "set -e\necho \"\U0001F5DC️ Forcing ZRAM default compressor to LZ4 (kernel-side\
         \ default)...\"\nDEFCONFIG=\"$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig\"\
         \nif [ ! -f \"$DEFCONFIG\" ]; then\n  echo \"❌ gki_defconfig not found at\
         \ $DEFCONFIG\"\n  exit 1\nfi\n\n# Remove any previous defaults to avoid conflicts/duplicates\n\
@@ -580,8 +270,8 @@ jobs:
         grep -E '^(CONFIG_ZRAM_DEF_COMP|CONFIG_(LZ4|RD_LZ4|DECOMPRESS_LZ4))' \"$DEFCONFIG\"\
         \ | tail -n 50 || true\n"
       if: ${{ github.event.inputs.LZ4 == 'On' }}
-    - name: 🔨 Build Kernel
-      run: "set -euo pipefail\n\necho \"\U0001F3D7️ Starting kernel build...\"\n\n\
+    -name: 🔨 Build Kernel
+    run: "set -euo pipefail\n\necho \"\U0001F3D7️ Starting kernel build...\"\n\n\
         # Prefer in-tree clang if available (matches Android kernel manifests),\n\
         # otherwise fall back to Neutron clang installed via antman.\nIN_TREE_CLANG=\"\
         $GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-stable\"\
