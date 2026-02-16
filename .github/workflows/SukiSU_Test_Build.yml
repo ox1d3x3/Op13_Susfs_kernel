@@ -1,610 +1,515 @@
-name: OP13 KernelSU-Next
+name: OP13 KernelSU Next
 
-env:
-  TZ: UTC
-  ANDROID_VERSION: android15
-  KERNEL_VERSION: "6.6"  # label (major.minor). Actual release (e.g. 6.6.89) is detected at build time.
-  KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
-
-on:
+'on':
   workflow_dispatch:
     inputs:
-      SUSFS:
-        description: "Enable SUSFS (recommended for module compatibility)"
+      toolchain:
+        description: 'Toolchain (recommended: aosp_prebuilt)'
         required: true
+        default: aosp_prebuilt
         type: choice
-        options: ["On", "Off"]
-        default: "On"
+        options:
+          - aosp_prebuilt
+          - neutron_clang
 
-      ksunext_multimanager:
-        description: "Enable KernelSU-Next Multi-Manager support patch (skip if it does not apply cleanly)"
+      susfs:
+        description: 'Enable SUSFS (adds kernel hooks; may reduce compatibility)'
         required: true
-        type: choice
-        options: ["On", "Off"]
-        default: "Off"
+        default: false
+        type: boolean
 
-      hmbird:
-        description: "Enable OnePlus HMBIRD patches (WildKernels)"
+      enable_multimanager:
+        description: 'Apply KernelSU Next Multi-Manager patch (best-effort)'
         required: true
-        type: choice
-        options: ["On", "Off"]
-        default: "On"
+        default: false
+        type: boolean
 
-      ttl:
-        description: "Enable netfilter TTL target (WildKernels)"
+      enable_hmbird:
+        description: 'Enable HMBIRD scheduler/overwriter patches (best-effort)'
         required: true
-        type: choice
-        options: ["On", "Off"]
-        default: "On"
+        default: true
+        type: boolean
 
-      ipset:
-        description: "Enable IP_SET + xt_set (WildKernels)"
+      enable_ttl:
+        description: 'Enable TTL target support (CONFIG_NETFILTER_XT_TARGET_TTL)'
         required: true
-        type: choice
-        options: ["On", "Off"]
-        default: "On"
+        default: true
+        type: boolean
 
-      bbg:
-        description: "Enable Baseband Guard (BBG)"
+      enable_ipset:
+        description: 'Enable IPSET support (CONFIG_IP_SET)'
         required: true
-        type: choice
-        options: ["On", "Off"]
-        default: "On"
+        default: true
+        type: boolean
 
-      bbr:
-        description: "Enable TCP BBR congestion control (usually no benefit on mobile)"
+      enable_bbr:
+        description: 'Enable BBR congestion control (CONFIG_TCP_CONG_BBR)'
         required: true
-        type: choice
-        options: ["On", "Off"]
-        default: "Off"
+        default: false
+        type: boolean
 
-      adios:
-        description: "Enable ADIOS I/O scheduler (optional)"
+      enable_zram_lz4:
+        description: 'Enable ZRAM LZ4 patch (best-effort)'
         required: true
-        type: choice
-        options: ["On", "Off"]
-        default: "On"
+        default: true
+        type: boolean
 
-      rekernel:
-        description: "Enable ReKernel support (optional)"
+      enable_zram_zstd:
+        description: 'Enable ZRAM ZSTD patch (best-effort)'
         required: true
-        type: choice
-        options: ["On", "Off"]
-        default: "Off"
-
-      proxy:
-        description: "Enable proxy/networking helpers (includes extra netfilter options)"
-        required: true
-        type: choice
-        options: ["On", "Off"]
-        default: "Off"
-
-      UNICODE_BYPASS:
-        description: "Enable Unicode Bypass patches (optional)"
-        required: true
-        type: choice
-        options: ["On", "Off"]
-        default: "Off"
+        default: false
+        type: boolean
 
       kernel_suffix:
-        description: "Kernel localversion suffix (e.g. OP-WILD, OP-OX)"
+        description: 'Kernel local version suffix appended to 6.6.89- (no leading ''-'')'
         required: true
+        default: android15-8-g29d86c5fc9dd-abogki428889875-4k
         type: string
-        default: "OP-OX"
 
-      BUILD_TIME:
-        description: "Build timestamp. Use 'auto' for commit-time (recommended), or provide: 'Fri Jan 23 13:09:51 UTC 2026'"
+      build_user:
+        description: 'KBUILD_BUILD_USER (use ''OnePlus'' to mimic stock style)'
         required: true
+        default: OnePlus
         type: string
-        default: "auto"
 
-      MAKE_RELEASE:
-        description: "Create a GitHub Release with the flashable zip (recommended; avoids nested artifact zip issues)"
+      build_host:
+        description: 'KBUILD_BUILD_HOST (use ''ubuntu-build'' to mimic stock style)'
         required: true
-        type: choice
-        options: ["On", "Off"]
-        default: "On"
+        default: ubuntu-build
+        type: string
 
-      toolchain:
-        description: "Toolchain to use when clang prebuilts are missing from the synced tree"
+      build_timestamp:
+        description: 'KBUILD_BUILD_TIMESTAMP. Leave empty for current UTC. Example: ''Fri Jan 23 13:09:51 UTC 2026'''
+        required: false
+        default: ''
+        type: string
+
+      publish_release:
+        description: 'Publish a GitHub Release asset (avoids artifact zip-in-zip confusion)'
         required: true
-        type: choice
-        options: ["aosp", "neutron"]
-        default: "aosp"
+        default: true
+        type: boolean
 
 permissions:
   contents: write
 
+env:
+  TZ: UTC
+  ANDROID_VERSION: android15
+  KERNEL_VERSION: '6.6'
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_COMPRESS: 'true'
+  CCACHE_COMPRESSLEVEL: '6'
+  CCACHE_MAXSIZE: 8G
+  GIT_TERMINAL_PROMPT: '0'
+
 jobs:
   build:
-    name: Build OP13 KernelSU-Next (Ultimate)
     runs-on: ubuntu-24.04
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Maximize build space
-        run: |
-          set -euo pipefail
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
-          sudo apt-get clean || true
-          df -h
+        uses: easimon/maximize-build-space@v10
+        with:
+          root-reserve-mb: 20480
+          swap-size-mb: 4096
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
 
       - name: Install build dependencies
+        shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
+          sudo apt-get update -y
           sudo apt-get install -y \
-            bc bison build-essential ccache curl flex g++ gcc git gperf \
-            libelf-dev libssl-dev lld llvm make ninja-build \
-            python3 python3-pip rsync unzip wget zip \
-            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-            zstd \
-            ca-certificates \
-            gnupg \
-            jq
-          sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 1
+            bc bison build-essential ca-certificates clang curl flex gawk git gnupg gperf \
+            jq libelf-dev libssl-dev lld llvm lz4 make ninja-build openssl \
+            patch python3 python3-pip python3-setuptools rsync unzip wget zip zstd \
+            libncurses-dev pkg-config ccache
 
-      - name: Setup repo tool
+          # repo tool
+          sudo curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o /usr/local/bin/repo
+          sudo chmod +x /usr/local/bin/repo
+
+      - name: Configure build identity (mimic stock)
+        shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/bin"
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
-          chmod +x "$HOME/bin/repo"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
+          echo "KBUILD_BUILD_USER=${{ github.event.inputs.build_user }}" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_HOST=${{ github.event.inputs.build_host }}" >> "$GITHUB_ENV"
 
-      - name: Setup ccache
+          if [ -n "${{ github.event.inputs.build_timestamp }}" ]; then
+            echo "KBUILD_BUILD_TIMESTAMP=${{ github.event.inputs.build_timestamp }}" >> "$GITHUB_ENV"
+            echo "Using custom build timestamp: ${{ github.event.inputs.build_timestamp }}"
+          else
+            echo "KBUILD_BUILD_TIMESTAMP=$(date -u '+%a %b %d %H:%M:%S UTC %Y')" >> "$GITHUB_ENV"
+            echo "Using current UTC build timestamp."
+          fi
+
+      - name: Initialize & sync kernel source (mrcxlinux manifest)
+        shell: bash
         run: |
           set -euo pipefail
-          echo "CCACHE_DIR=$GITHUB_WORKSPACE/.ccache" >> "$GITHUB_ENV"
-          echo "CCACHE_COMPRESS=true" >> "$GITHUB_ENV"
-          echo "CCACHE_COMPRESSLEVEL=6" >> "$GITHUB_ENV"
-          echo "CCACHE_MAXSIZE=8G" >> "$GITHUB_ENV"
-          mkdir -p "$GITHUB_WORKSPACE/.ccache"
-          ccache -M 8G
-          ccache -z || true
-
-      - name: Clone kernel source (manifest)
-        run: |
-          set -euo pipefail
-
           mkdir -p kernel_workspace
           cd kernel_workspace
 
-          REPO_URL="https://github.com/mrcxlinux/actions_oplus_sm8750.git"
-          MANIFEST_FILE="manifest.xml"
+          echo "Initializing kernel manifest..."
+          # NOTE: manifest.xml is hosted on the 'zh' branch of mrcxlinux/actions_oplus_sm8750.
+          repo init -u https://github.com/mrcxlinux/actions_oplus_sm8750.git -b zh -m manifest.xml --depth=1
 
-          # The 'english' branch currently doesn't ship manifest.xml, so we auto-select a branch that contains it.
-          pick_manifest_branch() {
-            for b in english zh main master; do
-              if curl -fsSL "https://raw.githubusercontent.com/mrcxlinux/actions_oplus_sm8750/${b}/${MANIFEST_FILE}" -o /dev/null; then
-                echo "$b"
-                return 0
-              fi
-            done
-            return 1
-          }
+          echo "Syncing kernel source..."
+          repo sync -c -j"$(nproc)" --no-tags --no-clone-bundle --force-sync
 
-          MANIFEST_BRANCH="$(pick_manifest_branch)"
-          if [ -z "${MANIFEST_BRANCH:-}" ]; then
-            echo "::error::manifest.xml not found on any known branch of mrcxlinux/actions_oplus_sm8750"
-            exit 1
-          fi
+          test -d kernel_platform/common || (echo "Error: kernel_platform/common not found after sync." && exit 1)
 
-          echo "Using manifest branch: ${MANIFEST_BRANCH}"
-          repo init -u "$REPO_URL" -b "$MANIFEST_BRANCH" -m "$MANIFEST_FILE" --depth=1
-          repo sync -c -j"$(nproc)" --no-tags --no-clone-bundle
-
-      - name: Setup toolchain (auto-detect or download)
+      - name: Select toolchain
         shell: bash
         run: |
           set -euo pipefail
           echo "Selected toolchain: ${{ github.event.inputs.toolchain }}"
-          
-          # 1) Prefer clang prebuilts shipped with the synced tree (paths vary across manifests)
-          CANDIDATES=(
-          "$GITHUB_WORKSPACE/kernel_workspace/prebuilts/clang/host/linux-x86/clang-r510928"
-          "$GITHUB_WORKSPACE/kernel_workspace/prebuilts/clang/host/linux-x86"
-          "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928"
-          "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86"
-          "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/prebuilts/clang/host/linux-x86/clang-r510928"
-          "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/prebuilts/clang/host/linux-x86"
-          )
-          
-          FOUND=""
-          for p in "${CANDIDATES[@]}"; do
-          if [[ -x "$p/bin/clang" ]]; then
-          FOUND="$p"
-          break
-          fi
-          done
-          
-          if [[ -n "$FOUND" ]]; then
-          echo "Using tree clang at: $FOUND"
-          echo "PATH=$FOUND/bin:$PATH" >> "$GITHUB_ENV"
+          cd kernel_workspace
+
+          if [ "${{ github.event.inputs.toolchain }}" = "aosp_prebuilt" ]; then
+            CANDIDATES=(
+              "$GITHUB_WORKSPACE/kernel_workspace/prebuilts/clang/host/linux-x86/clang-r510928/bin"
+              "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin"
+              "$GITHUB_WORKSPACE/kernel_workspace/prebuilts/clang/host/linux-x86/bin"
+              "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/bin"
+            )
+            for p in "${CANDIDATES[@]}"; do
+              if [ -x "$p/clang" ]; then
+                echo "Using AOSP clang prebuilts: $p"
+                echo "PATH=$p:$PATH" >> "$GITHUB_ENV"
+                break
+              fi
+            done
+            if ! command -v clang >/dev/null 2>&1; then
+              echo "Error: Clang prebuilts not found in synced tree."
+              printf ' - %s\n' "${CANDIDATES[@]}"
+              exit 1
+            fi
           else
-          echo "Tree clang prebuilts not found; downloading toolchain..."
-          mkdir -p "$HOME/toolchains"
-          
-          if [[ "${{ github.event.inputs.toolchain }}" == "neutron" ]]; then
-          # Neutron clang (requires ubuntu-24.04 runner due to glibc)
-          git clone --depth=1 https://github.com/Neutron-Toolchains/clang.git "$HOME/toolchains/neutron-clang"
-          echo "PATH=$HOME/toolchains/neutron-clang/bin:$PATH" >> "$GITHUB_ENV"
-          else
-          # AOSP prebuilt clang (matches WildKernels style; pick r510928 when available)
-          git clone --depth=1 --filter=blob:none https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 "$HOME/toolchains/aosp-clang"
-          BASE="$HOME/toolchains/aosp-clang"
-          if [[ -d "$BASE/clang-r510928" ]]; then
-          CLANG_DIR="$BASE/clang-r510928"
-          else
-          CLANG_DIR="$(ls -d "$BASE"/clang-* 2>/dev/null | sort | tail -n 1 || true)"
+            echo "Installing Neutron-Clang..."
+            mkdir -p toolchains && cd toolchains
+            git clone --depth=1 https://github.com/Neutron-Toolchains/antman.git antman
+            cd antman
+            bash antman --install clang
+            echo "PATH=$GITHUB_WORKSPACE/toolchains/antman/bin:$PATH" >> "$GITHUB_ENV"
           fi
-          if [[ -z "${CLANG_DIR:-}" || ! -x "$CLANG_DIR/bin/clang" ]]; then
-          echo "::error::AOSP clang folder not found or clang not executable under $BASE"
-          ls -la "$BASE" || true
-          exit 1
-          fi
-          echo "Using AOSP clang at: $CLANG_DIR"
-          echo "PATH=$CLANG_DIR/bin:$PATH" >> "$GITHUB_ENV"
-          fi
-          fi
-          
-          echo "clang path: $(command -v clang || true)"
-          clang --version
-      - name: Setup KernelSU-Next (stable)
+
+          clang --version | head -n 2
+
+      - name: KernelSU Next (stable) integration
+        shell: bash
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+          cd kernel_workspace/kernel_platform
 
-          # Run the official setup script from within kernel_platform (expects ./common/).
-          curl -fsSL "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/stable/kernel/setup.sh" | bash -s stable
-          # Record version + commit (used for naming).
-          KSUVER=""
-          # Try common version variables across KernelSU-Next revisions
-          for f in "KernelSU-Next/kernel/Makefile" "KernelSU-Next/Makefile" "KernelSU-Next/kernel/Makefile.kernelsu"; do
-            if [ -f "$f" ]; then
-              v="$(grep -Eo '(DKSU_VERSION|KSU_VERSION|KSUN_VERSION)[[:space:]]*[:?+]?=[[:space:]]*[0-9]+' "$f" | head -n1 | grep -Eo '[0-9]+' | head -n1 || true)"
-              if [ -n "$v" ]; then KSUVER="$v"; break; fi
-            fi
-          done
-          # Fallback: parse from git tag like v32966 if present
-          if [ -z "$KSUVER" ]; then
-            tag="$(git -C KernelSU-Next tag --points-at HEAD 2>/dev/null | head -n1 || true)"
-            KSUVER="$(echo "$tag" | grep -Eo '[0-9]+' || true)"
+          echo "[+] Setting up KernelSU-Next (stable)..."
+          curl -fsSL https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh | bash -s stable
+
+          if [ -d "KernelSU-Next" ]; then
+            KSU_COMMIT="$(git -C KernelSU-Next rev-parse --short=8 HEAD)"
+            KSU_COUNT="$(git -C KernelSU-Next rev-list --count HEAD)"
+            KSUVER="$((30000 + KSU_COUNT))"
+            echo "KSUVER=$KSUVER" >> "$GITHUB_ENV"
+            echo "KSU_COMMIT=$KSU_COMMIT" >> "$GITHUB_ENV"
+            echo "KernelSU-Next commit: $KSU_COMMIT (v$KSUVER)"
+          else
+            echo "Error: KernelSU-Next directory not found after setup."
+            exit 1
           fi
-          KSUVER="${KSUVER:-unknown}"
-          KSU_COMMIT="$(git -C KernelSU-Next rev-parse --short=8 HEAD)"
-          # Sanitize (GITHUB_ENV cannot accept multiline values)
-          KSUVER="$(printf '%s\n' "$KSUVER" | head -n1 | tr -cd '0-9')"
-          if [ -z "$KSUVER" ]; then KSUVER="unknown"; fi
-          KSU_COMMIT="$(printf '%s\n' "$KSU_COMMIT" | head -n1 | tr -d '\r')"
-          echo "KSUVER=$KSUVER" >> "$GITHUB_ENV"
-          echo "KSU_COMMIT=$KSU_COMMIT" >> "$GITHUB_ENV"
 
-          # Optional: apply Multi-Manager support patch (best-effort).
-          if [ "${{ github.event.inputs.ksunext_multimanager }}" = "On" ]; then
+          if [ "${{ github.event.inputs.enable_multimanager }}" = "true" ]; then
             echo "Applying Multi-Manager patch (best-effort)..."
-            cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/KernelSU-Next"
-            curl -fsSL "https://raw.githubusercontent.com/mrcxlinux/kernel_patches/main/ksun/kernelsu-next_multimanager.patch" -o "kernelsu-next_multimanager.patch"
-
-            apply_patch() {
-              local p="$1"
-              if git apply -p1 --check "$p" >/dev/null 2>&1; then
-                git apply -p1 -3 --whitespace=nowarn "$p"
-                echo "✅ Applied: $(basename "$p")"
-                return 0
-              fi
-              if git apply -p1 -R --check "$p" >/dev/null 2>&1; then
-                echo "ℹ️ Already applied: $(basename "$p")"
-                return 0
-              fi
-              patch -p1 --forward --batch --silent < "$p" >/dev/null 2>&1 || true
-              if git apply -p1 -R --check "$p" >/dev/null 2>&1; then
-                echo "✅ Applied (fallback): $(basename "$p")"
-              else
-                echo "⚠️ Skipped (does not apply cleanly): $(basename "$p")"
-              fi
-              return 0
-            }
-
-            apply_patch "kernelsu-next_multimanager.patch"
+            if [ -f "$GITHUB_WORKSPACE/patches/kernelsu-next_multimanager.patch" ]; then
+              (cd common && git apply -p1 "$GITHUB_WORKSPACE/patches/kernelsu-next_multimanager.patch") || \
+                echo "⚠️ Skipped (does not apply cleanly): kernelsu-next_multimanager.patch"
+            else
+              echo "⚠️ Multi-Manager patch not found at patches/kernelsu-next_multimanager.patch (skipping)."
+            fi
           fi
 
-      - name: Setup SUSFS + WildKernels patches
+      - name: Clone patch collections
+        shell: bash
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+          cd kernel_workspace
 
-          # Helper: apply patch without failing the workflow.
-          apply_patch() {
-            local p="$1"
-            if [ ! -f "$p" ]; then
-              echo "⚠️ Missing patch: $p"
-              return 0
-            fi
-            if git apply -p1 --check "$p" >/dev/null 2>&1; then
-              git apply -p1 -3 --whitespace=nowarn "$p"
-              echo "✅ Applied: $(basename "$p")"
-              return 0
-            fi
-            if git apply -p1 -R --check "$p" >/dev/null 2>&1; then
-              echo "ℹ️ Already applied: $(basename "$p")"
-              return 0
-            fi
-            patch -p1 --forward --batch --silent < "$p" >/dev/null 2>&1 || true
-            if git apply -p1 -R --check "$p" >/dev/null 2>&1; then
-              echo "✅ Applied (fallback): $(basename "$p")"
-            else
-              echo "⚠️ Skipped (does not apply cleanly): $(basename "$p")"
-            fi
-            return 0
-          }
-
-          # Clone patch repos (public, no auth prompts).
-          rm -rf susfs4ksu mrcx_patches wildkernel_patches || true
-          git clone --depth=1 -b gki-android15-6.6 https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+          git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 susfs4ksu
           git clone --depth=1 https://github.com/mrcxlinux/kernel_patches.git mrcx_patches
           git clone --depth=1 https://github.com/WildKernels/kernel_patches.git wildkernel_patches
 
-          # Apply SUSFS (best-effort, matches android15/6.6 trees).
-          if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
-            echo "Applying SUSFS patches..."
-            cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
-            apply_patch "../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch" || true
-            # Extra SUSFS files (best-effort; only if paths exist)
-            rsync -a ../susfs4ksu/kernel_patches/fs/ fs/ 2>/dev/null || true
-            rsync -a ../susfs4ksu/kernel_patches/include/linux/ include/linux/ 2>/dev/null || true
-          fi
+          echo "Patch sources cloned."
 
-          # ZRAM (LZ4/ZSTD) optional patches from mrcxlinux (best-effort).
-          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
-          # Fix overwriter script permissions (avoid convert_configs.sh permission denied)
-          if [[ -d "drivers/of/overwriter/overwrite_configs" ]]; then
-            echo "Fixing overwriter scripts permissions..."
-            chmod -R u+rx,go+rx drivers/of/overwriter/overwrite_configs || true
-            find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -exec chmod +x {} \; || true
-            # Strip CRLF (portable)
-            find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -exec perl -pi -e 's/\\r$//' {} \\; || true
-          fi
+      - name: Apply patches (safe defaults; best-effort)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel_workspace/kernel_platform/common
 
-          apply_patch "../mrcx_patches/zram/001-lz4.patch"
-          apply_patch "../mrcx_patches/zram/002-zstd.patch"
-          # If asm source exists in repo, copy it (best-effort)
-          if [ -f "../mrcx_patches/zram/lz4armv8.S" ]; then
-            mkdir -p lib/lz4/lz4armv8
-            cp -f "../mrcx_patches/zram/lz4armv8.S" lib/lz4/lz4armv8.S 2>/dev/null || true
-            cp -f "../mrcx_patches/zram/lz4armv8.S" lib/lz4/lz4armv8/lz4armv8.S 2>/dev/null || true
-          fi
+          chmod +x drivers/of/overwriter/overwrite_configs/convert_configs.sh 2>/dev/null || true
 
-          # Unicode bypass (optional)
-          if [ "${{ github.event.inputs.UNICODE_BYPASS }}" = "On" ]; then
-            echo "Applying Unicode Bypass patches..."
-            apply_patch "../mrcx_patches/common/unicode_bypass_fix_6.1+.patch"
-            apply_patch "../mrcx_patches/common/unicode_bypass_fix.patch"
-          fi
-
-          # WildKernels: HMBIRD patches (optional; apply only if requested).
-          if [ "${{ github.event.inputs.hmbird }}" = "On" ]; then
-            echo "Applying WildKernels HMBIRD patches..."
-            # Apply all patches in the directory (best-effort).
-            if [ -d "../wildkernel_patches/oneplus/hmbird" ]; then
-              for p in ../wildkernel_patches/oneplus/hmbird/*.patch; do
-                [ -e "$p" ] || continue
-                apply_patch "$p"
-              done
+          apply_patch() {
+            local label="$1"
+            shift
+            if "$@"; then
+              echo "✅ Applied: $label"
             else
-              echo "⚠️ WildKernels HMBIRD directory not found."
+              echo "⚠️ Skipped (does not apply cleanly): $label"
+              return 0
             fi
+          }
+
+          # ZRAM patches (mrcxlinux)
+          if [ "${{ github.event.inputs.enable_zram_lz4 }}" = "true" ] && [ -f "$GITHUB_WORKSPACE/kernel_workspace/mrcx_patches/zram/001-lz4.patch" ]; then
+            apply_patch "001-lz4.patch" git apply -p1 "$GITHUB_WORKSPACE/kernel_workspace/mrcx_patches/zram/001-lz4.patch"
+          fi
+          if [ "${{ github.event.inputs.enable_zram_zstd }}" = "true" ] && [ -f "$GITHUB_WORKSPACE/kernel_workspace/mrcx_patches/zram/002-zstd.patch" ]; then
+            apply_patch "002-zstd.patch" git apply -p1 "$GITHUB_WORKSPACE/kernel_workspace/mrcx_patches/zram/002-zstd.patch"
           fi
 
-      - name: Set build identity and timestamp (mimic stock)
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
-
-          # Match WildKernels style uname identity
-          echo "KBUILD_BUILD_USER=OnePlus" >> "$GITHUB_ENV"
-          echo "KBUILD_BUILD_HOST=ubuntu-build" >> "$GITHUB_ENV"
-          echo "KBUILD_BUILD_VERSION=1" >> "$GITHUB_ENV"
-
-          INPUT_TIME="${{ github.event.inputs.BUILD_TIME }}"
-          if [ -z "$INPUT_TIME" ] || [ "$INPUT_TIME" = "auto" ] || [ "$INPUT_TIME" = "AUTO" ]; then
-            # Use commit time of kernel_platform/common HEAD (closest to "stock-like" deterministic timestamp)
-            TS="$(git -C common log -1 --format=%ct)"
-            DATESTR="$(TZ='UTC' date -u -d "@$TS" +'%a %b %d %T UTC %Y')"
-            echo "Using kernel source commit time: $DATESTR"
+          # SUSFS
+          if [ "${{ github.event.inputs.susfs }}" = "true" ]; then
+            if [ -f "$GITHUB_WORKSPACE/kernel_workspace/susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch" ]; then
+              apply_patch "50_add_susfs_in_gki-android15-6.6.patch" bash -lc "patch -p1 < '$GITHUB_WORKSPACE/kernel_workspace/susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch'"
+            else
+              echo "⚠️ SUSFS patch file not found (skipping)."
+            fi
+            if [ -f "$GITHUB_WORKSPACE/kernel_workspace/mrcx_patches/69_hide_stuff.patch" ]; then
+              apply_patch "69_hide_stuff.patch" bash -lc "patch -p1 -F 3 < '$GITHUB_WORKSPACE/kernel_workspace/mrcx_patches/69_hide_stuff.patch'"
+            fi
           else
-            DATESTR="$INPUT_TIME"
-            echo "Using BUILD_TIME input: $DATESTR"
+            if [ -f "$GITHUB_WORKSPACE/kernel_workspace/mrcx_patches/susfs/scope_min_manual_hooks_v1.9.patch" ]; then
+              apply_patch "scope_min_manual_hooks_v1.9.patch" bash -lc "patch -p1 --fuzz=3 < '$GITHUB_WORKSPACE/kernel_workspace/mrcx_patches/susfs/scope_min_manual_hooks_v1.9.patch'"
+            fi
           fi
 
-          echo "KBUILD_BUILD_TIMESTAMP=${DATESTR}" >> "$GITHUB_ENV"
+          # WildKernels patches (best-effort)
+          if [ -d "$GITHUB_WORKSPACE/kernel_workspace/wildkernel_patches" ]; then
+            echo "Applying WildKernels patches (best-effort)..."
 
-          # Also patch mkcompile_h where present to ensure UTS_VERSION contains the exact timestamp
-          for f in common/scripts/mkcompile_h msm-kernel/scripts/mkcompile_h; do
-            if [ -f "$f" ]; then
-              echo "Patching $f UTS_VERSION..."
-              perl -pi -e "s{UTS_VERSION=.*}{UTS_VERSION=\"#1 SMP PREEMPT $DATESTR\"}g" "$f" || true
-            fi
-          done
+            for p in \
+              fengchi_OP13-CPH_OOS15.patch \
+              fengchi_OP13-PJZ_OOS15.patch \
+              fengchi_OP13_OOS16.patch
+            do
+              if [ -f "$GITHUB_WORKSPACE/kernel_workspace/wildkernel_patches/$p" ]; then
+                apply_patch "$p" bash -lc "patch -p1 < '$GITHUB_WORKSPACE/kernel_workspace/wildkernel_patches/$p'"
+              fi
+            done
 
-      - name: Build kernel (GKI)
+            [ -f "$GITHUB_WORKSPACE/kernel_workspace/wildkernel_patches/hmbird_config.patch" ] && \
+              apply_patch "hmbird_config.patch" bash -lc "patch -p1 < '$GITHUB_WORKSPACE/kernel_workspace/wildkernel_patches/hmbird_config.patch'"
+
+            [ -f "$GITHUB_WORKSPACE/kernel_workspace/wildkernel_patches/overwriter.patch" ] && \
+              apply_patch "overwriter.patch" bash -lc "patch -p1 < '$GITHUB_WORKSPACE/kernel_workspace/wildkernel_patches/overwriter.patch'"
+          fi
+
+      - name: Configure kernel defconfig (idempotent)
+        shell: bash
         run: |
           set -euo pipefail
-          export PATH="/usr/lib/ccache:$PATH"
+          DEFCONFIG="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig"
+          test -f "$DEFCONFIG" || (echo "Error: gki_defconfig not found at $DEFCONFIG" && exit 1)
 
-          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
-          # Fix overwriter script permissions (avoid convert_configs.sh permission denied)
-          if [[ -d "drivers/of/overwriter/overwrite_configs" ]]; then
-            echo "Fixing overwriter scripts permissions..."
-            chmod -R u+rx,go+rx drivers/of/overwriter/overwrite_configs || true
-            find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -exec chmod +x {} \; || true
-            find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -exec perl -pi -e 's/\\r$//' {} \; || true
+          set_config() {
+            local key="$1" val="$2"
+            grep -v -E "^${key}=|^# ${key} is not set" "$DEFCONFIG" > "$DEFCONFIG.tmp"
+            mv "$DEFCONFIG.tmp" "$DEFCONFIG"
+            if [ "$val" = "y" ]; then
+              echo "${key}=y" >> "$DEFCONFIG"
+            elif [ "$val" = "n" ]; then
+              echo "# ${key} is not set" >> "$DEFCONFIG"
+            else
+              echo "${key}=${val}" >> "$DEFCONFIG"
+            fi
+          }
+
+          set_config "CONFIG_KSU" "y"
+
+          if [ "${{ github.event.inputs.susfs }}" = "true" ]; then
+            set_config "CONFIG_KSU_SUSFS" "y"
+            set_config "CONFIG_KSU_SUSFS_SUS_PATH" "y"
+            set_config "CONFIG_KSU_SUSFS_SUS_MOUNT" "y"
+            set_config "CONFIG_KSU_SUSFS_SUS_KSTAT" "y"
+            set_config "CONFIG_KSU_SUSFS_SPOOF_UNAME" "y"
+            set_config "CONFIG_KSU_SUSFS_ENABLE_LOG" "y"
+            set_config "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS" "y"
+            set_config "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG" "y"
+          else
+            set_config "CONFIG_KSU_SUSFS" "n"
+          fi
+
+          [ "${{ github.event.inputs.enable_ttl }}" = "true" ] && set_config "CONFIG_NETFILTER_XT_TARGET_TTL" "y" || set_config "CONFIG_NETFILTER_XT_TARGET_TTL" "n"
+          [ "${{ github.event.inputs.enable_ipset }}" = "true" ] && set_config "CONFIG_IP_SET" "y" || set_config "CONFIG_IP_SET" "n"
+          [ "${{ github.event.inputs.enable_bbr }}" = "true" ] && set_config "CONFIG_TCP_CONG_BBR" "y" || set_config "CONFIG_TCP_CONG_BBR" "n"
+
+          SUFFIX="${{ github.event.inputs.kernel_suffix }}"
+          set_config "CONFIG_LOCALVERSION" "\"-${SUFFIX}\""
+
+          echo "Defconfig updated:"
+          tail -n 30 "$DEFCONFIG"
+
+      - name: Build kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel_workspace/kernel_platform/common
+
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) ?=' Makefile || true
+
+          if [ -f scripts/setlocalversion ]; then
+            sed -i 's/ -dirty//g' scripts/setlocalversion || true
           fi
 
           mkdir -p out
+          make O=out ARCH=arm64 gki_defconfig
 
-          # Use prebuilts shipped with the manifest when available (more compatible than system packages).
-          if [ -d "$GITHUB_WORKSPACE/kernel_workspace/prebuilts/rust/linux-x86/1.73.0/bin" ]; then
-            echo "$GITHUB_WORKSPACE/kernel_workspace/prebuilts/rust/linux-x86/1.73.0/bin" >> "$GITHUB_PATH"
-          fi
-          if [ -f "$GITHUB_WORKSPACE/kernel_workspace/prebuilts/kernel-build-tools/linux-x86/bin/pahole" ]; then
-            sudo cp -f "$GITHUB_WORKSPACE/kernel_workspace/prebuilts/kernel-build-tools/linux-x86/bin/pahole" /usr/local/bin/pahole
-            sudo chmod +x /usr/local/bin/pahole
-          fi
+          make -j"$(nproc)" O=out ARCH=arm64 \
+            CC=clang LD=ld.lld \
+            LLVM=1 LLVM_IAS=1 \
+            Image
 
-          # Build (same structure as your original workflow; keep it close to stock for stability)
-          make -j"$(nproc --all)" \
-            LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            CC="ccache clang" LD=ld.lld HOSTLD=ld.lld \
-            O=out \
-            KCFLAGS+=-O2 \
-            gki_defconfig
-
-          # Apply feature toggles safely via scripts/config (no defconfig file editing)
-          CFG="out/.config"
-          if [[ ! -f "$CFG" ]]; then
-            echo "::error::.config not found at $PWD/$CFG"; exit 1
-          fi
-          if [[ ! -x "./scripts/config" ]]; then
-            echo "::error::scripts/config not found"; exit 1
-          fi
-
-          # Kernel release / module compatibility:
-          # Set LOCALVERSION to match stock-style name (prevents vendor module path / vermagic issues).
-          BASE_LV="-${{ env.KERNEL_NAME }}"
-          ./scripts/config --file "$CFG" --set-str LOCALVERSION "$BASE_LV" || true
-          ./scripts/config --file "$CFG" -d LOCALVERSION_AUTO || true
-
-          # NOTE: kernel_suffix is used ONLY for file naming / banner; it must NOT change LOCALVERSION.
-
-
-          # WildKernels: TMPFS_XATTR + POSIX ACL (Mountify support)
-          ./scripts/config --file "$CFG" -e TMPFS_XATTR -e TMPFS_POSIX_ACL || true
-
-          # TTL support (netfilter targets)
-          if [[ "${{ github.event.inputs.ttl }}" == "On" ]]; then
-            ./scripts/config --file "$CFG" -e NETFILTER -e NETFILTER_XTABLES \
-              -m NETFILTER_XT_TARGET_TTL -m NETFILTER_XT_TARGET_HL || true
-          else
-            ./scripts/config --file "$CFG" -d NETFILTER_XT_TARGET_TTL -d NETFILTER_XT_TARGET_HL || true
-          fi
-
-          # IPSET support (netfilter ipset)
-          if [[ "${{ github.event.inputs.ipset }}" == "On" ]]; then
-            ./scripts/config --file "$CFG" -e NETFILTER -e NETFILTER_XTABLES \
-              -m IP_SET -m IP_SET_HASH_IP -m NETFILTER_XT_SET || true
-          else
-            ./scripts/config --file "$CFG" -d IP_SET -d IP_SET_HASH_IP -d NETFILTER_XT_SET || true
-          fi
-
-          # Finalize config
-          make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
-
-          # Build all targets
-          make -j"$(nproc --all)" \
-            LLVM=1 LLVM_IAS=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
-            CC="ccache clang" LD=ld.lld HOSTLD=ld.lld \
-            O=out \
-            KCFLAGS+=-O2 \
-            all
-
-          ccache -s || true
-
-          # Detect kernel release for naming
-          KREL="$(make -s O=out kernelrelease 2>/dev/null || true)"
-          if [ -n "$KREL" ]; then
-            echo "KERNEL_RELEASE=$KREL" >> "$GITHUB_ENV"
-            echo "Detected kernel release: $KREL"
+          if [ -f out/include/config/kernel.release ]; then
+            KERNEL_RELEASE="$(cat out/include/config/kernel.release)"
+            echo "KERNEL_RELEASE=$KERNEL_RELEASE" >> "$GITHUB_ENV"
+            echo "Kernel release: $KERNEL_RELEASE"
           else
             echo "KERNEL_RELEASE=unknown" >> "$GITHUB_ENV"
           fi
 
-      - name: Package AnyKernel3 flashable zip (WildKernel-style, single-layer, banner file)
+      - name: Package AnyKernel3 (single zip, custom banner)
+        shell: bash
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
+          OUTDIR="$GITHUB_WORKSPACE/out"
+          mkdir -p "$OUTDIR"
 
-          echo "Preparing AnyKernel3..."
-          rm -rf AnyKernel3
-          git clone --depth=1 https://github.com/Kernel-SU/AnyKernel3 AnyKernel3
-          rm -rf AnyKernel3/.git
+          rm -rf ak3
+          git clone --depth=1 https://github.com/mrcxlinux/AnyKernel3.git ak3
+          rm -rf ak3/.git
 
-          IMAGE_PATH="$(find "./kernel_workspace/kernel_platform/common/out/" -type f -name "Image" | head -n 1 || true)"
-          if [ -z "$IMAGE_PATH" ] || [ ! -f "$IMAGE_PATH" ]; then
-            echo "::error::Kernel Image not found under kernel_platform/common/out"
-            exit 1
-          fi
-          cp -f "$IMAGE_PATH" ./AnyKernel3/Image
+          cp -f "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image" ak3/Image
 
-          # Set installer display string (does NOT affect uname -r)
-          sed -i 's/^kernel\.string=.*/kernel.string=Ox1d3x3 OP13 KernelSU-Next (Daily Driver)/' ./AnyKernel3/anykernel.sh || true
+          KTAG="${{ github.event.inputs.kernel_suffix }}"
+          BUILD_ID="$(date -u '+%Y%m%d-%H%M')"
 
-          # Build identifiers
-          DATE="$(date -u +%Y%m%d-%H%M)"
-          BUILD_ID="${{ github.run_number }}"
-          KREL="${{ env.KERNEL_RELEASE }}"
-          KSUVER="${{ env.KSUVER }}"
-          SUFFIX="${{ github.event.inputs.kernel_suffix }}"
+          cat > ak3/banner <<-'EOF'
+          	====================================================
+          	            Ox1d3x3 OP13 KernelSU Next
+          	====================================================
+          	   __   __  __
+          	  \ \ / //_ |
+          	   \ V /   | |
+          	    > <    | |
+          	   / . \   | |
+          	  /_/ \_\  |_|
+          	====================================================
+          	EOF
 
-          TAG="OP13_${{ env.ANDROID_VERSION }}_${KREL}_KSUN_${KSUVER}"
-          if [ -n "$SUFFIX" ]; then TAG="${TAG}_${SUFFIX}"; fi
-          BUILD="${DATE}_${BUILD_ID}"
+          cat > ak3/anykernel.sh <<-'EOF'
+          	### AnyKernel3 Ramdisk Mod Script
+          	## osm0sis @ xda-developers
+          	
+          	properties() { '
+          	kernel.string=Ox1d3x3 OP13 KernelSU Next
+          	do.devicecheck=0
+          	do.modules=0
+          	do.systemless=0
+          	do.cleanup=1
+          	do.cleanuponabort=0
+          	supported.versions=
+          	supported.patchlevels=
+          	supported.vendorpatchlevels=
+          	'; }
+          	
+          	block=boot
+          	is_slot_device=auto
+          	ramdisk_compression=auto
+          	patch_vbmeta_flag=auto
+          	no_magisk_check=1
+          	
+          	. tools/ak3-core.sh
+          	
+          	ui_print " "
+          	ui_print "PJZ110 | KernelSU Next Kernel"
+          	ui_print "Kernel : __KERNEL_RELEASE__"
+          	ui_print "Tag    : __KERNEL_TAG__"
+          	ui_print "Build  : __BUILD_ID__"
+          	ui_print "KSU    : v__KSUVER__ (__KSU_COMMIT__)"
+          	ui_print "Builder: @Ox1d3x3"
+          	ui_print "Credits: @mrcxlinux, @WildKernels, @osm0sis"
+          	ui_print " "
+          	
+          	DEVICE="$(getprop ro.product.device 2>/dev/null)"; [ -z "$DEVICE" ] && DEVICE="$(getprop ro.product.name 2>/dev/null)"
+          	PATCH="$(getprop ro.build.version.security_patch 2>/dev/null)"
+          	ANDROID="$(getprop ro.build.version.release 2>/dev/null)"
+          	SLOT_SUFFIX="$(getprop ro.boot.slot_suffix 2>/dev/null)"
+          	[ -n "$SLOT_SUFFIX" ] && ui_print "Slot   : $SLOT_SUFFIX"
+          	ui_print "Device : $DEVICE"
+          	ui_print "Android: $ANDROID"
+          	ui_print "Patch  : $PATCH"
+          	ui_print " "
+          	
+          	if command -v cmd >/dev/null 2>&1; then
+          	  (cmd activity start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true
+          	elif command -v am >/dev/null 2>&1; then
+          	  (am start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true
+          	fi
+          	
+          	kernel_version=$(cat /proc/version | awk -F '-' '{print $1}' | awk '{print $3}')
+          	case $kernel_version in
+          	  5.1*|6.1*|6.6*) ksu_supported=true ;;
+          	  *) ksu_supported=false ;;
+          	esac
+          	ui_print "  -> GKI kernel supported: $ksu_supported"
+          	$ksu_supported || abort "  -> Non-GKI device, abort."
+          	
+          	split_boot
+          	if [ -f "split_img/ramdisk.cpio" ]; then
+          	  unpack_ramdisk
+          	  write_boot
+          	else
+          	  flash_boot
+          	fi
+          	EOF
 
-          echo "TAG=$TAG" >> "$GITHUB_ENV"
-          echo "BUILD=$BUILD" >> "$GITHUB_ENV"
+          KR="${KERNEL_RELEASE:-unknown}"
+          KC="${KSU_COMMIT:-unknown}"
+          KV="${KSUVER:-unknown}"
 
-          # WildKernel-style banner file (update-binary prints this automatically if present)
-          cat > ./AnyKernel3/banner <<EOF
-          ====================================================
-                             __   __  __
-                            \ \ / //_ |
-                             \ V /   | |
-                               > <    | |
-                             / . \   | |
-                           /_/ \_\  |_|
-          ====================================================
-          
-          PJZ110 | KernelSU Next Kernel
-          Kernel : ${KREL}
-          Build  : ${BUILD}
-          Builder: @Ox1d3x3
-          Credits: @mrcxlinux, @WildKernels
-          
-          ====================================================
-          EOF
+          sed -i "s|__KERNEL_RELEASE__|$KR|g" ak3/anykernel.sh
+          sed -i "s|__KERNEL_TAG__|$KTAG|g" ak3/anykernel.sh
+          sed -i "s|__BUILD_ID__|$BUILD_ID|g" ak3/anykernel.sh
+          sed -i "s|__KSUVER__|$KV|g" ak3/anykernel.sh
+          sed -i "s|__KSU_COMMIT__|$KC|g" ak3/anykernel.sh
 
-          # Zip (single layer: root contains META-INF/, anykernel.sh, tools/, Image, banner)
-          ZIP_NAME="${TAG}_${BUILD}_SUSFS_FLASH_THIS.zip"
-          rm -f "$ZIP_NAME"
-          (cd AnyKernel3 && zip -r9 "../${ZIP_NAME}" .)
-          echo "FLASH_ZIP=${ZIP_NAME}" >> "$GITHUB_ENV"
-          ls -lah "./${ZIP_NAME}"
+          ZIP_NAME="OP13_${ANDROID_VERSION}_${KR}_${KTAG}_KSUN_${KV}_FLASH_THIS.zip"
+          (cd ak3 && zip -r9 "$OUTDIR/$ZIP_NAME" . -x "*.git*" -x "*README*")
 
-      - name: Upload flashable zip as artifact
+          echo "FLASH_ZIP=$OUTDIR/$ZIP_NAME" >> "$GITHUB_ENV"
+          echo "Built flash zip: $ZIP_NAME"
+      - name: Upload artifact (contains the flash zip)
         uses: actions/upload-artifact@v4
         with:
-          name: OP13_FLASHABLE_${{ env.TAG }}
+          name: OP13_KSU_NEXT_flash_zip
           path: ${{ env.FLASH_ZIP }}
+          if-no-files-found: error
+          compression-level: 0
 
-      - name: Create GitHub Release (recommended)
-        if: ${{ github.event.inputs.MAKE_RELEASE == 'On' }}
+      - name: Publish GitHub Release (optional)
+        if: ${{ github.event.inputs.publish_release == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.TAG }}-${{ github.run_number }}
-          name: ${{ env.TAG }} (kernel ${{ env.KERNEL_RELEASE }})
+          tag_name: op13-ksunext-${{ github.run_number }}
+          name: OP13 KernelSU Next - build ${{ github.run_number }}
           prerelease: true
           files: ${{ env.FLASH_ZIP }}
-          body: |
-            **Device:** PJZ110 (OnePlus 13)
-            **OS:** OOS16 / ColorOS16
-            **Kernel release:** ${{ env.KERNEL_RELEASE }}
-            **KernelSU-Next:** v${{ env.KSUVER }} (${{ env.KSU_COMMIT }})
-            **SUSFS:** ${{ github.event.inputs.SUSFS }}
-            **WildKernels:** HMBIRD=${{ github.event.inputs.hmbird }}, TTL=${{ github.event.inputs.ttl }}, IP_SET=${{ github.event.inputs.ipset }}
-            **Build timestamp:** ${{ env.KBUILD_BUILD_TIMESTAMP }}
-            **Build user/host:** ${{ env.KBUILD_BUILD_USER }}@${{ env.KBUILD_BUILD_HOST }}
-
-            ⚠️ **Notes**
-            - Flash the **Release asset** zip (it is not nested). Downloading an artifact creates a wrapper zip which can confuse some flashing apps.
-            - If you bootloop: make sure you built from the right manifest/tag for your ROM build and try disabling optional patches (HMBIRD, zram patches, etc.).
