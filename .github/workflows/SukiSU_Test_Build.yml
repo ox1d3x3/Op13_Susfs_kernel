@@ -1,4 +1,4 @@
-name: OP13 KernelSU-Next
+name: OP13 KernelSU-Next Build
 
 env:
   TZ: UTC
@@ -125,16 +125,46 @@ jobs:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: "Runner disk preflight"
+        id: disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Memory and swap:"
+          free -h || true
+          echo ""
+          echo "Swap devices:"
+          swapon --show || true
+          echo ""
+          echo "Block devices:"
+          lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS || true
+          echo ""
+          echo "Disk usage:"
+          df -hT || true
+          echo ""
+          # GitHub runner images changed in early 2026: many no longer have a separate temp disk mounted on /mnt.
+          # easimon/maximize-build-space expects that disk and can fail (e.g. fallocate invalid length) when it is missing.
+          if findmnt -n /mnt >/dev/null 2>&1; then
+            SRC="$(findmnt -n -o SOURCE /mnt || true)"
+            echo "/mnt is a mount point from: $SRC"
+            if [[ "$SRC" == /dev/* ]]; then
+              echo "has_mnt_disk=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "has_mnt_disk=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "/mnt is NOT a mount point on this runner."
+            echo "has_mnt_disk=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: "Maximize build space"
+      - name: "Maximize build space (only if /mnt temp disk exists)"
+        if: steps.disk.outputs.has_mnt_disk == 'true'
         uses: easimon/maximize-build-space@v10
         with:
           root-reserve-mb: 2048
           temp-reserve-mb: 4096
+          swap-size-mb: 4096
           remove-dotnet: "true"
           remove-android: "true"
           remove-haskell: "true"
@@ -149,7 +179,10 @@ jobs:
           sudo rm -rf /var/lib/apt/lists/* || true
           sudo docker image prune -a -f || true
           sudo docker system prune -af || true
-          df -h
+          df -hT
+
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: "Setup ccache directory"
         shell: bash
