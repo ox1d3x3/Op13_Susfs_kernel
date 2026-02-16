@@ -144,26 +144,36 @@ jobs:
           echo "Disk usage:"
           df -hT || true
           echo ""
+          use_maximize=false
+          has_mnt_disk=false
+
           if findmnt -n /mnt >/dev/null 2>&1; then
             SRC="$(findmnt -n -o SOURCE /mnt || true)"
             echo "/mnt is a mount point from: $SRC"
             if [[ "$SRC" == /dev/* ]]; then
-              echo "has_mnt_disk=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "has_mnt_disk=false" >> "$GITHUB_OUTPUT"
+              has_mnt_disk=true
+              MNT_FREE_MB="$(df -Pm /mnt | awk 'NR==2 {print $4}' || true)"
+              echo "/mnt free (MB): $MNT_FREE_MB"
+              if [[ "$MNT_FREE_MB" =~ ^[0-9]+$ ]] && [[ "$MNT_FREE_MB" -gt 20000 ]]; then
+                use_maximize=true
+              else
+                echo "Skipping maximize-build-space: /mnt does not have enough free space."
+              fi
             fi
           else
             echo "/mnt is NOT a mount point on this runner."
-            echo "has_mnt_disk=false" >> "$GITHUB_OUTPUT"
           fi
 
+          echo "has_mnt_disk=$has_mnt_disk" >> "$GITHUB_OUTPUT"
+          echo "use_maximize=$use_maximize" >> "$GITHUB_OUTPUT"
+
       - name: "Maximize build space (only if /mnt temp disk exists)"
-        if: steps.disk.outputs.has_mnt_disk == 'true'
+        if: steps.disk.outputs.use_maximize == 'true'
         uses: easimon/maximize-build-space@v10
         with:
           root-reserve-mb: 2048
-          temp-reserve-mb: 4096
-          swap-size-mb: 4096
+          temp-reserve-mb: 1024
+          swap-size-mb: 2048
           remove-dotnet: "true"
           remove-android: "true"
           remove-haskell: "true"
@@ -351,90 +361,147 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          
+
           if [[ "${{ github.event.inputs.SUSFS }}" != "On" ]]; then
             echo "SUSFS disabled → skipping."
             exit 0
           fi
-          
-          KERNEL_DIR="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
-          KERNEL_SRC="$KERNEL_DIR/common"
-          cd "$KERNEL_SRC"
-          
+
+          KERNEL_PLATFORM="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+
+          # Auto-detect kernel source root (some manifests use common/, some use common/common/)
+          CANDIDATES=(
+            "$KERNEL_PLATFORM/common"
+            "$KERNEL_PLATFORM/common/common"
+          )
+
+          KERNEL_DIR=""
+          for c in "${CANDIDATES[@]}"; do
+            if [[ -f "$c/Makefile" && -d "$c/fs" ]]; then
+              KERNEL_DIR="$c"
+              break
+            fi
+          done
+
+          if [[ -z "$KERNEL_DIR" ]]; then
+            echo "::error::Could not detect kernel source root under $KERNEL_PLATFORM"
+            echo "Listing kernel_platform:"
+            ls -la "$KERNEL_PLATFORM" || true
+            echo "Listing common candidates:"
+            ls -la "$KERNEL_PLATFORM/common" || true
+            ls -la "$KERNEL_PLATFORM/common/common" || true
+            exit 1
+          fi
+
+          echo "✅ Kernel root detected: $KERNEL_DIR"
+          cd "$KERNEL_DIR"
+
           BR="gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
           echo "Using susfs4ksu branch: $BR"
-          
-          rm -rf susfs4ksu || true
-          
+
+          SUSFS_FOLDER="$GITHUB_WORKSPACE/susfs4ksu"
+          rm -rf "$SUSFS_FOLDER" || true
+
           # Prefer upstream that actually carries gki-* branches.
           repos=(
             "https://gitlab.com/simonpunk/susfs4ksu.git"
             "https://github.com/Star-Seven/susfs4ksu.git"
             "https://gitlab.com/pershoot/susfs4ksu.git"
           )
-          
+
           clone_ok=0
           for repo in "${repos[@]}"; do
             echo "→ Checking susfs4ksu: $repo"
             if git ls-remote --exit-code --heads "$repo" "$BR" >/dev/null 2>&1; then
               echo "→ Cloning $repo ($BR)"
-              git clone --depth 1 --no-tags -b "$BR" "$repo" susfs4ksu
+              git clone --depth 1 --no-tags -b "$BR" "$repo" "$SUSFS_FOLDER"
               clone_ok=1
               break
             else
               echo "→ Branch not found on this remote: $repo"
             fi
           done
-          
+
           if [[ "$clone_ok" -ne 1 ]]; then
             echo "::error::Could not find susfs4ksu branch '$BR' on any configured remote."
             exit 1
           fi
-          
-          echo "Copying SUSFS source/header files (if present)..."
-          # NOTE: destination paths are relative to kernel root (no extra /common).
-          mkdir -p "$KERNEL_SRC/fs" "$KERNEL_SRC/include/linux"
-          if [[ -d "susfs4ksu/kernel_patches/fs" ]]; then
-            cp -a susfs4ksu/kernel_patches/fs/. "$KERNEL_SRC/fs/" || true
+
+          echo "::group::Copy SUSFS source/header files (if present)"
+          # Some SUSFS branches ship extra files outside the main patch.
+          if [[ -d "$SUSFS_FOLDER/kernel_patches/fs" ]]; then
+            cp -a "$SUSFS_FOLDER/kernel_patches/fs/." "$KERNEL_DIR/fs/" || true
           fi
-          if [[ -d "susfs4ksu/kernel_patches/include/linux" ]]; then
-            cp -a susfs4ksu/kernel_patches/include/linux/. "$KERNEL_SRC/include/linux/" || true
+          if [[ -d "$SUSFS_FOLDER/kernel_patches/include/linux" ]]; then
+            mkdir -p "$KERNEL_DIR/include/linux"
+            cp -a "$SUSFS_FOLDER/kernel_patches/include/linux/." "$KERNEL_DIR/include/linux/" || true
           fi
-          
-                    echo "Applying SUSFS patches..."
-          MAIN_PATCH="susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch"
-          if [[ ! -f "$MAIN_PATCH" ]]; then
-            echo "::error::Missing main SUSFS patch: $MAIN_PATCH"
-            echo "::group::Available patches"
-            find susfs4ksu -maxdepth 4 -type f -name "*.patch" -print || true
-            echo "::endgroup::"
+          echo "::endgroup::"
+
+          # --- Pre-adjustments (borrowed from WildKernel) to help the gki-android15-6.6 patch match ---
+          fake_patched=0
+          if [[ "${{ env.ANDROID_VERSION }}" == "android15" && "${{ env.KERNEL_VERSION }}" == "6.6" ]]; then
+            if [[ -f "./fs/namespace.c" ]] && ! grep -qxF '#include <trace/hooks/fs.h>' ./fs/namespace.c; then
+              if grep -q '#include <trace/hooks/blk.h>' ./fs/namespace.c; then
+                sed -i '/#include <trace\/hooks\/blk.h>/a #include <trace/hooks/fs.h>' ./fs/namespace.c
+              else
+                # Fallback: inject near top of file
+                sed -i '1i #include <trace/hooks/fs.h>' ./fs/namespace.c
+              fi
+            fi
+
+            if [[ -f "./fs/proc/task_mmu.c" ]] && ! grep -qxF $'\tunsigned int nr_subpages = __PAGE_SIZE / PAGE_SIZE;' ./fs/proc/task_mmu.c; then
+              if grep -q 'int ret = 0, copied = 0;' ./fs/proc/task_mmu.c; then
+                echo "Applying temporary context lines for task_mmu.c (for patch matching)..."
+                sed -i -e '/int ret = 0, copied = 0;/a \\tunsigned int nr_subpages = __PAGE_SIZE / PAGE_SIZE;'                  -e '/int ret = 0, copied = 0;/a \\tpagemap_entry_t *res = NULL;' ./fs/proc/task_mmu.c
+                fake_patched=1
+              else
+                echo "::warning::Anchor line not found in fs/proc/task_mmu.c; skipping temporary context insert."
+              fi
+            fi
+          fi
+
+          PATCH_FILE="$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${BR}.patch"
+          if [[ ! -f "$PATCH_FILE" ]]; then
+            echo "::error::Missing SUSFS patch file: $PATCH_FILE"
+            echo "Available patches:"
+            ls -la "$SUSFS_FOLDER/kernel_patches" || true
             exit 1
           fi
 
-          # Try clean apply first, then fuzz=3 (common for vendor trees).
-          echo "→ patch (clean) $(basename "$MAIN_PATCH")"
-          if patch -p1 --forward --dry-run < "$MAIN_PATCH" >/dev/null 2>&1; then
-            patch -p1 --forward < "$MAIN_PATCH"
+          echo "::group::Apply SUSFS main patch"
+          if patch -p1 --dry-run -R < "$PATCH_FILE" >/dev/null 2>&1; then
+            echo "↪ SUSFS patch already applied"
           else
-            echo "→ patch (fuzz=3) $(basename "$MAIN_PATCH")"
-            if patch -p1 --forward -F 3 --dry-run < "$MAIN_PATCH" >/dev/null 2>&1; then
-              patch -p1 --forward -F 3 < "$MAIN_PATCH"
+            if patch -p1 --dry-run --forward < "$PATCH_FILE" >/dev/null 2>&1; then
+              patch -p1 --forward < "$PATCH_FILE"
             else
-              echo "::error::SUSFS patch still does not apply (even with fuzz=3)."
-              echo "Generating reject files for debugging..."
-              patch -p1 --forward -F 3 < "$MAIN_PATCH" || true
-              git apply --reject --whitespace=nowarn "$MAIN_PATCH" || true
-              echo "::group::Rejects"
-              find "$KERNEL_SRC" -type f \( -name "*.rej" -o -name "*.orig" \) -maxdepth 6 -print || true
-              echo "::endgroup::"
-              exit 1
+              echo "Patch does not apply cleanly → retrying with fuzz=3"
+              patch -p1 --forward -F 3 < "$PATCH_FILE"
             fi
           fi
-          # Sanity checks: ensure code and build hooks are present
-          test -f "fs/susfs.c" || { echo "::error::SUSFS source missing: fs/susfs.c"; exit 1; }
-          grep -q 'obj-$(CONFIG_KSU_SUSFS).*susfs\.o' fs/Makefile || { echo "::error::fs/Makefile missing SUSFS build line"; grep -n "KSU_SUSFS" -n fs/Makefile || true; exit 1; }
+          echo "::endgroup::"
+
+          # Revert temporary context lines (if we injected them)
+          if [[ "$fake_patched" == "1" ]]; then
+            sed -i -e '/unsigned int nr_subpages = __PAGE_SIZE \/ PAGE_SIZE;/d'              -e '/pagemap_entry_t \*res = NULL;/d' ./fs/proc/task_mmu.c || true
+          fi
+
+          echo "::group::SUSFS sanity checks"
+          # These checks prevent "SUSFS=On" kernels that actually don't include SUSFS.
+          if [[ ! -f "./fs/susfs.c" ]]; then
+            echo "::warning::fs/susfs.c not found (patch may embed SUSFS in other files)."
+          fi
+
+          if ! grep -Rqs "KSU_SUSFS\|SUSFS" ./fs ./include/linux 2>/dev/null; then
+            echo "::error::SUSFS strings not found in fs/ or include/linux after patching. Integration likely failed."
+            exit 1
+          fi
+          echo "::endgroup::"
 
           echo "✅ SUSFS patching complete."
+
+
       - name: "Enable features via defconfig"
 
         shell: bash
@@ -442,7 +509,35 @@ jobs:
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
           DEFCONFIG="./common/arch/arm64/configs/gki_defconfig"
+
+          # Keep localversion deterministic (we set LOCALVERSION ourselves later)
           echo "CONFIG_LOCALVERSION_AUTO=n" >> "$DEFCONFIG"
+
+          # KernelSU base
+          echo "CONFIG_KSU=y" >> "$DEFCONFIG" || true
+
+          # SUSFS vs MANUAL_HOOK (match your original logic)
+          if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
+            echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$DEFCONFIG"
+          else
+            echo "CONFIG_KSU_SUSFS=n" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$DEFCONFIG"
+          fi
+
+          # Support Mountify-style tmpfs xattrs (as in your base workflow)
+          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
+
+          # Optional features (already in your workflow)
           if [ "${{ github.event.inputs.bbg }}" = "On" ]; then echo "CONFIG_BBG=y" >> "$DEFCONFIG" || true; fi
           if [ "${{ github.event.inputs.bbr }}" = "On" ]; then echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"; fi
           if [ "${{ github.event.inputs.adios }}" = "On" ]; then
@@ -461,8 +556,11 @@ jobs:
             echo "CONFIG_IP_SET_HASH_IPPORT=y" >> "$DEFCONFIG"
             echo "CONFIG_IP_SET_HASH_NETPORTNET=y" >> "$DEFCONFIG"
           fi
+
+          # Reduce header install work
           echo "CONFIG_HEADERS_INSTALL=n" >> "$DEFCONFIG"
           sed -i 's/check_defconfig//' ./common/build.config.gki || true
+
 
       - name: "Set kernel version suffix (LOCALVERSION)"
         shell: bash
@@ -718,15 +816,6 @@ jobs:
         run: |
           set -euo pipefail
           sha256sum "${{ env.OUT_ZIP }}" | tee "${{ env.OUT_ZIP }}.sha256"
-
-      - name: "Upload flashable zip (artifact wrapper)"
-        uses: actions/upload-artifact@v4
-        with:
-          name: OP13_KSUNext_FLASH
-          path: |
-            ${{ env.OUT_ZIP }}
-            ${{ env.OUT_ZIP }}.sha256
-          if-no-files-found: error
 
       - name: Reset PATH for cache save (system tar)
         if: always()
