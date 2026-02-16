@@ -1,4 +1,4 @@
-name: OP13 KernelSU-Next Build
+name: OP13 KernelSU-Next
 
 env:
   TZ: Asia/Shanghai
@@ -297,30 +297,37 @@ jobs:
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+
           if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
             rm -rf susfs4ksu || true
-            SUSFS_REF="gki-android15-6.6"
-          SUSFS_REPO_PRIMARY="https://gitlab.com/simonpunk/susfs4ksu.git"
-          SUSFS_REPO_FALLBACK="https://github.com/Star-Seven/susfs4ksu.git"
 
-          echo "Cloning susfs4ksu ($SUSFS_REF) ..."
-          if git ls-remote --exit-code --heads "$SUSFS_REPO_PRIMARY" "$SUSFS_REF" >/dev/null 2>&1; then
-            git clone --depth=1 -b "$SUSFS_REF" "$SUSFS_REPO_PRIMARY" susfs
-          else
-            echo "Primary SUSFS repo/branch not reachable. Trying fallback..."
-            git clone --depth=1 -b "$SUSFS_REF" "$SUSFS_REPO_FALLBACK" susfs
-          fi4ksu
-            for p in susfs4ksu/kernel_patches/*.patch; do
+            SUSFS_REF="gki-android15-6.6"
+            SUSFS_REPO_PRIMARY="https://gitlab.com/simonpunk/susfs4ksu.git"
+            SUSFS_REPO_FALLBACK="https://github.com/Star-Seven/susfs4ksu.git"
+
+            echo "Cloning susfs4ksu ($SUSFS_REF) ..."
+            if git ls-remote --exit-code --heads "$SUSFS_REPO_PRIMARY" "$SUSFS_REF" >/dev/null 2>&1; then
+              git clone --depth=1 -b "$SUSFS_REF" "$SUSFS_REPO_PRIMARY" susfs4ksu
+            else
+              echo "Primary SUSFS repo/branch not reachable. Trying fallback..."
+              git clone --depth=1 -b "$SUSFS_REF" "$SUSFS_REPO_FALLBACK" susfs4ksu
+            fi
+
+            echo "Applying SUSFS patches (best-effort)..."
+            while IFS= read -r p; do
               [ -f "$p" ] || continue
               if git apply --whitespace=nowarn "$p"; then
                 echo "✅ Applied: $(basename "$p")"
               else
                 echo "⚠️ Skipped: $(basename "$p")"
               fi
-            done
+            done < <(find susfs4ksu/kernel_patches -type f -name "*.patch" | sort)
+          else
+            echo "SUSFS=Off → skipping"
           fi
 
       - name: "Enable features via defconfig"
+
         shell: bash
         run: |
           set -euo pipefail
