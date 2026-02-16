@@ -606,10 +606,12 @@ jobs:
           rm -f "$OUT" || true
           (cd AnyKernel3 && zip -r9 "../$OUT" . -x "*.git*" -x "*README*" -x "*.md" >/dev/null)
           echo "OUT_ZIP=$OUT" >> "$GITHUB_ENV"
+
+          echo "FLASH_ZIP=$OUT" >> "$GITHUB_ENV"
           ls -lh "$OUT"
 
       - name: "Upload flashable zip"
         uses: actions/upload-artifact@v4
         with:
           name: OP13_KSUNext_FLASH
-          path: ${{ env.FLASH_ZIP }}
+          path: ${{ env.OUT_ZIP }}
