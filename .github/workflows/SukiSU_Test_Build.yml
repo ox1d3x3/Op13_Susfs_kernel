@@ -335,7 +335,9 @@ jobs:
             exit 1
           fi
           
-          echo "✅ KernelSU-Next installed (branch=$KSU_BRANCH)."      - name: "Apply optional Multi-Manager patch"
+          echo "✅ KernelSU-Next installed (branch=$KSU_BRANCH)."
+
+      - name: "Apply optional Multi-Manager patch"
         if: ${{ github.event.inputs.ksunext_multimanager == 'On' }}
         shell: bash
         run: |
@@ -436,7 +438,9 @@ jobs:
           test -f "fs/susfs.c" || { echo "::error::fs/susfs.c missing after patch"; exit 1; }
           test -f "include/linux/susfs.h" || { echo "::error::include/linux/susfs.h missing after patch"; exit 1; }
           
-          echo "✅ SUSFS patching complete."      - name: "Enable features via defconfig"
+          echo "✅ SUSFS patching complete."
+
+      - name: "Enable features via defconfig"
 
         shell: bash
         run: |
