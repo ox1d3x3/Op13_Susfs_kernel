@@ -1,4 +1,4 @@
-name: OP13 KernelSU Next 
+name: OP13 KernelSU Next
 
 'on':
   workflow_dispatch:
@@ -213,7 +213,8 @@ jobs:
             for p in "${CANDIDATES[@]}"; do
               if [ -x "$p/clang" ]; then
                 echo "Using AOSP clang prebuilts: $p"
-                echo "PATH=$p:$PATH" >> "$GITHUB_ENV"
+                export PATH="$p:$PATH"
+                echo "$p" >> "$GITHUB_PATH"
                 break
               fi
             done
@@ -223,12 +224,34 @@ jobs:
               exit 1
             fi
           else
-            echo "Installing Neutron-Clang..."
-            mkdir -p toolchains && cd toolchains
-            git clone --depth=1 https://github.com/Neutron-Toolchains/antman.git antman
-            cd antman
-            bash antman --install clang
-            echo "PATH=$GITHUB_WORKSPACE/toolchains/antman/bin:$PATH" >> "$GITHUB_ENV"
+            echo "Installing Neutron-Clang (AntMan)..."
+            cd "$GITHUB_WORKSPACE"
+            TOOLCHAIN_DIR="$GITHUB_WORKSPACE/toolchains/neutron-clang"
+            mkdir -p "$TOOLCHAIN_DIR"
+            cd "$TOOLCHAIN_DIR"
+            curl -fsSL -o antman "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
+            chmod +x antman
+            # Sync latest build
+            ./antman -S || ./antman -S=latest || ./antman -U
+          
+            # Add clang to PATH (current step + next steps)
+            if [ -x "$TOOLCHAIN_DIR/bin/clang" ]; then
+              export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+              echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
+            else
+              CLANG_BIN="$(find "$TOOLCHAIN_DIR" -type f -name clang -path "*/bin/clang" | head -n1 || true)"
+              if [ -n "$CLANG_BIN" ]; then
+                BIN_DIR="$(dirname "$CLANG_BIN")"
+                export PATH="$BIN_DIR:$PATH"
+                echo "$BIN_DIR" >> "$GITHUB_PATH"
+              fi
+            fi
+          
+            if ! command -v clang >/dev/null 2>&1; then
+              echo "Error: Neutron-Clang installed but clang not found in PATH."
+              find "$TOOLCHAIN_DIR" -maxdepth 5 -type f -name clang -path "*/bin/clang" -print || true
+              exit 1
+            fi
           fi
 
           clang --version | head -n 2
