@@ -1,4 +1,4 @@
-name: OP13 KernelSU-Next
+name: OP13 KernelSU-Next Build
 
 env:
   TZ: Asia/Shanghai
@@ -183,6 +183,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Git auth for non-interactive clones
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Prevent any interactive prompts during git operations
+          git config --global credential.helper store
+          git config --global core.askPass true
+          # Use the workflow token for any https://github.com/ clones (public or private where permitted)
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+
       - name: "Setup ccache directory"
         shell: bash
         run: |
@@ -287,7 +299,17 @@ jobs:
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
           if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
             rm -rf susfs4ksu || true
-            git clone --depth=1 -b gki-android15-6.6 https://github.com/sidex15/susfs4ksu.git susfs4ksu
+            SUSFS_REF="gki-android15-6.6"
+          SUSFS_REPO_PRIMARY="https://gitlab.com/simonpunk/susfs4ksu.git"
+          SUSFS_REPO_FALLBACK="https://github.com/Star-Seven/susfs4ksu.git"
+
+          echo "Cloning susfs4ksu ($SUSFS_REF) ..."
+          if git ls-remote --exit-code --heads "$SUSFS_REPO_PRIMARY" "$SUSFS_REF" >/dev/null 2>&1; then
+            git clone --depth=1 -b "$SUSFS_REF" "$SUSFS_REPO_PRIMARY" susfs
+          else
+            echo "Primary SUSFS repo/branch not reachable. Trying fallback..."
+            git clone --depth=1 -b "$SUSFS_REF" "$SUSFS_REPO_FALLBACK" susfs
+          fi4ksu
             for p in susfs4ksu/kernel_patches/*.patch; do
               [ -f "$p" ] || continue
               if git apply --whitespace=nowarn "$p"; then
