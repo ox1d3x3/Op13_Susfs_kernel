@@ -1,5 +1,11 @@
 name: OP13 KernelSU Next
 
+env:
+  TZ: UTC
+  ANDROID_VERSION: android15
+  KERNEL_VERSION: "6.6"   # label only; actual release (e.g. 6.6.89) is detected at build time
+  KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
+
 'on':
   workflow_dispatch:
     inputs:
@@ -48,6 +54,18 @@ name: OP13 KernelSU Next
         default: false
         type: boolean
 
+      enable_bbg:
+        description: 'Enable BBG baseband guard (CONFIG_BBG) (best-effort)'
+        required: true
+        default: true
+        type: boolean
+
+      enable_adios:
+        description: 'Enable ADIOS I/O scheduler (CONFIG_MQ_IOSCHED_ADIOS) (best-effort)'
+        required: true
+        default: true
+        type: boolean
+
       enable_zram_lz4:
         description: 'Enable ZRAM LZ4 patch (best-effort)'
         required: true
@@ -61,9 +79,9 @@ name: OP13 KernelSU Next
         type: boolean
 
       kernel_suffix:
-        description: 'Kernel local version suffix appended to 6.6.89- (no leading ''-'')'
+        description: 'Kernel local version suffix (e.g. OP-OX, OP-WILD) appended as CONFIG_LOCALVERSION'
         required: true
-        default: android15-8-g29d86c5fc9dd-abogki428889875-4k
+        default: OP-OX
         type: string
 
       build_user:
@@ -356,11 +374,14 @@ jobs:
               fi
             done
 
-            [ -f "$GITHUB_WORKSPACE/kernel_workspace/wildkernel_patches/hmbird_config.patch" ] && \
+            if [ -f "$GITHUB_WORKSPACE/kernel_workspace/wildkernel_patches/hmbird_config.patch" ]; then
               apply_patch "hmbird_config.patch" bash -lc "patch -p1 < '$GITHUB_WORKSPACE/kernel_workspace/wildkernel_patches/hmbird_config.patch'"
+            fi
 
-            [ -f "$GITHUB_WORKSPACE/kernel_workspace/wildkernel_patches/overwriter.patch" ] && \
+            if [ -f "$GITHUB_WORKSPACE/kernel_workspace/wildkernel_patches/overwriter.patch" ]; then
               apply_patch "overwriter.patch" bash -lc "patch -p1 < '$GITHUB_WORKSPACE/kernel_workspace/wildkernel_patches/overwriter.patch'"
+            fi
+            true
           fi
 
       - name: Configure kernel defconfig (idempotent)
@@ -401,8 +422,20 @@ jobs:
           [ "${{ github.event.inputs.enable_ttl }}" = "true" ] && set_config "CONFIG_NETFILTER_XT_TARGET_TTL" "y" || set_config "CONFIG_NETFILTER_XT_TARGET_TTL" "n"
           [ "${{ github.event.inputs.enable_ipset }}" = "true" ] && set_config "CONFIG_IP_SET" "y" || set_config "CONFIG_IP_SET" "n"
           [ "${{ github.event.inputs.enable_bbr }}" = "true" ] && set_config "CONFIG_TCP_CONG_BBR" "y" || set_config "CONFIG_TCP_CONG_BBR" "n"
+          
+          # WildKernels-style extras
+          [ "${{ github.event.inputs.enable_bbg }}" = "true" ] && set_config "CONFIG_BBG" "y" || set_config "CONFIG_BBG" "n"
+          if [ "${{ github.event.inputs.enable_adios }}" = "true" ]; then
+            set_config "CONFIG_MQ_IOSCHED_ADIOS" "y"
+            set_config "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS" "y"
+          else
+            set_config "CONFIG_MQ_IOSCHED_ADIOS" "n"
+            set_config "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS" "n"
+          fi
 
           SUFFIX="${{ github.event.inputs.kernel_suffix }}"
+          # Sanitize (avoid characters that can break uname/module matching)
+          SUFFIX="${SUFFIX//[^A-Za-z0-9._-]/}"
           set_config "CONFIG_LOCALVERSION" "\"-${SUFFIX}\""
 
           echo "Defconfig updated:"
@@ -453,84 +486,84 @@ jobs:
           BUILD_ID="$(date -u '+%Y%m%d-%H%M')"
 
           cat > ak3/banner <<-'EOF'
-          	====================================================
-          	            Ox1d3x3 OP13 KernelSU Next
-          	====================================================
-          	   __   __  __
-          	  \ \ / //_ |
-          	   \ V /   | |
-          	    > <    | |
-          	   / . \   | |
-          	  /_/ \_\  |_|
-          	====================================================
-          	EOF
+            ====================================================
+                        Ox1d3x3 OP13 KernelSU Next
+            ====================================================
+               __   __  __
+              \ \ / //_ |
+               \ V /   | |
+                > <    | |
+               / . \   | |
+              /_/ \_\  |_|
+            ====================================================
+            EOF
 
           cat > ak3/anykernel.sh <<-'EOF'
-          	### AnyKernel3 Ramdisk Mod Script
-          	## osm0sis @ xda-developers
-          	
-          	properties() { '
-          	kernel.string=Ox1d3x3 OP13 KernelSU Next
-          	do.devicecheck=0
-          	do.modules=0
-          	do.systemless=0
-          	do.cleanup=1
-          	do.cleanuponabort=0
-          	supported.versions=
-          	supported.patchlevels=
-          	supported.vendorpatchlevels=
-          	'; }
-          	
-          	block=boot
-          	is_slot_device=auto
-          	ramdisk_compression=auto
-          	patch_vbmeta_flag=auto
-          	no_magisk_check=1
-          	
-          	. tools/ak3-core.sh
-          	
-          	ui_print " "
-          	ui_print "PJZ110 | KernelSU Next Kernel"
-          	ui_print "Kernel : __KERNEL_RELEASE__"
-          	ui_print "Tag    : __KERNEL_TAG__"
-          	ui_print "Build  : __BUILD_ID__"
-          	ui_print "KSU    : v__KSUVER__ (__KSU_COMMIT__)"
-          	ui_print "Builder: @Ox1d3x3"
-          	ui_print "Credits: @mrcxlinux, @WildKernels, @osm0sis"
-          	ui_print " "
-          	
-          	DEVICE="$(getprop ro.product.device 2>/dev/null)"; [ -z "$DEVICE" ] && DEVICE="$(getprop ro.product.name 2>/dev/null)"
-          	PATCH="$(getprop ro.build.version.security_patch 2>/dev/null)"
-          	ANDROID="$(getprop ro.build.version.release 2>/dev/null)"
-          	SLOT_SUFFIX="$(getprop ro.boot.slot_suffix 2>/dev/null)"
-          	[ -n "$SLOT_SUFFIX" ] && ui_print "Slot   : $SLOT_SUFFIX"
-          	ui_print "Device : $DEVICE"
-          	ui_print "Android: $ANDROID"
-          	ui_print "Patch  : $PATCH"
-          	ui_print " "
-          	
-          	if command -v cmd >/dev/null 2>&1; then
-          	  (cmd activity start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true
-          	elif command -v am >/dev/null 2>&1; then
-          	  (am start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true
-          	fi
-          	
-          	kernel_version=$(cat /proc/version | awk -F '-' '{print $1}' | awk '{print $3}')
-          	case $kernel_version in
-          	  5.1*|6.1*|6.6*) ksu_supported=true ;;
-          	  *) ksu_supported=false ;;
-          	esac
-          	ui_print "  -> GKI kernel supported: $ksu_supported"
-          	$ksu_supported || abort "  -> Non-GKI device, abort."
-          	
-          	split_boot
-          	if [ -f "split_img/ramdisk.cpio" ]; then
-          	  unpack_ramdisk
-          	  write_boot
-          	else
-          	  flash_boot
-          	fi
-          	EOF
+            ### AnyKernel3 Ramdisk Mod Script
+            ## osm0sis @ xda-developers
+            
+            properties() { '
+            kernel.string=Ox1d3x3 OP13 KernelSU Next
+            do.devicecheck=0
+            do.modules=0
+            do.systemless=0
+            do.cleanup=1
+            do.cleanuponabort=0
+            supported.versions=
+            supported.patchlevels=
+            supported.vendorpatchlevels=
+            '; }
+            
+            block=boot
+            is_slot_device=auto
+            ramdisk_compression=auto
+            patch_vbmeta_flag=auto
+            no_magisk_check=1
+            
+            . tools/ak3-core.sh
+            
+            ui_print " "
+            ui_print "PJZ110 | KernelSU Next Kernel"
+            ui_print "Kernel : __KERNEL_RELEASE__"
+            ui_print "Tag    : __KERNEL_TAG__"
+            ui_print "Build  : __BUILD_ID__"
+            ui_print "KSU    : v__KSUVER__ (__KSU_COMMIT__)"
+            ui_print "Builder: @Ox1d3x3"
+            ui_print "Credits: @mrcxlinux, @WildKernels, @osm0sis"
+            ui_print " "
+            
+            DEVICE="$(getprop ro.product.device 2>/dev/null)"; [ -z "$DEVICE" ] && DEVICE="$(getprop ro.product.name 2>/dev/null)"
+            PATCH="$(getprop ro.build.version.security_patch 2>/dev/null)"
+            ANDROID="$(getprop ro.build.version.release 2>/dev/null)"
+            SLOT_SUFFIX="$(getprop ro.boot.slot_suffix 2>/dev/null)"
+            [ -n "$SLOT_SUFFIX" ] && ui_print "Slot   : $SLOT_SUFFIX"
+            ui_print "Device : $DEVICE"
+            ui_print "Android: $ANDROID"
+            ui_print "Patch  : $PATCH"
+            ui_print " "
+            
+            if command -v cmd >/dev/null 2>&1; then
+              (cmd activity start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true
+            elif command -v am >/dev/null 2>&1; then
+              (am start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true
+            fi
+            
+            kernel_version=$(cat /proc/version | awk -F '-' '{print $1}' | awk '{print $3}')
+            case $kernel_version in
+              5.1*|6.1*|6.6*) ksu_supported=true ;;
+              *) ksu_supported=false ;;
+            esac
+            ui_print "  -> GKI kernel supported: $ksu_supported"
+            $ksu_supported || abort "  -> Non-GKI device, abort."
+            
+            split_boot
+            if [ -f "split_img/ramdisk.cpio" ]; then
+              unpack_ramdisk
+              write_boot
+            else
+              flash_boot
+            fi
+            EOF
 
           KR="${KERNEL_RELEASE:-unknown}"
           KC="${KSU_COMMIT:-unknown}"
