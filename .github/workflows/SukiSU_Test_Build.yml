@@ -277,7 +277,8 @@ jobs:
           # Add AOSP kernel build tools (contains ld.lld, llvm-ar, etc.) to PATH
           KERNEL_PLATFORM="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
           ADD_PATHS=()
-          for p in "$KERNEL_PLATFORM/prebuilts/kernel-build-tools/linux-x86/bin"                    "$KERNEL_PLATFORM/prebuilts/kernel-build-tools/linux_musl-x86/bin"                    "$KERNEL_PLATFORM/prebuilts/build-tools/path/linux-x86"; do
+          for p in "$KERNEL_PLATFORM/prebuilts/kernel-build-tools/linux-x86/bin" \
+                    "$KERNEL_PLATFORM/prebuilts/kernel-build-tools/linux_musl-x86/bin"; do
             if [ -d "$p" ]; then
               echo "$p" >> "$GITHUB_PATH"
               ADD_PATHS+=("$p")
@@ -296,14 +297,45 @@ jobs:
           ld.lld --version || true
 
 
-      - name: "Integrate KernelSU-Next (stable)"
+      - name: "Integrate KernelSU-Next (next / next-susfs)"
         shell: bash
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
-          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s stable
-
-      - name: "Apply optional Multi-Manager patch"
+          
+          # Branch selection:
+          #   SUSFS=On  -> KernelSU-Next next-susfs
+          #   SUSFS=Off -> KernelSU-Next next
+          KSU_BRANCH="next"
+          if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
+            KSU_BRANCH="next-susfs"
+          fi
+          
+          tmp="/tmp/ksu_setup.sh"
+          urls=(
+            "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/${KSU_BRANCH}/kernel/setup.sh"
+            "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/refs/heads/${KSU_BRANCH}/kernel/setup.sh"
+            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/${KSU_BRANCH}/kernel/setup.sh"
+          )
+          
+          ok=0
+          for u in "${urls[@]}"; do
+            echo "→ Trying KernelSU setup: $u (branch=$KSU_BRANCH)"
+            if curl -fsSL "$u" -o "$tmp"; then
+              chmod +x "$tmp" || true
+              if bash "$tmp" "$KSU_BRANCH"; then
+                ok=1
+                break
+              fi
+            fi
+          done
+          
+          if [[ "$ok" != "1" ]]; then
+            echo "::error::KernelSU-Next setup failed (branch=$KSU_BRANCH)."
+            exit 1
+          fi
+          
+          echo "✅ KernelSU-Next installed (branch=$KSU_BRANCH)."      - name: "Apply optional Multi-Manager patch"
         if: ${{ github.event.inputs.ksunext_multimanager == 'On' }}
         shell: bash
         run: |
@@ -317,37 +349,94 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
-
-          if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
-            rm -rf susfs4ksu || true
-
-            SUSFS_REF="gki-android15-6.6"
-            SUSFS_REPO_PRIMARY="https://gitlab.com/simonpunk/susfs4ksu.git"
-            SUSFS_REPO_FALLBACK="https://github.com/Star-Seven/susfs4ksu.git"
-
-            echo "Cloning susfs4ksu ($SUSFS_REF) ..."
-            if git ls-remote --exit-code --heads "$SUSFS_REPO_PRIMARY" "$SUSFS_REF" >/dev/null 2>&1; then
-              git clone --depth=1 -b "$SUSFS_REF" "$SUSFS_REPO_PRIMARY" susfs4ksu
-            else
-              echo "Primary SUSFS repo/branch not reachable. Trying fallback..."
-              git clone --depth=1 -b "$SUSFS_REF" "$SUSFS_REPO_FALLBACK" susfs4ksu
-            fi
-
-            echo "Applying SUSFS patches (best-effort)..."
-            while IFS= read -r p; do
-              [ -f "$p" ] || continue
-              if git apply --whitespace=nowarn "$p"; then
-                echo "✅ Applied: $(basename "$p")"
-              else
-                echo "⚠️ Skipped: $(basename "$p")"
-              fi
-            done < <(find susfs4ksu/kernel_patches -type f -name "*.patch" | sort)
-          else
-            echo "SUSFS=Off → skipping"
+          
+          if [[ "${{ github.event.inputs.SUSFS }}" != "On" ]]; then
+            echo "SUSFS disabled → skipping."
+            exit 0
           fi
-
-      - name: "Enable features via defconfig"
+          
+          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+          
+          BR="gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
+          echo "Using susfs4ksu branch: $BR"
+          
+          rm -rf susfs4ksu || true
+          
+          clone_ok=0
+          for repo in   "https://gitlab.com/pershoot/susfs4ksu.git"   "https://gitlab.com/simonpunk/susfs4ksu.git"   "https://github.com/Star-Seven/susfs4ksu.git"
+          do
+            echo "→ Trying susfs4ksu: $repo"
+            if git clone --depth 3 --no-tags -b "$BR" "$repo" susfs4ksu; then
+              clone_ok=1
+              break
+            fi
+          done
+          
+          if [[ "$clone_ok" != "1" ]]; then
+            echo "::error::Failed to clone susfs4ksu (branch=$BR) from all mirrors."
+            exit 1
+          fi
+          
+          PATCHDIR="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/susfs4ksu/kernel_patches"
+          KERNELSRC="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/common"
+          
+          MAINPATCH="$PATCHDIR/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch"
+          HOOKPATCH="$PATCHDIR/60_scope-minimized_manual_hooks.patch"
+          
+          if [[ ! -f "$MAINPATCH" ]]; then
+            echo "::error::Main SUSFS patch not found: $MAINPATCH"
+            echo "Available patches in $PATCHDIR:"
+            ls -la "$PATCHDIR" || true
+            exit 1
+          fi
+          
+          echo "Copying SUSFS source/header files (if present)..."
+          if [[ -d "$PATCHDIR/fs" ]]; then
+            cp -pf "$PATCHDIR"/fs/* "$KERNELSRC"/fs/
+          fi
+          if [[ -d "$PATCHDIR/include/linux" ]]; then
+            cp -pf "$PATCHDIR"/include/linux/* "$KERNELSRC"/include/linux/
+          fi
+          
+          apply_patch() {
+            local p="$1"
+            echo "==> Applying: $(basename "$p")"
+            if git apply --check "$p" >/dev/null 2>&1; then
+              git apply "$p"
+              echo "✅ Applied"
+              return 0
+            fi
+            if git apply --reverse --check "$p" >/dev/null 2>&1; then
+              echo "↩️ Already applied (skipping)"
+              return 0
+            fi
+            echo "::error::Patch does not apply cleanly: $p"
+            git apply --reject --whitespace=nowarn "$p" || true
+            echo "Rejects (if any):"
+            find . -name "*.rej" -maxdepth 4 -print || true
+            exit 1
+          }
+          
+          cd "$KERNELSRC"
+          
+          apply_patch "$MAINPATCH"
+          
+          if [[ -f "$HOOKPATCH" ]]; then
+            apply_patch "$HOOKPATCH"
+          else
+            echo "⚠️ Hook patch not found (OK on some branches): $HOOKPATCH"
+          fi
+          
+          # Wi-Fi/BT build fix used by upstream guide (best-effort)
+          if [[ -f "BUILD.bazel" ]]; then
+            sed -i '/protected_exports_list.*abi_gki_protected_exports_aarch64/d' BUILD.bazel || true
+          fi
+          
+          # Sanity checks so we don't ship a kernel without SUSFS
+          test -f "fs/susfs.c" || { echo "::error::fs/susfs.c missing after patch"; exit 1; }
+          test -f "include/linux/susfs.h" || { echo "::error::include/linux/susfs.h missing after patch"; exit 1; }
+          
+          echo "✅ SUSFS patching complete."      - name: "Enable features via defconfig"
 
         shell: bash
         run: |
@@ -513,6 +602,21 @@ jobs:
           echo "KERNEL_RELEASE=$REL" >> "$GITHUB_ENV"
           echo "Kernel release: $REL"
 
+      - name: Verify final config (KernelSU-Next / SUSFS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          CFG="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/out/.config"
+          if [[ ! -f "$CFG" ]]; then
+            echo "::error::.config not found: $CFG"
+            exit 1
+          fi
+          echo "Checking $CFG ..."
+          if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
+            grep -q '^CONFIG_KSU_SUSFS=y' "$CFG" || { echo "::error::CONFIG_KSU_SUSFS=y missing in final .config"; grep -n 'KSU_SUSFS' "$CFG" || true; exit 1; }
+          fi
+          echo "✅ Config looks good."
+
       - name: "Package AnyKernel3 (single zip, banner, no breakage)"
         shell: bash
         run: |
@@ -610,8 +714,61 @@ jobs:
           echo "FLASH_ZIP=$OUT" >> "$GITHUB_ENV"
           ls -lh "$OUT"
 
-      - name: "Upload flashable zip"
+      - name: "Generate checksums"
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum "${{ env.OUT_ZIP }}" | tee "${{ env.OUT_ZIP }}.sha256"
+
+      - name: "Upload flashable zip (artifact wrapper)"
         uses: actions/upload-artifact@v4
         with:
           name: OP13_KSUNext_FLASH
-          path: ${{ env.OUT_ZIP }}
+          path: |
+            ${{ env.OUT_ZIP }}
+            ${{ env.OUT_ZIP }}.sha256
+          if-no-files-found: error
+
+      - name: Reset PATH for cache save (system tar)
+        if: always()
+        shell: bash
+        run: |
+          echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" >> "$GITHUB_ENV"
+          echo "TAR=/usr/bin/tar" >> "$GITHUB_ENV"
+
+      - name: "Prepare GitHub Release"
+        id: rel
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Use run_attempt so re-runs don't collide with existing tags
+          TAG="v${{ github.run_number }}.${{ github.run_attempt }}-${{ env.SUFFIX }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "name=OP13 KSUNext $TAG" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG"
+
+      - name: "Publish GitHub Release (direct-download flash ZIP)"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.rel.outputs.tag }}
+          name: ${{ steps.rel.outputs.name }}
+          prerelease: true
+          generate_release_notes: true
+          files: |
+            ${{ env.OUT_ZIP }}
+            ${{ env.OUT_ZIP }}.sha256
+
+      - name: "Summary"
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Output"
+            echo ""
+            echo "- Flashable ZIP: **${{ env.OUT_ZIP }}**"
+            echo "- SHA256: **${{ env.OUT_ZIP }}.sha256**"
+            echo ""
+            echo "### Note about Artifacts"
+            echo "GitHub Artifacts download as a wrapper ZIP. If you download the Artifact, extract it and flash **${{ env.OUT_ZIP }}**."
+            echo "For direct download (no wrapper ZIP), use the **GitHub Release** asset created by this run."
+          } >> "$GITHUB_STEP_SUMMARY"
