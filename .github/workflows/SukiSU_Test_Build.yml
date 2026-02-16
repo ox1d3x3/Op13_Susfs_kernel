@@ -84,6 +84,13 @@ on:
         default: "On"
         options: ["On", "Off"]
 
+      hmbird:
+        description: "Enable HMBIRD (FengChi + overwriter config) (best-effort)"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+
       kernel_suffix:
         description: "Kernel suffix (LOCALVERSION). Leave empty to use KERNEL_NAME"
         type: string
@@ -126,7 +133,7 @@ jobs:
       - name: "Maximize build space"
         uses: easimon/maximize-build-space@v10
         with:
-          root-reserve-mb: 8192
+          root-reserve-mb: 2048
           temp-reserve-mb: 4096
           remove-dotnet: "true"
           remove-android: "true"
@@ -140,6 +147,8 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost /usr/local/share/powershell /opt/hostedtoolcache/CodeQL || true
           sudo apt-get clean || true
           sudo rm -rf /var/lib/apt/lists/* || true
+          sudo docker image prune -a -f || true
+          sudo docker system prune -af || true
           df -h
 
       - name: "Setup ccache directory"
@@ -182,7 +191,7 @@ jobs:
           set -euo pipefail
           mkdir -p kernel_workspace
           cd kernel_workspace
-          repo init -u https://github.com/mrcxlinux/actions_oplus_sm8750.git -b english --depth=1
+          repo init -u https://github.com/mrcxlinux/actions_oplus_sm8750.git -b refs/heads/english -m manifest.xml --depth=1
           repo sync -c -j"$(nproc)" --no-tags --no-clone-bundle --force-sync
 
           rm -f kernel_platform/common/android/abi_gki_protected_exports_* || true
@@ -300,6 +309,71 @@ jobs:
           echo "KBUILD_BUILD_TIMESTAMP=$DATESTR" >> "$GITHUB_ENV"
           echo "KBUILD_BUILD_VERSION=1" >> "$GITHUB_ENV"
 
+      - name: "Clone WildKernel kernel_patches (for HMBIRD etc)"
+        if: ${{ github.event.inputs.hmbird == 'On' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rm -rf kernel_patches || true
+          git config --global url."https://x-access-token:${{ github.token }}@github.com/".insteadOf "https://github.com/"
+          git clone --depth=1 https://github.com/TheWildJames/kernel_patches.git kernel_patches
+
+      - name: "Apply WildKernel patches (HMBIRD/overwriter) (best-effort)"
+        if: ${{ github.event.inputs.hmbird == 'On' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+
+          apply_best_effort() {
+            local p="$1"
+            if [ ! -f "$p" ]; then
+              echo "⚠️ Skipped (missing): $(basename "$p")"
+              return 0
+            fi
+
+            local tmp=""
+            if grep -q "GIT binary patch" "$p"; then
+              tmp="$p"
+            else
+              tmp="$(mktemp)"
+              tr -d '\r' < "$p" > "$tmp"
+            fi
+
+            if patch -p1 -F 3 -N --silent < "$tmp"; then
+              echo "✅ Applied: $(basename "$p")"
+            elif git apply --reject --whitespace=nowarn "$tmp" >/dev/null 2>&1; then
+              echo "✅ Applied (git): $(basename "$p")"
+            else
+              echo "⚠️ Skipped (does not apply cleanly): $(basename "$p")"
+            fi
+
+            if [ "$tmp" != "$p" ]; then rm -f "$tmp"; fi
+            return 0
+          }
+
+          echo "Applying HMBIRD-related patches (best-effort)..."
+          HMBIRD_DIR="$GITHUB_WORKSPACE/kernel_patches/oneplus/hmbird"
+
+          # Pick the most likely FengChi patch (apply at most ONE)
+          pick_first() { for f in "$@"; do [ -f "$f" ] && { echo "$f"; return 0; }; done; return 1; }
+          FENGCHI="$(pick_first             "$HMBIRD_DIR/fengchi_PJZ110_OOS15.patch"             "$HMBIRD_DIR/fengchi_PJZ110_OOS16.patch"             "$HMBIRD_DIR/fengchi_OP13_OOS15.patch"             "$HMBIRD_DIR/fengchi_OP13_OOS16.patch"           )" || true
+          if [ -n "${FENGCHI:-}" ]; then
+            echo "→ FengChi: $(basename "$FENGCHI")"
+            apply_best_effort "$FENGCHI"
+          else
+            echo "⚠️ No FengChi patch matched (skipping fengchi)"
+          fi
+
+          apply_best_effort "$HMBIRD_DIR/overwriter.patch"
+          apply_best_effort "$HMBIRD_DIR/hmbird_config.patch"
+
+          # Optional common optimizations used by WildKernel action (best-effort)
+          COMMON_DIR="$GITHUB_WORKSPACE/kernel_patches/common"
+          apply_best_effort "$COMMON_DIR/optimized_mem_operations.patch"
+          apply_best_effort "$COMMON_DIR/file_struct_8bytes_align.patch"
+
       - name: "Fix permissions for overwriter scripts"
         shell: bash
         run: |
@@ -319,95 +393,100 @@ jobs:
           echo "KERNEL_RELEASE=$REL" >> "$GITHUB_ENV"
           echo "Kernel release: $REL"
 
-      - name: "Package AnyKernel3 (single zip)"
+      - name: "Package AnyKernel3 (single zip, banner, no breakage)"
         shell: bash
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
+
           rm -rf AnyKernel3 || true
-          git clone --depth=1 https://github.com/mrcxlinux/AnyKernel3 AnyKernel3
+          git config --global url."https://x-access-token:${{ github.token }}@github.com/".insteadOf "https://github.com/"
+          git clone --depth=1 -b gki-2.0 https://github.com/TheWildJames/AnyKernel3 AnyKernel3
           rm -rf AnyKernel3/.git
 
           IMAGE_PATH="$(find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/out" -type f -name Image | head -n 1 || true)"
-          if [ -z "$IMAGE_PATH" ]; then echo "Image not found"; exit 1; fi
+          if [ -z "$IMAGE_PATH" ]; then
+            echo "❌ Image not found in out/ (build likely failed)."
+            exit 1
+          fi
           cp "$IMAGE_PATH" "AnyKernel3/Image"
 
-          \
-          python3 - << 'PY'
-          import pathlib, re, os
-          ak = pathlib.Path("AnyKernel3/anykernel.sh")
-          data = ak.read_text(encoding="utf-8", errors="ignore").splitlines(True)
+          # Patch anykernel.sh safely: keep properties() intact; update strings + inject our info block after ak3-core is sourced.
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, re
 
-          tag = os.environ.get("KERNEL_RELEASE","")
-          build = os.environ.get("GITHUB_RUN_NUMBER","")
-          ascii_block = (
-          'ui_print "===================================================="\n'
-          'ui_print "                   __   __  __ " \n'
-          'ui_print "                  \\ \\ / //_ |"\n'
-          'ui_print "                   \\ V /   | |"\n'
-          'ui_print "                     > <    | |"\n'
-          'ui_print "                   / . \\   | |"\n'
-          'ui_print "                 /_/ \\_\\  |_|"\n'
-          'ui_print "===================================================="\n'
-          )
+          ak = Path("AnyKernel3/anykernel.sh")
+          s = ak.read_text(encoding="utf-8", errors="replace")
 
-          banner = []
-          banner.append('ui_print " "\n')
-          banner.append(ascii_block)
-          banner.append('ui_print " "\n')
-          banner.append('ui_print "PJZ110 | KernelSU-Next Kernel"\n')
-          banner.append(f'ui_print "Kernel : {tag}"\n')
-          banner.append(f'ui_print "Build  : {build}"\n')
-          banner.append('ui_print "Builder: @Ox1d3x3"\n')
-          banner.append('ui_print "Credits: @mrcxlinux"\n')
-          banner.append('ui_print " "\n')
-          banner.append('DEVICE="$(getprop ro.product.device 2>/dev/null)"; [ -z "$DEVICE" ] && DEVICE="$(getprop ro.product.name 2>/dev/null)"\n')
-          banner.append('PATCH="$(getprop ro.build.version.security_patch 2>/dev/null)"\n')
-          banner.append('ANDROID="$(getprop ro.build.version.release 2>/dev/null)"\n')
-          banner.append('SLOT_SUFFIX="$(getprop ro.boot.slot_suffix 2>/dev/null)"\n')
-          banner.append('if [ -z "$SLOT_SUFFIX" ]; then SLOT="$(getprop ro.boot.slot 2>/dev/null)"; [ -n "$SLOT" ] && SLOT_SUFFIX="_$SLOT"; fi\n')
-          banner.append('if [ -z "$SLOT_SUFFIX" ]; then SLOT_SUFFIX="$(grep -oE "androidboot.slot_suffix=[^ ]+" /proc/cmdline 2>/dev/null | head -n1 | cut -d= -f2)"; fi\n')
-          banner.append('if [ -z "$SLOT_SUFFIX" ]; then SLOT="$(grep -oE "androidboot.slot=[^ ]+" /proc/cmdline 2>/dev/null | head -n1 | cut -d= -f2)"; [ -n "$SLOT" ] && SLOT_SUFFIX="_$SLOT"; fi\n')
-          banner.append('ui_print "Device : $DEVICE"\n')
-          banner.append('ui_print "Android: $ANDROID"\n')
-          banner.append('ui_print "Patch  : $PATCH"\n')
-          banner.append('if [ -n "$SLOT_SUFFIX" ]; then ui_print "Slot   : $SLOT_SUFFIX"; fi\n')
-          banner.append('ui_print " "\n')
+          # Clean english kernel.string
+          s = re.sub(r'^\s*kernel\.string=.*$', 'kernel.string=PJZ110 | KernelSU-Next (OP-OX)', s, flags=re.M)
 
-          banner.append('if [ -n "$(command -v cmd 2>/dev/null)" ]; then\n')
-          banner.append('  (cmd activity start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true\n')
-          banner.append('elif [ -n "$(command -v am 2>/dev/null)" ]; then\n')
-          banner.append('  (am start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true\n')
-          banner.append('fi\n')
+          # Remove previous custom injection (idempotent)
+          s = re.sub(r'\n# --- OX1D3X3 CUSTOM START ---.*?# --- OX1D3X3 CUSTOM END ---\n', '\n', s, flags=re.S)
 
-          banner_text = "".join(banner)
+          m = re.search(r'\n\.\s+tools/ak3-core\.sh\s*\n', s)
+          if not m:
+            raise SystemExit("Cannot find '. tools/ak3-core.sh' marker in anykernel.sh")
 
-          out=[]
-          inserted=False
-          for line in data:
-              out.append(line)
-              if (not inserted) and re.match(r'\s*#\s*AnyKernel3', line):
-                  out.append("\n# --- Custom Banner (Ox1d3x3) ---\n")
-                  out.append(banner_text)
-                  out.append("# --- End Banner ---\n\n")
-                  inserted=True
-          if not inserted:
-              out = data[:1] + ["\n# --- Custom Banner (Ox1d3x3) ---\n", banner_text, "# --- End Banner ---\n\n"] + data[1:]
+          run_number = os.environ.get("GITHUB_RUN_NUMBER", "")
+          kernel_rel = os.environ.get("KERNEL_RELEASE", "")
+          suffix = os.environ.get("SUFFIX", "OP-OX")
 
-          ak.write_text("".join(out), encoding="utf-8")
-          print("Banner injected into anykernel.sh")
+          block = f"""
+          # --- OX1D3X3 CUSTOM START ---
+          ui_print " "
+          ui_print "===================================================="
+          ui_print "                   __   __  __ "
+          ui_print "                  \\ \\ / //_ |"
+          ui_print "                   \\ V /   | |"
+          ui_print "                     > <    | |"
+          ui_print "                   / . \\   | |"
+          ui_print "                 /_/ \\_\\  |_|"
+          ui_print "===================================================="
+          ui_print " "
+          ui_print "PJZ110 | KernelSU-Next + SUSFS"
+          ui_print "Kernel : {kernel_rel}"
+          ui_print "Build  : #{run_number} ({suffix})"
+          ui_print "Builder: @Ox1d3x3"
+          ui_print "Credits: @mrcxlinux, WildKernels"
+          ui_print " "
+
+          device="$(getprop ro.product.device 2>/dev/null || true)"
+          model="$(getprop ro.product.model 2>/dev/null || true)"
+          android="$(getprop ro.build.version.release 2>/dev/null || true)"
+          patch="$(getprop ro.build.version.security_patch 2>/dev/null || true)"
+          if [ -n "$device" ]; then ui_print "Device : $device ($model)"; fi
+          if [ -n "$android" ]; then ui_print "Android: $android"; fi
+          if [ -n "$patch" ]; then ui_print "Patch  : $patch"; fi
+          ui_print " "
+
+          # Best-effort open project page (may be ignored in recovery)
+          if command -v cmd >/dev/null 2>&1; then
+            (cmd activity start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true
+          elif command -v am >/dev/null 2>&1; then
+            (am start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true
+          fi
+          # --- OX1D3X3 CUSTOM END ---
+          """
+
+          s = s[:m.end()] + block + s[m.end():]
+          ak.write_text(s, encoding="utf-8")
           PY
 
+          # Plain-text banner shown early by update-binary (optional)
+          cat > AnyKernel3/banner <<'EOF'
+          ====================================================
+                         Ox1d3x3 Kernel
+                   KernelSU-Next + SUSFS
+          ====================================================
+          EOF
 
-          chmod +x AnyKernel3/anykernel.sh || true
-          find AnyKernel3 -type f -name "*.sh" -exec chmod +x {} \; || true
-          [ -f AnyKernel3/META-INF/com/google/android/update-binary ] && chmod +x AnyKernel3/META-INF/com/google/android/update-binary || true
-
-          mkdir -p out
-          REL="${{ env.KERNEL_RELEASE }}"
-          ZIP_NAME="OP13_${{ env.ANDROID_VERSION }}_${REL}_KSUNext_${{ github.run_number }}_SUSFS-${{ github.event.inputs.SUSFS }}_FLASH_THIS.zip"
-          (cd AnyKernel3 && zip -r9 "$GITHUB_WORKSPACE/out/$ZIP_NAME" . -x ".git/*" "*.md" "*.txt")
-          echo "FLASH_ZIP=$GITHUB_WORKSPACE/out/$ZIP_NAME" >> "$GITHUB_ENV"
+          OUT="OP13_${{ env.ANDROID_VERSION }}_${{ env.KERNEL_VERSION }}_${{ env.SUFFIX }}_${{ github.run_number }}_SUSFS_FLASH_THIS.zip"
+          rm -f "$OUT" || true
+          (cd AnyKernel3 && zip -r9 "../$OUT" . -x "*.git*" -x "*README*" -x "*.md" >/dev/null)
+          echo "OUT_ZIP=$OUT" >> "$GITHUB_ENV"
+          ls -lh "$OUT"
 
       - name: "Upload flashable zip"
         uses: actions/upload-artifact@v4
