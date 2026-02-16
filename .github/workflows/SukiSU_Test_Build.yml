@@ -1,4 +1,4 @@
-name: OP13 KernelSU Next
+name: OP13 KernelSU Next 
 
 'on':
   workflow_dispatch:
@@ -122,6 +122,33 @@ jobs:
           remove-android: 'true'
           remove-haskell: 'true'
           remove-codeql: 'true'
+
+      - name: Free disk space (prevent apt no-space-left)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== Before cleanup =="
+          df -h
+
+          # Reduce apt metadata size
+          echo 'Acquire::Languages "none";' | sudo tee /etc/apt/apt.conf.d/99no-translations >/dev/null
+
+          # Remove large preinstalled components not needed for kernel builds
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/share/swift || true
+
+          # Clean apt caches/lists to free space
+          sudo rm -rf /var/lib/apt/lists/* || true
+          sudo rm -rf /var/cache/apt/archives/* || true
+          sudo apt-get clean || true
+
+          # Remove docker leftovers if present
+          docker system prune -af >/dev/null 2>&1 || true
+
+          echo "== After cleanup =="
+          df -h
 
       - name: Install build dependencies
         shell: bash
