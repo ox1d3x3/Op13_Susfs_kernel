@@ -1,4 +1,4 @@
-name: OP13 KernelSU-Next 
+name: OP13 KernelSU-Next
 
 env:
   TZ: Asia/Shanghai
@@ -358,7 +358,8 @@ jobs:
           fi
           
           KERNEL_DIR="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
-          cd "$KERNEL_DIR"
+          KERNEL_SRC="$KERNEL_DIR/common"
+          cd "$KERNEL_SRC"
           
           BR="gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
           echo "Using susfs4ksu branch: $BR"
@@ -392,57 +393,47 @@ jobs:
           
           echo "Copying SUSFS source/header files (if present)..."
           # NOTE: destination paths are relative to kernel root (no extra /common).
-          mkdir -p "$KERNEL_DIR/fs" "$KERNEL_DIR/include/linux"
-          if [[ -d "susfs4ksu/fs" ]]; then
-            cp -a susfs4ksu/fs/. "$KERNEL_DIR/fs/" || true
+          mkdir -p "$KERNEL_SRC/fs" "$KERNEL_SRC/include/linux"
+          if [[ -d "susfs4ksu/kernel_patches/fs" ]]; then
+            cp -a susfs4ksu/kernel_patches/fs/. "$KERNEL_SRC/fs/" || true
           fi
-          if [[ -d "susfs4ksu/include/linux" ]]; then
-            cp -a susfs4ksu/include/linux/. "$KERNEL_DIR/include/linux/" || true
+          if [[ -d "susfs4ksu/kernel_patches/include/linux" ]]; then
+            cp -a susfs4ksu/kernel_patches/include/linux/. "$KERNEL_SRC/include/linux/" || true
           fi
           
-          apply_patch_strict() {
-            local p="$1"
-            local b
-            b="$(basename "$p")"
-          
-            # If patch can be reversed cleanly, it is already applied.
-            if git apply --reverse --check "$p" >/dev/null 2>&1; then
-              echo "↪ already applied: $b"
-              return 0
-            fi
-          
-            if ! git apply --check "$p" >/dev/null 2>&1; then
-              echo "::error::Patch does not apply cleanly: $b"
-              return 1
-            fi
-          
-            git apply --whitespace=nowarn "$p"
-            echo "✅ applied: $b"
-          }
-          
-          echo "Applying SUSFS patches..."
-          mapfile -t patches < <(find susfs4ksu/kernel_patches -type f -name "*.patch" | sort)
-          if [[ "${#patches[@]}" -eq 0 ]]; then
-            echo "::error::No patch files found in susfs4ksu/kernel_patches"
+                    echo "Applying SUSFS patches..."
+          MAIN_PATCH="susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch"
+          if [[ ! -f "$MAIN_PATCH" ]]; then
+            echo "::error::Missing main SUSFS patch: $MAIN_PATCH"
+            echo "::group::Available patches"
+            find susfs4ksu -maxdepth 4 -type f -name "*.patch" -print || true
+            echo "::endgroup::"
             exit 1
           fi
-          
-          applied_any=0
-          for p in "${patches[@]}"; do
-            bn="$(basename "$p")"
-            if [[ "$bn" == *"gki-"* && "$bn" != *"$BR"* ]]; then
-              echo "↪ skipping other-branch patch: $bn"
-              continue
+
+          # Try clean apply first, then fuzz=3 (common for vendor trees).
+          echo "→ patch (clean) $(basename "$MAIN_PATCH")"
+          if patch -p1 --forward --dry-run < "$MAIN_PATCH" >/dev/null 2>&1; then
+            patch -p1 --forward < "$MAIN_PATCH"
+          else
+            echo "→ patch (fuzz=3) $(basename "$MAIN_PATCH")"
+            if patch -p1 --forward -F 3 --dry-run < "$MAIN_PATCH" >/dev/null 2>&1; then
+              patch -p1 --forward -F 3 < "$MAIN_PATCH"
+            else
+              echo "::error::SUSFS patch still does not apply (even with fuzz=3)."
+              echo "Generating reject files for debugging..."
+              patch -p1 --forward -F 3 < "$MAIN_PATCH" || true
+              git apply --reject --whitespace=nowarn "$MAIN_PATCH" || true
+              echo "::group::Rejects"
+              find "$KERNEL_SRC" -type f \( -name "*.rej" -o -name "*.orig" \) -maxdepth 6 -print || true
+              echo "::endgroup::"
+              exit 1
             fi
-            apply_patch_strict "$p"
-            applied_any=1
-          done
-          
-          if [[ "$applied_any" -ne 1 ]]; then
-            echo "::error::No SUSFS patches were applied for BR=$BR (all were skipped)."
-            exit 1
           fi
-          
+          # Sanity checks: ensure code and build hooks are present
+          test -f "fs/susfs.c" || { echo "::error::SUSFS source missing: fs/susfs.c"; exit 1; }
+          grep -q 'obj-$(CONFIG_KSU_SUSFS).*susfs\.o' fs/Makefile || { echo "::error::fs/Makefile missing SUSFS build line"; grep -n "KSU_SUSFS" -n fs/Makefile || true; exit 1; }
+
           echo "✅ SUSFS patching complete."
       - name: "Enable features via defconfig"
 
