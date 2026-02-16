@@ -1,4 +1,4 @@
-name: OP13 KernelSU-Next
+name: OP13 KernelSU-Next 
 
 env:
   TZ: Asia/Shanghai
@@ -357,89 +357,93 @@ jobs:
             exit 0
           fi
           
-          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+          KERNEL_DIR="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+          cd "$KERNEL_DIR"
           
           BR="gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
           echo "Using susfs4ksu branch: $BR"
           
           rm -rf susfs4ksu || true
           
+          # Prefer upstream that actually carries gki-* branches.
+          repos=(
+            "https://gitlab.com/simonpunk/susfs4ksu.git"
+            "https://github.com/Star-Seven/susfs4ksu.git"
+            "https://gitlab.com/pershoot/susfs4ksu.git"
+          )
+          
           clone_ok=0
-          for repo in   "https://gitlab.com/pershoot/susfs4ksu.git"   "https://gitlab.com/simonpunk/susfs4ksu.git"   "https://github.com/Star-Seven/susfs4ksu.git"
-          do
-            echo "→ Trying susfs4ksu: $repo"
-            if git clone --depth 3 --no-tags -b "$BR" "$repo" susfs4ksu; then
+          for repo in "${repos[@]}"; do
+            echo "→ Checking susfs4ksu: $repo"
+            if git ls-remote --exit-code --heads "$repo" "$BR" >/dev/null 2>&1; then
+              echo "→ Cloning $repo ($BR)"
+              git clone --depth 1 --no-tags -b "$BR" "$repo" susfs4ksu
               clone_ok=1
               break
+            else
+              echo "→ Branch not found on this remote: $repo"
             fi
           done
           
-          if [[ "$clone_ok" != "1" ]]; then
-            echo "::error::Failed to clone susfs4ksu (branch=$BR) from all mirrors."
-            exit 1
-          fi
-          
-          PATCHDIR="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/susfs4ksu/kernel_patches"
-          KERNELSRC="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/common"
-          
-          MAINPATCH="$PATCHDIR/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch"
-          HOOKPATCH="$PATCHDIR/60_scope-minimized_manual_hooks.patch"
-          
-          if [[ ! -f "$MAINPATCH" ]]; then
-            echo "::error::Main SUSFS patch not found: $MAINPATCH"
-            echo "Available patches in $PATCHDIR:"
-            ls -la "$PATCHDIR" || true
+          if [[ "$clone_ok" -ne 1 ]]; then
+            echo "::error::Could not find susfs4ksu branch '$BR' on any configured remote."
             exit 1
           fi
           
           echo "Copying SUSFS source/header files (if present)..."
-          if [[ -d "$PATCHDIR/fs" ]]; then
-            cp -pf "$PATCHDIR"/fs/* "$KERNELSRC"/fs/
+          # NOTE: destination paths are relative to kernel root (no extra /common).
+          mkdir -p "$KERNEL_DIR/fs" "$KERNEL_DIR/include/linux"
+          if [[ -d "susfs4ksu/fs" ]]; then
+            cp -a susfs4ksu/fs/. "$KERNEL_DIR/fs/" || true
           fi
-          if [[ -d "$PATCHDIR/include/linux" ]]; then
-            cp -pf "$PATCHDIR"/include/linux/* "$KERNELSRC"/include/linux/
+          if [[ -d "susfs4ksu/include/linux" ]]; then
+            cp -a susfs4ksu/include/linux/. "$KERNEL_DIR/include/linux/" || true
           fi
           
-          apply_patch() {
+          apply_patch_strict() {
             local p="$1"
-            echo "==> Applying: $(basename "$p")"
-            if git apply --check "$p" >/dev/null 2>&1; then
-              git apply "$p"
-              echo "✅ Applied"
-              return 0
-            fi
+            local b
+            b="$(basename "$p")"
+          
+            # If patch can be reversed cleanly, it is already applied.
             if git apply --reverse --check "$p" >/dev/null 2>&1; then
-              echo "↩️ Already applied (skipping)"
+              echo "↪ already applied: $b"
               return 0
             fi
-            echo "::error::Patch does not apply cleanly: $p"
-            git apply --reject --whitespace=nowarn "$p" || true
-            echo "Rejects (if any):"
-            find . -name "*.rej" -maxdepth 4 -print || true
-            exit 1
+          
+            if ! git apply --check "$p" >/dev/null 2>&1; then
+              echo "::error::Patch does not apply cleanly: $b"
+              return 1
+            fi
+          
+            git apply --whitespace=nowarn "$p"
+            echo "✅ applied: $b"
           }
           
-          cd "$KERNELSRC"
-          
-          apply_patch "$MAINPATCH"
-          
-          if [[ -f "$HOOKPATCH" ]]; then
-            apply_patch "$HOOKPATCH"
-          else
-            echo "⚠️ Hook patch not found (OK on some branches): $HOOKPATCH"
+          echo "Applying SUSFS patches..."
+          mapfile -t patches < <(find susfs4ksu/kernel_patches -type f -name "*.patch" | sort)
+          if [[ "${#patches[@]}" -eq 0 ]]; then
+            echo "::error::No patch files found in susfs4ksu/kernel_patches"
+            exit 1
           fi
           
-          # Wi-Fi/BT build fix used by upstream guide (best-effort)
-          if [[ -f "BUILD.bazel" ]]; then
-            sed -i '/protected_exports_list.*abi_gki_protected_exports_aarch64/d' BUILD.bazel || true
-          fi
+          applied_any=0
+          for p in "${patches[@]}"; do
+            bn="$(basename "$p")"
+            if [[ "$bn" == *"gki-"* && "$bn" != *"$BR"* ]]; then
+              echo "↪ skipping other-branch patch: $bn"
+              continue
+            fi
+            apply_patch_strict "$p"
+            applied_any=1
+          done
           
-          # Sanity checks so we don't ship a kernel without SUSFS
-          test -f "fs/susfs.c" || { echo "::error::fs/susfs.c missing after patch"; exit 1; }
-          test -f "include/linux/susfs.h" || { echo "::error::include/linux/susfs.h missing after patch"; exit 1; }
+          if [[ "$applied_any" -ne 1 ]]; then
+            echo "::error::No SUSFS patches were applied for BR=$BR (all were skipped)."
+            exit 1
+          fi
           
           echo "✅ SUSFS patching complete."
-
       - name: "Enable features via defconfig"
 
         shell: bash
