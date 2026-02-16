@@ -3,118 +3,34 @@ name: OP13 KernelSU Next
 env:
   TZ: UTC
   ANDROID_VERSION: android15
-  KERNEL_VERSION: "6.6"   # label only; actual release (e.g. 6.6.89) is detected at build time
+  KERNEL_VERSION: '6.6'
   KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
-
 'on':
   workflow_dispatch:
     inputs:
       toolchain:
-        description: 'Toolchain (recommended: aosp_prebuilt)'
-        required: true
-        default: aosp_prebuilt
-        type: choice
-        options:
-          - aosp_prebuilt
-          - neutron_clang
-
-      susfs:
-        description: 'Enable SUSFS (adds kernel hooks; may reduce compatibility)'
-        required: true
-        default: false
-        type: boolean
-
-      enable_multimanager:
-        description: 'Apply KernelSU Next Multi-Manager patch (best-effort)'
-        required: true
-        default: false
-        type: boolean
-
-      enable_hmbird:
-        description: 'Enable HMBIRD scheduler/overwriter patches (best-effort)'
-        required: true
-        default: true
-        type: boolean
-
-      enable_ttl:
-        description: 'Enable TTL target support (CONFIG_NETFILTER_XT_TARGET_TTL)'
-        required: true
-        default: true
-        type: boolean
-
-      enable_ipset:
-        description: 'Enable IPSET support (CONFIG_IP_SET)'
-        required: true
-        default: true
-        type: boolean
-
-      enable_bbr:
-        description: 'Enable BBR congestion control (CONFIG_TCP_CONG_BBR)'
-        required: true
-        default: false
-        type: boolean
-
-      enable_bbg:
-        description: 'Enable BBG baseband guard (CONFIG_BBG) (best-effort)'
-        required: true
-        default: true
-        type: boolean
-
-      enable_adios:
-        description: 'Enable ADIOS I/O scheduler (CONFIG_MQ_IOSCHED_ADIOS) (best-effort)'
-        required: true
-        default: true
-        type: boolean
-
-      enable_zram_lz4:
-        description: 'Enable ZRAM LZ4 patch (best-effort)'
-        required: true
-        default: true
-        type: boolean
-
-      enable_zram_zstd:
-        description: 'Enable ZRAM ZSTD patch (best-effort)'
-        required: true
-        default: false
-        type: boolean
-
-      kernel_suffix:
-        description: 'Kernel local version suffix (e.g. OP-OX, OP-WILD) appended as CONFIG_LOCALVERSION'
-        required: true
-        default: OP-OX
-        type: string
-
-      build_user:
-        description: 'KBUILD_BUILD_USER (use ''OnePlus'' to mimic stock style)'
-        required: true
-        default: OnePlus
-        type: string
-
-      build_host:
-        description: 'KBUILD_BUILD_HOST (use ''ubuntu-build'' to mimic stock style)'
-        required: true
-        default: ubuntu-build
-        type: string
-
-      build_timestamp:
-        description: 'KBUILD_BUILD_TIMESTAMP. Leave empty for current UTC. Example: ''Fri Jan 23 13:09:51 UTC 2026'''
-        required: false
-        default: ''
-        type: string
-
-      publish_release:
         description: 'Publish a GitHub Release asset (avoids artifact zip-in-zip confusion)'
         required: true
         default: true
         type: boolean
-
-permissions:
-  contents: write
-
-env:
-  TZ: UTC
-  ANDROID_VERSION: android15
-  KERNEL_VERSION: '6.6'
+        options:
+          - aosp_prebuilt
+          - neutron_clang
+      susfs:
+      enable_multimanager:
+      enable_hmbird:
+      enable_ttl:
+      enable_ipset:
+      enable_bbr:
+      enable_bbg:
+      enable_adios:
+      enable_zram_lz4:
+      enable_zram_zstd:
+      kernel_suffix:
+      build_user:
+      build_host:
+      build_timestamp:
+      publish_release:
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_COMPRESS: 'true'
   CCACHE_COMPRESSLEVEL: '6'
