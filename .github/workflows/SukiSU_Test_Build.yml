@@ -360,11 +360,29 @@ jobs:
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
-          if [ -n "${{ github.event.inputs.kernel_suffix }}" ]; then SUF="${{ github.event.inputs.kernel_suffix }}"; else SUF="${{ env.KERNEL_NAME }}"; fi
-          echo "Using suffix: $SUF"
-          sed -i "\$s|echo "\\$res"|echo "-$SUF"|" ./common/scripts/setlocalversion
-          sed -i 's/${scm_version}//' ./common/scripts/setlocalversion || true
 
+          # Prefer explicit input, else fall back to env.KERNEL_NAME
+          if [ -n "${{ github.event.inputs.kernel_suffix }}" ]; then
+            SUF_RAW="${{ github.event.inputs.kernel_suffix }}"
+          else
+            SUF_RAW="${{ env.KERNEL_NAME }}"
+          fi
+
+          # Sanitize: remove whitespace, avoid double '-' prefix
+          SUF="${SUF_RAW//[[:space:]]/}"
+          SUF="${SUF#-}"
+          LOCALVER="-$SUF"
+
+          echo "Using suffix: $SUF"
+          echo "LOCALVERSION=$LOCALVER" >> "$GITHUB_ENV"
+          echo "SUFFIX=$SUF" >> "$GITHUB_ENV"
+
+          # Ensure defconfig doesn't hardcode another localversion
+          DEFCONFIG="./common/arch/arm64/configs/gki_defconfig"
+          if [ -f "$DEFCONFIG" ]; then
+            grep -v '^CONFIG_LOCALVERSION=' "$DEFCONFIG" > "$DEFCONFIG.tmp" || true
+            mv "$DEFCONFIG.tmp" "$DEFCONFIG"
+          fi
       - name: "Set KBUILD build identity and timestamp"
         shell: bash
         run: |
@@ -467,9 +485,9 @@ jobs:
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
-          make -j"$(nproc)" LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache clang" LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 gki_defconfig all
+          make -j"$(nproc)" LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache clang" LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 LOCALVERSION=${LOCALVERSION:-} gki_defconfig all
           REL="$(cat out/include/config/kernel.release 2>/dev/null || true)"
-          if [ -z "$REL" ]; then REL="$(make -s O=out kernelrelease 2>/dev/null || true)"; fi
+          if [ -z "$REL" ]; then REL="$(make -s O=out LOCALVERSION=${LOCALVERSION:-} kernelrelease 2>/dev/null || true)"; fi
           echo "KERNEL_RELEASE=$REL" >> "$GITHUB_ENV"
           echo "Kernel release: $REL"
 
