@@ -536,20 +536,20 @@ jobs:
           cp -f "$IMAGE_PATH" ./AnyKernel3/Image
 
 
-# Validate AnyKernel3 structure (prevents "failed to extract update-binary")
-if [ ! -f "AnyKernel3/META-INF/com/google/android/update-binary" ]; then
-  echo "::error::AnyKernel3 template is missing META-INF/com/google/android/update-binary"
-  echo "This would cause 'failed to extract update-binary' when flashing."
-  exit 1
-fi
-if [ ! -f "AnyKernel3/META-INF/com/google/android/updater-script" ]; then
-  echo "::warning::updater-script missing; some flashers still expect it."
-fi
+          # Validate AnyKernel3 structure (prevents "failed to extract update-binary")
+          if [ ! -f "AnyKernel3/META-INF/com/google/android/update-binary" ]; then
+          echo "::error::AnyKernel3 template is missing META-INF/com/google/android/update-binary"
+          echo "This would cause 'failed to extract update-binary' when flashing."
+          exit 1
+          fi
+          if [ ! -f "AnyKernel3/META-INF/com/google/android/updater-script" ]; then
+          echo "::warning::updater-script missing; some flashers still expect it."
+          fi
 
-# Ensure executable bits (some templates lose permissions when cloned/packed)
-chmod 0755 AnyKernel3/anykernel.sh || true
-chmod 0755 AnyKernel3/META-INF/com/google/android/update-binary || true
-find AnyKernel3/tools -maxdepth 1 -type f -name "*.sh" -exec chmod 0755 {} \; || true
+          # Ensure executable bits (some templates lose permissions when cloned/packed)
+          chmod 0755 AnyKernel3/anykernel.sh || true
+          chmod 0755 AnyKernel3/META-INF/com/google/android/update-binary || true
+          find AnyKernel3/tools -maxdepth 1 -type f -name "*.sh" -exec chmod 0755 {} \; || true
 
           # Set localversion suffix to help identify the build (safe; does not change ABI)
           SUFFIX="${{ github.event.inputs.kernel_suffix }}"
@@ -652,15 +652,15 @@ find AnyKernel3/tools -maxdepth 1 -type f -name "*.sh" -exec chmod 0755 {} \; ||
           ZIP_NAME="${ZIP_NAME}_FLASH_THIS.zip"
 
           # Create a true flashable zip: META-INF must be at ZIP root (do NOT zip the folder itself)
-(cd AnyKernel3 && zip -r9 -X "../${ZIP_NAME}" .)
+          (cd AnyKernel3 && zip -r9 -X "../${ZIP_NAME}" .)
 
-# Quick sanity check: update-binary must be present in the final zip at the correct path
-if ! unzip -l "./${ZIP_NAME}" | grep -q 'META-INF/com/google/android/update-binary'; then
-  echo "::error::Packaged zip is missing META-INF/com/google/android/update-binary at root"
-  echo "Do not flash GitHub artifact wrapper zips. Flash this generated zip (or the Release asset)."
-  unzip -l "./${ZIP_NAME}" | sed -n '1,120p' || true
-  exit 1
-fi
+          # Quick sanity check: update-binary must be present in the final zip at the correct path
+          if ! unzip -l "./${ZIP_NAME}" | grep -q 'META-INF/com/google/android/update-binary'; then
+          echo "::error::Packaged zip is missing META-INF/com/google/android/update-binary at root"
+          echo "Do not flash GitHub artifact wrapper zips. Flash this generated zip (or the Release asset)."
+          unzip -l "./${ZIP_NAME}" | sed -n '1,120p' || true
+          exit 1
+          fi
           echo "FLASH_ZIP=${ZIP_NAME}" >> "$GITHUB_ENV"
           ls -lah "./${ZIP_NAME}"
 
