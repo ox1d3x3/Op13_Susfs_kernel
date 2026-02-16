@@ -263,7 +263,7 @@ jobs:
           # Try common version variables across KernelSU-Next revisions
           for f in "KernelSU-Next/kernel/Makefile" "KernelSU-Next/Makefile" "KernelSU-Next/kernel/Makefile.kernelsu"; do
             if [ -f "$f" ]; then
-              v="$(grep -Eo '(DKSU_VERSION|KSU_VERSION|KSUN_VERSION)[[:space:]]*[:?+]?=[[:space:]]*[0-9]+' \"$f\" | head -n1 | grep -Eo '[0-9]+' | head -n1 || true)"
+              v="$(grep -Eo '(DKSU_VERSION|KSU_VERSION|KSUN_VERSION)[[:space:]]*[:?+]?=[[:space:]]*[0-9]+' "$f" | head -n1 | grep -Eo '[0-9]+' | head -n1 || true)"
               if [ -n "$v" ]; then KSUVER="$v"; break; fi
             fi
           done
@@ -364,7 +364,7 @@ jobs:
             chmod -R u+rx,go+rx drivers/of/overwriter/overwrite_configs || true
             find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -exec chmod +x {} \; || true
             # Strip CRLF (portable)
-            find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -exec perl -pi -e 's/\\r$//' {} \; || true
+            find drivers/of/overwriter/overwrite_configs -maxdepth 1 -type f -name "*.sh" -exec perl -pi -e 's/\\r$//' {} \\; || true
           fi
 
           apply_patch "../mrcx_patches/zram/001-lz4.patch"
@@ -470,12 +470,14 @@ jobs:
             echo "::error::scripts/config not found"; exit 1
           fi
 
-          # Localversion suffix (cosmetic)
-          SUFFIX_INPUT="${{ github.event.inputs.kernel_suffix }}"
-          if [[ -n "$SUFFIX_INPUT" ]]; then
-            ./scripts/config --file "$CFG" --set-str LOCALVERSION "-$SUFFIX_INPUT" || true
-            ./scripts/config --file "$CFG" -d LOCALVERSION_AUTO || true
-          fi
+          # Kernel release / module compatibility:
+          # Set LOCALVERSION to match stock-style name (prevents vendor module path / vermagic issues).
+          BASE_LV="-${{ env.KERNEL_NAME }}"
+          ./scripts/config --file "$CFG" --set-str LOCALVERSION "$BASE_LV" || true
+          ./scripts/config --file "$CFG" -d LOCALVERSION_AUTO || true
+
+          # NOTE: kernel_suffix is used ONLY for file naming / banner; it must NOT change LOCALVERSION.
+
 
           # WildKernels: TMPFS_XATTR + POSIX ACL (Mountify support)
           ./scripts/config --file "$CFG" -e TMPFS_XATTR -e TMPFS_POSIX_ACL || true
@@ -518,148 +520,71 @@ jobs:
             echo "KERNEL_RELEASE=unknown" >> "$GITHUB_ENV"
           fi
 
-      - name: Package AnyKernel3 flashable zip (custom banner)
+      - name: Package AnyKernel3 flashable zip (WildKernel-style, single-layer, banner file)
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
 
           echo "Preparing AnyKernel3..."
           rm -rf AnyKernel3
-          git clone --depth=1 https://github.com/mrcxlinux/AnyKernel3 AnyKernel3
+          git clone --depth=1 https://github.com/Kernel-SU/AnyKernel3 AnyKernel3
           rm -rf AnyKernel3/.git
 
           IMAGE_PATH="$(find "./kernel_workspace/kernel_platform/common/out/" -type f -name "Image" | head -n 1 || true)"
           if [ -z "$IMAGE_PATH" ] || [ ! -f "$IMAGE_PATH" ]; then
-            echo "::error::Kernel Image not found under common/out"
+            echo "::error::Kernel Image not found under kernel_platform/common/out"
             exit 1
           fi
           cp -f "$IMAGE_PATH" ./AnyKernel3/Image
 
-          # Set localversion suffix to help identify the build (safe; does not change ABI)
-          SUFFIX="${{ github.event.inputs.kernel_suffix }}"
-          if [ -n "$SUFFIX" ]; then
-            # AnyKernel3 uses anykernel.sh variables; we keep suffix for filename only.
-            echo "Kernel suffix for naming: $SUFFIX"
-          fi
+          # Set installer display string (does NOT affect uname -r)
+          sed -i 's/^kernel\.string=.*/kernel.string=Ox1d3x3 OP13 KernelSU-Next (Daily Driver)/' ./AnyKernel3/anykernel.sh || true
 
-          # Replace/insert a clean English installer banner
-          # Prepare tags for naming (set before banner injection)
+          # Build identifiers
+          DATE="$(date -u +%Y%m%d-%H%M)"
           BUILD_ID="${{ github.run_number }}"
           KREL="${{ env.KERNEL_RELEASE }}"
           KSUVER="${{ env.KSUVER }}"
-          SUSFS="${{ github.event.inputs.SUSFS }}"
           SUFFIX="${{ github.event.inputs.kernel_suffix }}"
-          DATE="$(date -u +%Y%m%d-%H%M)"
-          
-          TAG="OP13_${ANDROID_VERSION}_${KREL}_KSU${KSUVER}_${SUFFIX}"
+
+          TAG="OP13_${{ env.ANDROID_VERSION }}_${KREL}_KSUN_${KSUVER}"
+          if [ -n "$SUFFIX" ]; then TAG="${TAG}_${SUFFIX}"; fi
           BUILD="${DATE}_${BUILD_ID}"
+
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           echo "BUILD=$BUILD" >> "$GITHUB_ENV"
-          export TAG BUILD
-          export BANNER_KERNEL="$KREL"
-          
-          python3 - <<'PY'
-          from pathlib import Path
-          import os, re
-          
-          ak = Path("AnyKernel3/anykernel.sh")
-          text = ak.read_text(encoding="utf-8", errors="ignore").splitlines()
-          
-          # Remove any previous injected banner block (idempotent)
-          begin = "# OX1D3X3_BANNER_BEGIN"
-          end = "# OX1D3X3_BANNER_END"
-          out = []
-          skip = False
-          for line in text:
-              if line.strip() == begin:
-                  skip = True
-                  continue
-              if skip and line.strip() == end:
-                  skip = False
-                  continue
-              if not skip:
-                  out.append(line)
-          text = out
-          
-          kernel_label = os.environ.get("BANNER_KERNEL", "unknown")
-          build = os.environ.get("BUILD", "unknown")
-          
-          banner = [
-              begin,
-              'ui_print " "',
-              'ui_print "===================================================="',
-              'ui_print "                   __   __  __ "',
-              'ui_print "                  \\\\ \\\\ / //_ |"',
-              'ui_print "                   \\\\ V /   | |"',
-              'ui_print "                     > <    | |"',
-              'ui_print "                   / . \\\\   | |"',
-              'ui_print "                 /_/ \\\\_\\\\  |_|"',
-              'ui_print "===================================================="',
-              'ui_print " "',
-              'ui_print "PJZ110 | KernelSU Next Kernel"',
-              f'ui_print "Kernel : {kernel_label}"',
-              f'ui_print "Build  : {build}"',
-              'ui_print "Builder: @Ox1d3x3"',
-              'ui_print "Credits: @mrcxlinux, @WildKernels"',
-              'ui_print " "',
-              'DEVICE="$(getprop ro.product.device 2>/dev/null)"; [ -z "$DEVICE" ] && DEVICE="$(getprop ro.product.name 2>/dev/null)"',
-              'PATCH="$(getprop ro.build.version.security_patch 2>/dev/null)"',
-              'ANDROID="$(getprop ro.build.version.release 2>/dev/null)"',
-              'SLOT_SUFFIX="$(getprop ro.boot.slot_suffix 2>/dev/null)"',
-              'if [ -z "$SLOT_SUFFIX" ]; then SLOT="$(getprop ro.boot.slot 2>/dev/null)"; [ -n "$SLOT" ] && SLOT_SUFFIX="_$SLOT"; fi',
-              'if [ -z "$SLOT_SUFFIX" ]; then SLOT_SUFFIX="$(grep -oE "androidboot.slot_suffix=[^ ]+" /proc/cmdline 2>/dev/null | head -n1 | cut -d= -f2)"; fi',
-              'if [ -z "$SLOT_SUFFIX" ]; then SLOT="$(grep -oE "androidboot.slot=[^ ]+" /proc/cmdline 2>/dev/null | head -n1 | cut -d= -f2)"; [ -n "$SLOT" ] && SLOT_SUFFIX="_$SLOT"; fi',
-              'ui_print "Device : $DEVICE"',
-              'ui_print "Android: $ANDROID"',
-              'ui_print "Patch  : $PATCH"',
-              'if [ -n "$SLOT_SUFFIX" ]; then ui_print "Slot   : $SLOT_SUFFIX"; fi',
-              'ui_print " "',
-              'if [ -n "$(command -v cmd 2>/dev/null)" ]; then',
-              '  (cmd activity start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true',
-              'elif [ -n "$(command -v am 2>/dev/null)" ]; then',
-              '  (am start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true',
-              'fi',
-              'ui_print " "',
-              end,
-          ]
-          
-          # Insert banner AFTER ak3-core is sourced so ui_print is available
-          inserted = False
-          new = []
-          for line in text:
-              new.append(line)
-              if (not inserted) and re.match(r'^\s*\.\s+tools/ak3-core\.sh\s*$', line):
-                  new.extend(banner)
-                  inserted = True
-          
-          if not inserted:
-              # Fallback: insert at top of install section marker
-              newer = []
-              inserted2 = False
-              for line in new:
-                  newer.append(line)
-                  if (not inserted2) and ("### AnyKernel install" in line):
-                      newer.extend(banner)
-                      inserted2 = True
-              new = newer
-          
-          ak.write_text("\n".join(new) + "\n", encoding="utf-8")
-          print("Custom installer banner injected after ak3-core.")
-          PY
-          ZIP_NAME="${TAG}_${BUILD}"
-          if [ "$SUSFS" = "On" ]; then ZIP_NAME="${ZIP_NAME}_SUSFS"; fi
-          ZIP_NAME="${ZIP_NAME}_FLASH_THIS.zip"
 
+          # WildKernel-style banner file (update-binary prints this automatically if present)
+          cat > ./AnyKernel3/banner <<EOF
+          ====================================================
+                             __   __  __
+                            \ \ / //_ |
+                             \ V /   | |
+                               > <    | |
+                             / . \   | |
+                           /_/ \_\  |_|
+          ====================================================
+          
+          PJZ110 | KernelSU Next Kernel
+          Kernel : ${KREL}
+          Build  : ${BUILD}
+          Builder: @Ox1d3x3
+          Credits: @mrcxlinux, @WildKernels
+          
+          ====================================================
+          EOF
+
+          # Zip (single layer: root contains META-INF/, anykernel.sh, tools/, Image, banner)
+          ZIP_NAME="${TAG}_${BUILD}_SUSFS_FLASH_THIS.zip"
+          rm -f "$ZIP_NAME"
           (cd AnyKernel3 && zip -r9 "../${ZIP_NAME}" .)
           echo "FLASH_ZIP=${ZIP_NAME}" >> "$GITHUB_ENV"
           ls -lah "./${ZIP_NAME}"
 
-
-      - name: Upload flashable zip as artifact (nested download; use Release asset to flash)
-        if: ${{ github.event.inputs.MAKE_RELEASE == 'Off' }}
+      - name: Upload flashable zip as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.FLASH_ZIP }}
+          name: OP13_FLASHABLE_${{ env.TAG }}
           path: ${{ env.FLASH_ZIP }}
 
       - name: Create GitHub Release (recommended)
