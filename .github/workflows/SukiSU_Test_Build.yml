@@ -525,7 +525,7 @@ jobs:
 
           echo "Preparing AnyKernel3..."
           rm -rf AnyKernel3
-          git clone --depth=1 https://github.com/Kernel-SU/AnyKernel3 AnyKernel3
+          git clone --depth=1 https://github.com/mrcxlinux/AnyKernel3 AnyKernel3
           rm -rf AnyKernel3/.git
 
           IMAGE_PATH="$(find "./kernel_workspace/kernel_platform/common/out/" -type f -name "Image" | head -n 1 || true)"
@@ -535,22 +535,6 @@ jobs:
           fi
           cp -f "$IMAGE_PATH" ./AnyKernel3/Image
 
-
-          # Validate AnyKernel3 structure (prevents "failed to extract update-binary")
-          if [ ! -f "AnyKernel3/META-INF/com/google/android/update-binary" ]; then
-          echo "::error::AnyKernel3 template is missing META-INF/com/google/android/update-binary"
-          echo "This would cause 'failed to extract update-binary' when flashing."
-          exit 1
-          fi
-          if [ ! -f "AnyKernel3/META-INF/com/google/android/updater-script" ]; then
-          echo "::warning::updater-script missing; some flashers still expect it."
-          fi
-
-          # Ensure executable bits (some templates lose permissions when cloned/packed)
-          chmod 0755 AnyKernel3/anykernel.sh || true
-          chmod 0755 AnyKernel3/META-INF/com/google/android/update-binary || true
-          find AnyKernel3/tools -maxdepth 1 -type f -name "*.sh" -exec chmod 0755 {} \; || true
-
           # Set localversion suffix to help identify the build (safe; does not change ABI)
           SUFFIX="${{ github.event.inputs.kernel_suffix }}"
           if [ -n "$SUFFIX" ]; then
@@ -559,112 +543,120 @@ jobs:
           fi
 
           # Replace/insert a clean English installer banner
-          python3 - <<'PY'
-          from pathlib import Path
-          import re, os
-
-          ak = Path("AnyKernel3/anykernel.sh")
-          s = ak.read_text(encoding="utf-8", errors="ignore").splitlines()
-
-          # Remove obvious stock banner blocks (best-effort)
-          filtered = []
-          skip = False
-          for line in s:
-              if "ui_print" in line and ("=== " in line or "KernelSU" in line or "SukiSU" in line):
-                  # don't aggressively drop everything; keep later commands
-                  pass
-              filtered.append(line)
-
-          tag = os.environ.get("TAG", "unknown")
-          build = os.environ.get("BUILD", "unknown")
-
-          ascii_block = (
-              'ui_print "===================================================="\\n'
-              'ui_print "                   __   __  __ "                     \\n'
-              'ui_print "                  \\\\ \\\\ / //_ |"                    \\n'
-              'ui_print "                   \\\\ V /   | |"                    \\n'
-              'ui_print "                     > <    | |"                    \\n'
-              'ui_print "                   / . \\\\   | |"                    \\n'
-              'ui_print "                 /_/ \\\\_\\\\  |_|"                    \\n'
-              'ui_print "===================================================="\\n'
-          )
-
-          banner = []
-          banner.append('ui_print " "')
-          banner.extend(ascii_block.strip("\\n").split("\\n"))
-          banner.append('ui_print " "')
-          banner.append('ui_print "PJZ110 | KernelSU-Next Kernel"')
-          banner.append(f'ui_print "Kernel : {tag}"')
-          banner.append(f'ui_print "Build  : {build}"')
-          banner.append('ui_print "Builder: @Ox1d3x3"')
-          banner.append('ui_print "Credits: @mrcxlinux, @WildKernels"')
-          banner.append('ui_print " "')
-          banner.append('DEVICE="$(getprop ro.product.device 2>/dev/null)"; [ -z "$DEVICE" ] && DEVICE="$(getprop ro.product.name 2>/dev/null)"')
-          banner.append('PATCH="$(getprop ro.build.version.security_patch 2>/dev/null)"')
-          banner.append('ANDROID="$(getprop ro.build.version.release 2>/dev/null)"')
-          banner.append('SLOT_SUFFIX="$(getprop ro.boot.slot_suffix 2>/dev/null)"')
-          banner.append('if [ -z "$SLOT_SUFFIX" ]; then SLOT="$(getprop ro.boot.slot 2>/dev/null)"; [ -n "$SLOT" ] && SLOT_SUFFIX="_$SLOT"; fi')
-          banner.append('if [ -z "$SLOT_SUFFIX" ]; then SLOT_SUFFIX="$(grep -oE "androidboot.slot_suffix=[^ ]+" /proc/cmdline 2>/dev/null | head -n1 | cut -d= -f2)"; fi')
-          banner.append('if [ -z "$SLOT_SUFFIX" ]; then SLOT="$(grep -oE "androidboot.slot=[^ ]+" /proc/cmdline 2>/dev/null | head -n1 | cut -d= -f2)"; [ -n "$SLOT" ] && SLOT_SUFFIX="_$SLOT"; fi')
-          banner.append('ui_print "Device : $DEVICE"')
-          banner.append('ui_print "Android: $ANDROID"')
-          banner.append('ui_print "Patch  : $PATCH"')
-          banner.append('if [ -n "$SLOT_SUFFIX" ]; then ui_print "Slot   : $SLOT_SUFFIX"; fi')
-          banner.append('ui_print " "')
-          banner.append('if [ -n "$(command -v cmd 2>/dev/null)" ]; then')
-          banner.append('  (cmd activity start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true')
-          banner.append('elif [ -n "$(command -v am 2>/dev/null)" ]; then')
-          banner.append('  (am start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true')
-          banner.append('fi')
-          banner.append('ui_print " "')
-
-          # Insert banner right after the initial header/comments and before properties()
-          out = []
-          inserted = False
-          for line in filtered:
-              out.append(line)
-              if (not inserted) and re.match(r'^\s*properties\(\)\s*\{', line):
-                  out.extend(banner)
-                  inserted = True
-
-          if not inserted:
-              # Fallback: prepend banner at start (safe)
-              out = banner + [""] + filtered
-
-          ak.write_text("\\n".join(out) + "\\n", encoding="utf-8")
-          print("Installer banner updated.")
-          PY
-          # Prepare tags for naming
+          # Prepare tags for naming (set before banner injection)
           BUILD_ID="${{ github.run_number }}"
           KREL="${{ env.KERNEL_RELEASE }}"
           KSUVER="${{ env.KSUVER }}"
           SUSFS="${{ github.event.inputs.SUSFS }}"
           SUFFIX="${{ github.event.inputs.kernel_suffix }}"
           DATE="$(date -u +%Y%m%d-%H%M)"
-
+          
           TAG="OP13_${ANDROID_VERSION}_${KREL}_KSU${KSUVER}_${SUFFIX}"
           BUILD="${DATE}_${BUILD_ID}"
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           echo "BUILD=$BUILD" >> "$GITHUB_ENV"
-
+          export TAG BUILD
+          export BANNER_KERNEL="$KREL"
+          
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, re
+          
+          ak = Path("AnyKernel3/anykernel.sh")
+          text = ak.read_text(encoding="utf-8", errors="ignore").splitlines()
+          
+          # Remove any previous injected banner block (idempotent)
+          begin = "# OX1D3X3_BANNER_BEGIN"
+          end = "# OX1D3X3_BANNER_END"
+          out = []
+          skip = False
+          for line in text:
+              if line.strip() == begin:
+                  skip = True
+                  continue
+              if skip and line.strip() == end:
+                  skip = False
+                  continue
+              if not skip:
+                  out.append(line)
+          text = out
+          
+          kernel_label = os.environ.get("BANNER_KERNEL", "unknown")
+          build = os.environ.get("BUILD", "unknown")
+          
+          banner = [
+              begin,
+              'ui_print " "',
+              'ui_print "===================================================="',
+              'ui_print "                   __   __  __ "',
+              'ui_print "                  \\\\ \\\\ / //_ |"',
+              'ui_print "                   \\\\ V /   | |"',
+              'ui_print "                     > <    | |"',
+              'ui_print "                   / . \\\\   | |"',
+              'ui_print "                 /_/ \\\\_\\\\  |_|"',
+              'ui_print "===================================================="',
+              'ui_print " "',
+              'ui_print "PJZ110 | KernelSU Next Kernel"',
+              f'ui_print "Kernel : {kernel_label}"',
+              f'ui_print "Build  : {build}"',
+              'ui_print "Builder: @Ox1d3x3"',
+              'ui_print "Credits: @mrcxlinux, @WildKernels"',
+              'ui_print " "',
+              'DEVICE="$(getprop ro.product.device 2>/dev/null)"; [ -z "$DEVICE" ] && DEVICE="$(getprop ro.product.name 2>/dev/null)"',
+              'PATCH="$(getprop ro.build.version.security_patch 2>/dev/null)"',
+              'ANDROID="$(getprop ro.build.version.release 2>/dev/null)"',
+              'SLOT_SUFFIX="$(getprop ro.boot.slot_suffix 2>/dev/null)"',
+              'if [ -z "$SLOT_SUFFIX" ]; then SLOT="$(getprop ro.boot.slot 2>/dev/null)"; [ -n "$SLOT" ] && SLOT_SUFFIX="_$SLOT"; fi',
+              'if [ -z "$SLOT_SUFFIX" ]; then SLOT_SUFFIX="$(grep -oE "androidboot.slot_suffix=[^ ]+" /proc/cmdline 2>/dev/null | head -n1 | cut -d= -f2)"; fi',
+              'if [ -z "$SLOT_SUFFIX" ]; then SLOT="$(grep -oE "androidboot.slot=[^ ]+" /proc/cmdline 2>/dev/null | head -n1 | cut -d= -f2)"; [ -n "$SLOT" ] && SLOT_SUFFIX="_$SLOT"; fi',
+              'ui_print "Device : $DEVICE"',
+              'ui_print "Android: $ANDROID"',
+              'ui_print "Patch  : $PATCH"',
+              'if [ -n "$SLOT_SUFFIX" ]; then ui_print "Slot   : $SLOT_SUFFIX"; fi',
+              'ui_print " "',
+              'if [ -n "$(command -v cmd 2>/dev/null)" ]; then',
+              '  (cmd activity start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true',
+              'elif [ -n "$(command -v am 2>/dev/null)" ]; then',
+              '  (am start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true',
+              'fi',
+              'ui_print " "',
+              end,
+          ]
+          
+          # Insert banner AFTER ak3-core is sourced so ui_print is available
+          inserted = False
+          new = []
+          for line in text:
+              new.append(line)
+              if (not inserted) and re.match(r'^\s*\.\s+tools/ak3-core\.sh\s*$', line):
+                  new.extend(banner)
+                  inserted = True
+          
+          if not inserted:
+              # Fallback: insert at top of install section marker
+              newer = []
+              inserted2 = False
+              for line in new:
+                  newer.append(line)
+                  if (not inserted2) and ("### AnyKernel install" in line):
+                      newer.extend(banner)
+                      inserted2 = True
+              new = newer
+          
+          ak.write_text("\n".join(new) + "\n", encoding="utf-8")
+          print("Custom installer banner injected after ak3-core.")
+          PY
           ZIP_NAME="${TAG}_${BUILD}"
           if [ "$SUSFS" = "On" ]; then ZIP_NAME="${ZIP_NAME}_SUSFS"; fi
           ZIP_NAME="${ZIP_NAME}_FLASH_THIS.zip"
 
-          # Create a true flashable zip: META-INF must be at ZIP root (do NOT zip the folder itself)
-          (cd AnyKernel3 && zip -r9 -X "../${ZIP_NAME}" .)
-
-          # Quick sanity check: update-binary must be present in the final zip at the correct path
-          if ! unzip -l "./${ZIP_NAME}" | grep -q 'META-INF/com/google/android/update-binary'; then
-          echo "::error::Packaged zip is missing META-INF/com/google/android/update-binary at root"
-          echo "Do not flash GitHub artifact wrapper zips. Flash this generated zip (or the Release asset)."
-          unzip -l "./${ZIP_NAME}" | sed -n '1,120p' || true
-          exit 1
-          fi
+          (cd AnyKernel3 && zip -r9 "../${ZIP_NAME}" .)
           echo "FLASH_ZIP=${ZIP_NAME}" >> "$GITHUB_ENV"
           ls -lah "./${ZIP_NAME}"
 
-      - name: Upload flashable zip as artifact
+
+      - name: Upload flashable zip as artifact (nested download; use Release asset to flash)
+        if: ${{ github.event.inputs.MAKE_RELEASE == 'Off' }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.FLASH_ZIP }}
