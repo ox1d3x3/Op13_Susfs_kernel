@@ -1,7 +1,7 @@
-name: OP13 KernelSU-Next Build
+name: OP13 KernelSU-Next
 
 env:
-  TZ: UTC
+  TZ: Asia/Shanghai
   ANDROID_VERSION: android15
   # Label only (major.minor). Actual release (e.g. 6.6.89) is detected at build time.
   KERNEL_VERSION: "6.6"
@@ -98,10 +98,10 @@ on:
         default: ""
 
       BUILD_TIME:
-        description: "Custom build time string (F = current UTC)"
+        description: "Custom build time string (Enter F to use current UTC)"
         type: string
         required: false
-        default: "F"
+        default: "Thu Dec 11 04:17:27 UTC 2025"
 
       BUILD_USER:
         description: "KBUILD_BUILD_USER"
@@ -125,6 +125,7 @@ jobs:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
+
     steps:
       - name: "Runner disk preflight"
         id: disk
@@ -143,8 +144,6 @@ jobs:
           echo "Disk usage:"
           df -hT || true
           echo ""
-          # GitHub runner images changed in early 2026: many no longer have a separate temp disk mounted on /mnt.
-          # easimon/maximize-build-space expects that disk and can fail (e.g. fallocate invalid length) when it is missing.
           if findmnt -n /mnt >/dev/null 2>&1; then
             SRC="$(findmnt -n -o SOURCE /mnt || true)"
             echo "/mnt is a mount point from: $SRC"
@@ -224,7 +223,13 @@ jobs:
           set -euo pipefail
           mkdir -p kernel_workspace
           cd kernel_workspace
-          repo init -u https://github.com/mrcxlinux/actions_oplus_sm8750.git -b refs/heads/english -m manifest.xml --depth=1
+          # Manifest repo: only zh branch contains manifest.xml
+          MANIFEST_REPO="https://github.com/mrcxlinux/actions_oplus_sm8750.git"
+          MANIFEST_BRANCH="zh"
+          MANIFEST_FILE="manifest.xml"
+          echo "Using manifest: $MANIFEST_REPO ($MANIFEST_BRANCH/$MANIFEST_FILE)"
+          curl -fsSL "https://raw.githubusercontent.com/mrcxlinux/actions_oplus_sm8750/${MANIFEST_BRANCH}/${MANIFEST_FILE}" >/dev/null
+          repo init -u "$MANIFEST_REPO" -b "$MANIFEST_BRANCH" -m "$MANIFEST_FILE" --depth=1
           repo sync -c -j"$(nproc)" --no-tags --no-clone-bundle --force-sync
 
           rm -f kernel_platform/common/android/abi_gki_protected_exports_* || true
@@ -341,6 +346,19 @@ jobs:
           if [[ -n "$INPUT_TIME" && "$INPUT_TIME" != "F" && "$INPUT_TIME" != "f" ]]; then DATESTR="$INPUT_TIME"; else DATESTR="$(TZ='UTC' date +'%a %b %d %T %Z %Y')"; fi
           echo "KBUILD_BUILD_TIMESTAMP=$DATESTR" >> "$GITHUB_ENV"
           echo "KBUILD_BUILD_VERSION=1" >> "$GITHUB_ENV"
+
+          # Ensure uname -v / UTS_VERSION matches our chosen BUILD_TIME (mimic stock identification)
+          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+          for f in common/scripts/mkcompile_h msm-kernel/scripts/mkcompile_h; do
+            if [ -f "$f" ]; then
+              echo "Patching $f for UTS_VERSION time stamp"
+              if grep -q 'UTS_VERSION=' "$f"; then
+                perl -pi -e "s{UTS_VERSION=\"\\\$\\\(.*?\\\)\"}{UTS_VERSION=\"#1 SMP PREEMPT $DATESTR\"}" "$f"
+              else
+                perl -0777 -pi -e "s{cat <<EOF}{cat <<EOF\n#undef UTS_VERSION\n#define UTS_VERSION \"#1 SMP PREEMPT $DATESTR\" } unless /UTS_VERSION/" "$f"
+              fi
+            fi
+          done
 
       - name: "Clone WildKernel kernel_patches (for HMBIRD etc)"
         if: ${{ github.event.inputs.hmbird == 'On' }}
