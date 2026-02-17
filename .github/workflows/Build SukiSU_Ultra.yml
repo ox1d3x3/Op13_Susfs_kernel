@@ -489,9 +489,12 @@ jobs:
             exit 1
           fi
 
-          echo "✅ Kernel root detected: $KERNEL_DIR"
-          cd "$KERNEL_DIR"
-
+                    echo "✅ Kernel root detected: $KERNEL_DIR"
+          # susfs4ksu patches sometimes are generated relative to kernel_platform root (paths start with common/)
+          # so we dynamically choose where to apply the patch from.
+          KERNEL_PLATFORM="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+          SRC_REL="$(realpath --relative-to="$KERNEL_PLATFORM" "$KERNEL_DIR" 2>/dev/null || echo "common")"
+          echo "Kernel source relpath: $SRC_REL"
           BR="gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
           echo "Using susfs4ksu branch: $BR"
 
@@ -565,6 +568,16 @@ jobs:
             exit 1
           fi
 
+          # Decide patch root based on patch file paths
+          PATCH_CWD="$KERNEL_DIR"
+          if grep -qE "^diff --git a/common/|^\+\+\+ b/common/" "$PATCH_FILE" >/dev/null 2>&1; then
+            PATCH_CWD="$KERNEL_PLATFORM"
+          elif grep -qE "^diff --git a/${SRC_REL}/|^\+\+\+ b/${SRC_REL}/" "$PATCH_FILE" >/dev/null 2>&1; then
+            PATCH_CWD="$KERNEL_PLATFORM"
+          fi
+          echo "Patch will be applied from: $PATCH_CWD"
+          cd "$PATCH_CWD"
+
           echo "::group::Apply SUSFS main patch"
           if patch -p1 --dry-run -R < "$PATCH_FILE" >/dev/null 2>&1; then
             echo "↪ SUSFS patch already applied"
@@ -577,6 +590,15 @@ jobs:
             fi
           fi
           echo "::endgroup::"
+          echo "::group::Post-patch SUSFS symbol check"
+          if grep -Rqs "KSU_SUSFS" "$KERNEL_DIR" 2>/dev/null; then
+            echo "✅ KSU_SUSFS symbols present after SUSFS patch."
+            (cd "$KERNEL_DIR" && grep -Rns "KSU_SUSFS" drivers fs include 2>/dev/null | head -n 60) || true
+          else
+            echo "::warning::KSU_SUSFS symbols still not found after SUSFS patch. This usually means the patch was applied to the wrong root or the branch does not match this kernel tree."
+          fi
+          echo "::endgroup::"
+
 
           # Revert temporary context lines (if we injected them)
           if [[ "$fake_patched" == "1" ]]; then
@@ -935,9 +957,13 @@ jobs:
               echo "::group::.config SUSFS lines"
               grep -n 'KSU_SUSFS' "$CFG" || true
               echo "::endgroup::"
-              echo "::group::Kconfig symbol presence (drivers/fs)"
+              echo "::group::Kconfig symbol presence (kernel_platform/common)"
+              (cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common" && grep -Rns "KSU_SUSFS" drivers fs include 2>/dev/null | head -n 80) || true
+              echo "::endgroup::"
+              echo "::group::Kconfig symbol presence (detected KERNEL_DIR)"
               (cd "$KERNEL_DIR" && grep -Rns "KSU_SUSFS" drivers fs include 2>/dev/null | head -n 80) || true
               echo "::endgroup::"
+              echo "::notice::If both groups are empty, SUSFS patch likely applied to wrong root. Use v6.5 which applies patches from kernel_platform root when patch paths start with common/."
               exit 1
             fi
           fi
