@@ -356,12 +356,6 @@ jobs:
           if [ "$installed" -ne 1 ]; then
             die "KernelSU setup failed from all mirrors/branches"
           fi
-          
-          if [[ "$ok" != "1" ]]; then
-            echo "::error::KernelSU-Next setup failed (branch=$KSU_BRANCH)."
-            exit 1
-          fi
-          
           echo "✅ KernelSU-Next installed (branch=$KSU_BRANCH)."
 
       - name: "Apply optional Multi-Manager patch"
