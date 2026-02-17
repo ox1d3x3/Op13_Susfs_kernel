@@ -505,22 +505,27 @@ jobs:
           if [[ -f "./drivers/kernelsu/supercalls.c" ]] && grep -q "susfs_uname_is_active" "./drivers/kernelsu/supercalls.c"; then
             echo "KernelSU references legacy uname helpers → adding SUSFS v2 compat stubs"
             if [[ -f "./fs/susfs.c" ]] && ! grep -q "susfs_uname_is_active" "./fs/susfs.c"; then
-              cat >> "./fs/susfs.c" <<'EOF'
-
-/* --- SUSFS v2 compatibility for older KernelSU-Next (legacy uname helpers) --- */
-/* Some KernelSU forks still call these legacy helpers. SUSFS v2 uses susfs_set_uname()/susfs_spoof_uname(). */
-bool susfs_uname_is_active(void);
-void susfs_set_uname_from_kernel(void);
-
-#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
-bool susfs_uname_is_active(void) { return true; }
-#else
-bool susfs_uname_is_active(void) { return false; }
-#endif
-
-/* Legacy no-op: SUSFS v2 persists uname spoof via susfs_set_uname() from userspace. */
-void susfs_set_uname_from_kernel(void) { }
-EOF
+              python3 - <<'PY'
+              from pathlib import Path
+              p = Path('./fs/susfs.c')
+              code = r'''
+              
+              /* --- SUSFS v2 compatibility for older KernelSU-Next (legacy uname helpers) --- */
+              /* Some KernelSU forks still call these legacy helpers. SUSFS v2 uses susfs_set_uname()/susfs_spoof_uname(). */
+              #ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+              bool susfs_uname_is_active(void) { return true; }
+              #else
+              bool susfs_uname_is_active(void) { return false; }
+              #endif
+              
+              /* Legacy no-op: SUSFS v2 persists uname spoof via susfs_set_uname() from userspace. */
+              void susfs_set_uname_from_kernel(void) { }
+              
+              '''
+              src = p.read_text(encoding='utf-8')
+              if 'susfs_uname_is_active' not in src:
+                  p.write_text(src + code, encoding='utf-8')
+              PY
             else
               echo "fs/susfs.c missing or compat stubs already present; skipping."
             fi
