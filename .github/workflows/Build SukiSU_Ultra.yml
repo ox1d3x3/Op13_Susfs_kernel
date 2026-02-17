@@ -662,6 +662,72 @@ jobs:
             die "KernelSU driver not present after SukiSU setup (drivers/kernelsu missing)."
           fi
 
+- name: "Apply SUSFS KernelSU patchset (r25 API support)"
+  if: ${{ github.event.inputs.SUSFS == 'On' }}
+  shell: bash
+  run: |
+    set -euo pipefail
+
+    # KERNEL_DIR is exported by the SukiSU integration step.
+    KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
+    KSU_ROOT=""
+    if [[ -d "$KDIR/KernelSU" ]]; then
+      KSU_ROOT="$KDIR/KernelSU"
+    elif [[ -d "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/KernelSU" ]]; then
+      KSU_ROOT="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/KernelSU"
+    fi
+
+    if [[ -z "$KSU_ROOT" ]]; then
+      echo "::warning::KernelSU repo (KernelSU/) not found under kernel source root — skipping KernelSU SUSFS patchset."
+      exit 0
+    fi
+
+    # Reuse already-cloned susfs4ksu folder if present; otherwise clone a minimal copy.
+    SUSFS_FOLDER="$GITHUB_WORKSPACE/susfs4ksu"
+    BR="gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
+    if [[ ! -d "$SUSFS_FOLDER/.git" ]]; then
+      echo "→ Cloning susfs4ksu ($BR) for KernelSU patchset..."
+      rm -rf "$SUSFS_FOLDER" || true
+      git clone --depth 1 --no-tags -b "$BR" https://gitlab.com/simonpunk/susfs4ksu.git "$SUSFS_FOLDER"
+    fi
+
+    if [[ ! -d "$SUSFS_FOLDER/kernel_patches/KernelSU" ]]; then
+      echo "::warning::susfs4ksu KernelSU patchset folder not found; nothing to apply."
+      exit 0
+    fi
+
+    echo "✅ KernelSU root: $KSU_ROOT"
+    echo "✅ SUSFS patchset: $SUSFS_FOLDER/kernel_patches/KernelSU"
+
+    cd "$KSU_ROOT"
+
+    applied_any=0
+    shopt -s nullglob
+    for p in "$SUSFS_FOLDER/kernel_patches/KernelSU/"*.patch; do
+      echo "→ Applying $(basename "$p")"
+      if patch -p1 --dry-run -R < "$p" >/dev/null 2>&1; then
+        echo "   ↪ already applied"
+        applied_any=1
+        continue
+      fi
+      if patch -p1 --dry-run --forward < "$p" >/dev/null 2>&1; then
+        patch -p1 --forward < "$p"
+        applied_any=1
+      else
+        echo "   ↪ retrying with fuzz=3"
+        patch -p1 --forward -F 3 < "$p" || true
+        applied_any=1
+      fi
+    done
+    shopt -u nullglob
+
+    if [[ "$applied_any" -eq 1 ]]; then
+      echo "✅ KernelSU SUSFS patchset applied (or already present)."
+    else
+      echo "::warning::No KernelSU patches were applied (no *.patch found)."
+    fi
+
+
       - name: "Apply optional Multi-Manager patch"
 
         if: ${{ github.event.inputs.ksunext_multimanager == 'On' }}
@@ -727,6 +793,8 @@ jobs:
             echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> "$DEFCONFIG"
           else
             echo "CONFIG_KSU_SUSFS=n" >> "$DEFCONFIG"
             echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$DEFCONFIG"
@@ -738,6 +806,20 @@ jobs:
 
 
           # =========================
+if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
+  # These are required for the susfs4ksu module features (e.g., uname/cmdline spoof).
+  # Only hard-fail if the symbol exists in this tree but is not enabled.
+  for sym in CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_TRY_UMOUNT; do
+    if grep -qE "^${sym}=" "$CFG"; then
+      if ! grep -qE "^${sym}=y" "$CFG"; then
+        echo "::error::${sym}=y expected for SUSFS module compatibility (kernel-r25+ features) but was not enabled."
+        grep -n "${sym}" "$CFG" || true
+        exit 1
+      fi
+    fi
+  done
+fi
+
           # LZ4 support (for ZRAM / fs / crypto) — enable support only (no forcing)
           # =========================
           echo "CONFIG_LZ4_COMPRESS=y" >> "$DEFCONFIG" || true
