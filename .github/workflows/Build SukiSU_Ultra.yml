@@ -324,9 +324,38 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
 
           die() { echo "::error::$*"; exit 1; }
+
+          KERNEL_PLATFORM="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+
+          # Auto-detect actual kernel source root (many trees build from common/, not kernel_platform/).
+          CANDIDATES=(
+            "$KERNEL_PLATFORM/common"
+            "$KERNEL_PLATFORM/common/common"
+            "$KERNEL_PLATFORM"
+          )
+
+          KERNEL_DIR=""
+          for c in "${CANDIDATES[@]}"; do
+            if [[ -f "$c/Makefile" && -d "$c/drivers" && -d "$c/arch" ]]; then
+              KERNEL_DIR="$c"
+              break
+            fi
+          done
+
+          if [[ -z "$KERNEL_DIR" ]]; then
+            echo "::group::kernel_platform layout"
+            ls -la "$KERNEL_PLATFORM" || true
+            find "$KERNEL_PLATFORM" -maxdepth 3 -type f \( -name Makefile -o -name Kconfig \) | head -n 80 || true
+            echo "::endgroup::"
+            die "Could not detect kernel source root for SukiSU integration."
+          fi
+
+          echo "✅ Kernel source root: $KERNEL_DIR"
+          echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
+
+          cd "$KERNEL_DIR"
 
           tmp="/tmp/sukisu_setup.sh"
           urls=(
@@ -350,15 +379,27 @@ jobs:
           # Sanity: ensure setup actually created KernelSU directory
           if [ ! -d "KernelSU" ]; then
             echo "::warning::KernelSU directory not found at ./KernelSU; searching..."
-            found="$(find . -maxdepth 3 -type d -name KernelSU | head -n 1 || true)"
+            found="$(find . -maxdepth 4 -type d -name KernelSU | head -n 1 || true)"
             [ -n "$found" ] || die "KernelSU directory not found after setup."
             echo "Found KernelSU at: $found"
           fi
-          # Sanity: ensure KernelSU hooks landed in the kernel tree (drivers/kernelsu)
-          if ! find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 4 -type d -path "*/drivers/kernelsu" | grep -q .; then
+
+          # Sanity: ensure KernelSU hooks landed in the kernel tree (expected: ./drivers/kernelsu)
+          if [ ! -d "drivers/kernelsu" ]; then
+            echo "::group::SukiSU integration debug"
+            echo "pwd: $(pwd)"
+            echo ""
+            echo "Top-level:"
+            ls -la || true
+            echo ""
+            echo "Searching for drivers/kernelsu:"
+            find . -maxdepth 8 -type d -path "*/drivers/kernelsu" | head -n 50 || true
+            echo ""
+            echo "Searching for any *kernelsu* directories:"
+            find . -maxdepth 8 -type d -iname "*kernelsu*" | head -n 50 || true
+            echo "::endgroup::"
             die "drivers/kernelsu not found after SukiSU setup (integration did not land in the kernel tree)."
           fi
-
 
           # Best-effort: stamp version info into KernelSU/kernel/Kbuild (for nicer version display in the manager)
           if [ -f "KernelSU/kernel/Kbuild" ]; then
@@ -375,7 +416,7 @@ jobs:
               KSU_VERSION_FULL="v${KSU_API_VERSION}-${KSU_COMMIT_HASH}@builtin"
               sed -i '/KSU_VERSION_API :=/d' KernelSU/kernel/Kbuild || true
               sed -i '/KSU_VERSION_FULL :=/d' KernelSU/kernel/Kbuild || true
-              printf '%s\\n' "KSU_VERSION_API := ${KSU_API_VERSION}" "KSU_VERSION_FULL := ${KSU_VERSION_FULL}" >> KernelSU/kernel/Kbuild
+              printf '%s\n' "KSU_VERSION_API := ${KSU_API_VERSION}" "KSU_VERSION_FULL := ${KSU_VERSION_FULL}" >> KernelSU/kernel/Kbuild
               echo "KSU_VERSION_API=$KSU_API_VERSION" >> "$GITHUB_ENV"
               echo "KSU_VERSION_FULL=$KSU_VERSION_FULL" >> "$GITHUB_ENV"
               echo "✅ SukiSU version: $KSU_VERSION_FULL"
