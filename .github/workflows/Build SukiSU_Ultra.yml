@@ -380,18 +380,31 @@ jobs:
           SUSFS_IN="${{ github.event.inputs.SUSFS }}"
           SUSFS_MODE="${{ github.event.inputs.susfs_mode }}"
 
-          # For SUSFS kernels, SukiSU recommends using its susfs-* setup args (avoid double-patching).
+          # If user selected SukiSU susfs-* branch, we still verify whether SUSFS symbols actually exist in this kernel tree.
+          # (setup.sh only integrates drivers/kernelsu; many kernel trees still need external SUSFS patching.)
           if [[ "$SUSFS_IN" == "On" && "$SUSFS_MODE" == "sukisu" ]]; then
             SETUP_ARG="susfs-main"
-            echo "SUKISU_HAS_SUSFS=1" >> "$GITHUB_ENV"
           else
             SETUP_ARG="main"
-            echo "SUKISU_HAS_SUSFS=0" >> "$GITHUB_ENV"
           fi
+          echo "SUKISU_HAS_SUSFS=0" >> "$GITHUB_ENV"
 
           echo "→ Fetching SukiSU Ultra setup: https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh"
           echo "→ Setup arg: $SETUP_ARG"
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s "$SETUP_ARG"
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \| bash -s "\$SETUP_ARG"
+
+
+          # Detect whether this kernel tree actually contains SUSFS config symbols after SukiSU setup.
+          # If not, we'll allow the external SUSFS patch step to run (avoids false "susfs-main" assumption).
+          if [[ "$SUSFS_IN" == "On" ]]; then
+            if grep -Rqs "KSU_SUSFS" ./drivers ./fs ./include 2>/dev/null; then
+              echo "✅ Detected KSU_SUSFS symbols in kernel tree."
+              echo "SUKISU_HAS_SUSFS=1" >> "$GITHUB_ENV"
+            else
+              echo "::warning::SUSFS requested but KSU_SUSFS symbols not found after SukiSU setup; will apply external SUSFS patch."
+              echo "SUKISU_HAS_SUSFS=0" >> "$GITHUB_ENV"
+            fi
+          fi
 
           # Sanity: ensure KernelSU directory exists
           if [ ! -d "KernelSU" ]; then
@@ -916,7 +929,16 @@ jobs:
           echo "Checking $CFG ..."
           echo "Profile : ${{ env.PROFILE_LABEL }} (${{ env.PROFILE_TAG }})"
           if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
-            grep -q '^CONFIG_KSU_SUSFS=y' "$CFG" || { echo "::error::CONFIG_KSU_SUSFS=y missing in final .config"; grep -n 'KSU_SUSFS' "$CFG" || true; exit 1; }
+            if ! grep -Eq '^CONFIG_KSU_SUSFS=(y|m)$' "$CFG"; then
+              echo "::error::CONFIG_KSU_SUSFS not enabled (expected y or m) in final .config"
+              echo "::group::.config SUSFS lines"
+              grep -n 'KSU_SUSFS' "$CFG" || true
+              echo "::endgroup::"
+              echo "::group::Kconfig symbol presence (drivers/fs)"
+              (cd "$KERNEL_DIR" && grep -Rns "KSU_SUSFS" drivers fs include 2>/dev/null | head -n 80) || true
+              echo "::endgroup::"
+              exit 1
+            fi
           fi
 
           # LZ4 support must be present (y or m). Accept any of these common symbols.
