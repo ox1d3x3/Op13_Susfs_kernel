@@ -385,15 +385,16 @@ jobs:
           if [[ "$SUSFS_IN" == "On" && "$SUSFS_MODE" == "sukisu" ]]; then
             SETUP_ARG="susfs-main"
           else
-            SETUP_ARG="main"
+            SETUP_ARG="builtin"
           fi
           echo "SUKISU_HAS_SUSFS=0" >> "$GITHUB_ENV"
 
-          echo "→ Fetching SukiSU Ultra setup: https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh"
+          echo "→ Fetching SukiSU Ultra setup (prefer builtin): https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh"
           echo "→ Setup arg: $SETUP_ARG"
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \| bash -s "\$SETUP_ARG"
-
-
+          SETUP_URL_PRIMARY="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh"
+          SETUP_URL_FALLBACK="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh"
+          echo "Running: curl -fLSs $SETUP_URL_PRIMARY | bash -s \"$SETUP_ARG\" (fallback: $SETUP_URL_FALLBACK)"
+          (curl -fLSs "$SETUP_URL_PRIMARY" | bash -s "$SETUP_ARG") || (curl -fLSs "$SETUP_URL_FALLBACK" | bash -s "$SETUP_ARG")
           # Detect whether this kernel tree actually contains SUSFS config symbols after SukiSU setup.
           # If not, we'll allow the external SUSFS patch step to run (avoids false "susfs-main" assumption).
           if [[ "$SUSFS_IN" == "On" ]]; then
