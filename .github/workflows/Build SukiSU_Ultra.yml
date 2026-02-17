@@ -50,6 +50,13 @@ on:
         default: "On"
         options: ["On", "Off"]
 
+      susfs_mode:
+        description: "SUSFS source (recommended: sukisu; external applies susfs4ksu patch)"
+        type: choice
+        required: true
+        default: sukisu
+        options: [sukisu, external]
+
       ksunext_multimanager:
         description: "Apply multi-manager patch (best-effort)"
         type: choice
@@ -334,12 +341,10 @@ jobs:
           echo "  ld.lld: $(command -v ld.lld || true)"
           clang --version || true
           ld.lld --version || true
-
-      - name: "Integrate SukiSU Ultra (builtin)"
+      - name: "Integrate SukiSU Ultra (builtin, official setup.sh)"
         shell: bash
         run: |
           set -euo pipefail
-
           die() { echo "::error::$*"; exit 1; }
 
           KERNEL_PLATFORM="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
@@ -372,44 +377,31 @@ jobs:
 
           cd "$KERNEL_DIR"
 
-          tmp="/tmp/sukisu_setup.sh"
-          urls=(
-            "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh"
-            "https://cdn.jsdelivr.net/gh/SukiSU-Ultra/SukiSU-Ultra@builtin/kernel/setup.sh"
-          )
+          SUSFS_IN="${{ github.event.inputs.SUSFS }}"
+          SUSFS_MODE="${{ github.event.inputs.susfs_mode }}"
 
-          ok=0
-          for u in "${urls[@]}"; do
-            echo "→ Fetching SukiSU Ultra builtin setup: $u"
-            if curl -fsSL "$u" -o "$tmp"; then
-              chmod +x "$tmp"
-              if bash "$tmp" builtin; then
-                ok=1
-                break
-              fi
-            fi
-          done
-          [ "$ok" -eq 1 ] || die "SukiSU Ultra builtin setup failed from all mirrors."
+          # For SUSFS kernels, SukiSU recommends using its susfs-* setup args (avoid double-patching).
+          if [[ "$SUSFS_IN" == "On" && "$SUSFS_MODE" == "sukisu" ]]; then
+            SETUP_ARG="susfs-main"
+            echo "SUKISU_HAS_SUSFS=1" >> "$GITHUB_ENV"
+          else
+            SETUP_ARG="main"
+            echo "SUKISU_HAS_SUSFS=0" >> "$GITHUB_ENV"
+          fi
 
-          # Sanity: ensure setup actually created KernelSU directory
+          echo "→ Fetching SukiSU Ultra setup: https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh"
+          echo "→ Setup arg: $SETUP_ARG"
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s "$SETUP_ARG"
+
+          # Sanity: ensure KernelSU directory exists
           if [ ! -d "KernelSU" ]; then
             echo "::warning::KernelSU directory not found at ./KernelSU; searching..."
-            found="$(find . -maxdepth 4 -type d -name KernelSU | head -n 1 || true)"
-            [ -n "$found" ] || die "KernelSU directory not found after setup."
+            found="$(find . -maxdepth 5 -type d -name KernelSU | head -n 1 || true)"
+            [ -n "$found" ] || die "KernelSU directory not found after SukiSU setup."
             echo "Found KernelSU at: $found"
           fi
 
-          # Sanity: ensure KernelSU hooks landed in the kernel tree (expected: ./drivers/kernelsu)
-          # Some setups create a symlink; repair it if missing/broken.
-          if [ ! -d "drivers/kernelsu" ] && [ ! -L "drivers/kernelsu" ]; then
-            if [ -d "KernelSU/kernel" ]; then
-              echo "::warning::drivers/kernelsu missing; creating symlink to KernelSU/kernel (best-effort)"
-              mkdir -p drivers
-              ln -sfn ../KernelSU/kernel drivers/kernelsu || true
-            fi
-          fi
-
-          # Final check: accept real dir OR symlink (even if not followed by -d in some environments)
+          # Sanity: ensure KernelSU driver landed in the kernel tree (expected: ./drivers/kernelsu)
           if [ ! -d "drivers/kernelsu" ] && [ ! -L "drivers/kernelsu" ]; then
             echo "::group::SukiSU integration debug"
             echo "pwd: $(pwd)"
@@ -426,37 +418,11 @@ jobs:
             echo "Searching for any *kernelsu* directories:"
             find . -maxdepth 8 -type d -iname "*kernelsu*" | head -n 50 || true
             echo "::endgroup::"
-            die "KernelSU driver not present in tree after SukiSU setup (drivers/kernelsu missing)."
+            die "KernelSU driver not present after SukiSU setup (drivers/kernelsu missing)."
           fi
-
-          # Best-effort: stamp version info into KernelSU/kernel/Kbuild (for nicer version display in the manager)
-          if [ -f "KernelSU/kernel/Kbuild" ]; then
-            echo "::group::SukiSU version stamping (best-effort)"
-            set +e
-            KSU_COMMIT_HASH="$(git ls-remote https://github.com/SukiSU-Ultra/SukiSU-Ultra.git refs/heads/builtin 2>/dev/null | cut -f1 | cut -c1-8)"
-            KSU_API_VERSION=""
-            for i in {1..3}; do
-              KSU_API_VERSION="$(curl -fsSL "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/Kbuild" 2>/dev/null | grep -m1 "KSU_VERSION_API :=" | cut -d'=' -f2 | tr -d '[:space:]')"
-              [ -n "$KSU_API_VERSION" ] && break || sleep 2
-            done
-
-            if [ -n "$KSU_API_VERSION" ] && [ -n "$KSU_COMMIT_HASH" ]; then
-              KSU_VERSION_FULL="v${KSU_API_VERSION}-${KSU_COMMIT_HASH}@builtin"
-              sed -i '/KSU_VERSION_API :=/d' KernelSU/kernel/Kbuild || true
-              sed -i '/KSU_VERSION_FULL :=/d' KernelSU/kernel/Kbuild || true
-              printf '%s\n' "KSU_VERSION_API := ${KSU_API_VERSION}" "KSU_VERSION_FULL := ${KSU_VERSION_FULL}" >> KernelSU/kernel/Kbuild
-              echo "KSU_VERSION_API=$KSU_API_VERSION" >> "$GITHUB_ENV"
-              echo "KSU_VERSION_FULL=$KSU_VERSION_FULL" >> "$GITHUB_ENV"
-              echo "✅ SukiSU version: $KSU_VERSION_FULL"
-            else
-              echo "::warning::Could not resolve KSU version info (non-fatal)."
-            fi
-            set -e
-            echo "::endgroup::"
-          fi
-
 
       - name: "Apply optional Multi-Manager patch"
+
         if: ${{ github.event.inputs.ksunext_multimanager == 'On' }}
         shell: bash
         run: |
@@ -475,6 +441,13 @@ jobs:
             echo "SUSFS disabled → skipping."
             exit 0
           fi
+
+          # If SukiSU was integrated with susfs-main, DO NOT apply external susfs4ksu patches again.
+          if [[ "${SUKISU_HAS_SUSFS:-0}" == "1" ]]; then
+            echo "SUSFS provided by SukiSU setup (susfs-main) → skipping external SUSFS patch to avoid double-patching."
+            exit 0
+          fi
+
 
           KERNEL_PLATFORM="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
 
@@ -717,8 +690,23 @@ jobs:
           echo "CONFIG_LZ4_DECOMPRESS=y" >> "$DEFCONFIG" || true
           echo "CONFIG_CRYPTO_LZ4=y" >> "$DEFCONFIG" || true
           echo "CONFIG_CRYPTO_LZ4HC=y" >> "$DEFCONFIG" || true
-          echo "CONFIG_ZRAM=y" >> "$DEFCONFIG" || true
-          echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG" || true
+
+          # ZRAM: if you want a flashable zram.ko module, it must be built as a module (m).
+          if [ "${{ github.event.inputs.zram_module }}" = "On" ]; then
+            echo "CONFIG_ZRAM=m" >> "$DEFCONFIG" || true
+            echo "CONFIG_ZSMALLOC=m" >> "$DEFCONFIG" || true
+            # Prefer LZ4 as the default compressor when module mode is used
+            echo 'CONFIG_ZRAM_DEF_COMP="lz4"' >> "$DEFCONFIG" || true
+          else
+            echo "CONFIG_ZRAM=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG" || true
+          fi
+
+          # SukiSU safety: avoid experimental modes that can destabilize OEM kernels
+          echo "# CONFIG_KSU_MANUAL_SU is not set" >> "$DEFCONFIG" || true
+          echo "# CONFIG_KSU_NONE_HOOK is not set" >> "$DEFCONFIG" || true
+          echo "CONFIG_KSU_THRONE_TRACKER_ALWAYS_THREADED=y" >> "$DEFCONFIG" || true
+
 
           # Optional features (already in your workflow)
           if [ "${{ github.event.inputs.bbg }}" = "On" ]; then echo "CONFIG_BBG=y" >> "$DEFCONFIG" || true; fi
@@ -1067,15 +1055,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          ZRAM_KO="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/out/drivers/block/zram/zram.ko"
-          if [ ! -f "$ZRAM_KO" ]; then
-            echo "::warning::zram.ko not found at: $ZRAM_KO"
-            echo "Listing possible zram.ko locations:"
-            find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/out" -type f -name "zram.ko" -maxdepth 8 2>/dev/null || true
+          # Find zram.ko wherever the build system placed it (GKI trees differ).
+          ZRAM_KO="$(find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -type f -name "zram.ko" 2>/dev/null | head -n 1 || true)"
+          if [ -z "$ZRAM_KO" ] || [ ! -f "$ZRAM_KO" ]; then
+            echo "::warning::zram.ko not found (likely built-in, or module output path differs)."
+            echo "Quick check (if config exists):"
+            CFG="$(find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 6 -type f -name ".config" 2>/dev/null | head -n 1 || true)"
+            if [ -n "$CFG" ]; then
+              grep -E "^CONFIG_ZRAM=|^CONFIG_ZSMALLOC=" "$CFG" || true
+            fi
+            echo "Search results for zram.ko:"
+            find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -type f -name "zram.ko" -maxdepth 10 2>/dev/null || true
             echo "Skipping zram module packaging."
             exit 0
           fi
+          echo "✅ Using zram.ko: $ZRAM_KO"
 
           TMP_ZIP="$RUNNER_TEMP/zram_template.zip"
           rm -f "$TMP_ZIP" || true
