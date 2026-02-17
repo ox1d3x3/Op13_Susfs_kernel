@@ -101,7 +101,7 @@ on:
         description: "Custom build time string (Enter F to use current UTC)"
         type: string
         required: false
-        default: "F"
+        default: "Thu Dec 11 04:17:27 UTC 2025"
 
       BUILD_USER:
         description: "KBUILD_BUILD_USER"
@@ -307,26 +307,63 @@ jobs:
           ld.lld --version || true
 
 
-      - name: "Integrate KernelSU-Next (official)"
+      - name: "Integrate KernelSU-Next (next / next-susfs)"
         shell: bash
         run: |
           set -euo pipefail
-          KERNEL_PLATFORM="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
-          cd "$KERNEL_PLATFORM"
-          echo "📌 KernelSU-Next: using official setup.sh (defaults to latest tag)"
-          curl -fsSL https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh -o /tmp/ksu_setup.sh
-          bash /tmp/ksu_setup.sh
-          rm -f /tmp/ksu_setup.sh
-      
-          # Sanity checks
-          test -d "$KERNEL_PLATFORM/KernelSU-Next/kernel" || { echo "❌ KernelSU-Next/kernel not found"; ls -la "$KERNEL_PLATFORM" || true; exit 1; }
-          test -L "$KERNEL_PLATFORM/common/drivers/kernelsu" || { echo "❌ common/drivers/kernelsu symlink not created"; ls -la "$KERNEL_PLATFORM/common/drivers" || true; exit 1; }
-      
-          # Keep DKSU_VERSION stable (matches what many OP13 GKI builds expect)
-          KSU_MK="$KERNEL_PLATFORM/KernelSU-Next/kernel/Makefile"
-          if grep -qE '^DKSU_VERSION' "$KSU_MK"; then
-            sed -i -E 's/^(DKSU_VERSION\s*:?=\s*).*/\113167/' "$KSU_MK"
+          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+          
+          # Branch selection:
+          #   SUSFS=On  -> prefer KernelSU-Next dev-susfs (SUSFS v2 compatible), fallback to next-susfs if dev-susfs not found
+          #   SUSFS=Off -> KernelSU-Next next
+          KSU_BRANCH="next"
+          KSU_FALLBACK=""
+          if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
+            KSU_BRANCH="dev-susfs"
+            KSU_FALLBACK="next-susfs"
           fi
+          
+          tmp="/tmp/ksu_setup.sh"
+
+          url_bases=(
+            "https://raw.githubusercontent.com/pershoot/KernelSU-Next"
+            "https://raw.githubusercontent.com/rifsxd/KernelSU-Next"
+            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next"
+          )
+
+          branches=("$KSU_BRANCH")
+          if [ -n "$KSU_FALLBACK" ]; then
+            branches+=("$KSU_FALLBACK")
+          fi
+
+          installed=0
+          for b in "${branches[@]}"; do
+            for base in "${url_bases[@]}"; do
+              u="$base/refs/heads/$b/kernel/setup.sh"
+              echo "→ Trying KernelSU setup: $u (branch=$b)"
+              if curl -fsSL "$u" -o "$tmp"; then
+                chmod +x "$tmp"
+                if bash "$tmp" "$b"; then
+                  echo "✅ KernelSU setup OK (branch=$b)"
+                  echo "KSU_BRANCH=$b" >> "$GITHUB_ENV"
+                  installed=1
+                  break 2
+                fi
+              fi
+            done
+          done
+
+          if [ "$installed" -ne 1 ]; then
+            die "KernelSU setup failed from all mirrors/branches"
+          fi
+          
+          if [[ "$ok" != "1" ]]; then
+            echo "::error::KernelSU-Next setup failed (branch=$KSU_BRANCH)."
+            exit 1
+          fi
+          
+          echo "✅ KernelSU-Next installed (branch=$KSU_BRANCH)."
+
       - name: "Apply optional Multi-Manager patch"
         if: ${{ github.event.inputs.ksunext_multimanager == 'On' }}
         shell: bash
@@ -337,167 +374,151 @@ jobs:
             git apply --whitespace=nowarn "$GITHUB_WORKSPACE/patches/kernelsu-next_multimanager.patch" || true
           fi
 
-      - name: "Apply SUSFS (v2-safe + KSUN fix patches)"
-        if: ${{ github.event.inputs.SUSFS == 'On' }}
+      - name: "Apply SUSFS"
         shell: bash
         run: |
           set -euo pipefail
-      
-          ANDROID_VERSION="${{ env.ANDROID_VERSION }}"
-          KERNEL_VERSION="${{ env.KERNEL_VERSION }}"
-      
+
+          if [[ "${{ github.event.inputs.SUSFS }}" != "On" ]]; then
+            echo "SUSFS disabled → skipping."
+            exit 0
+          fi
+
           KERNEL_PLATFORM="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
-          KERNEL_DIR="$KERNEL_PLATFORM/common"
-          KSUN_DIR="$KERNEL_PLATFORM/KernelSU-Next"
-      
-          test -d "$KERNEL_DIR" || { echo "❌ Kernel dir not found: $KERNEL_DIR"; exit 1; }
-          test -d "$KSUN_DIR" || { echo "❌ KernelSU-Next dir not found: $KSUN_DIR"; exit 1; }
-      
-          SUSFS_REF="gki-${ANDROID_VERSION}-${KERNEL_VERSION}"
-          echo "Using susfs4ksu branch: $SUSFS_REF"
-      
-          work="$GITHUB_WORKSPACE/_susfs_work"
-          rm -rf "$work"
-          mkdir -p "$work"
-          cd "$work"
-      
-          pick_and_clone() {
-            local ref="$1"; shift
-            for url in "$@"; do
-              echo "→ Checking susfs4ksu: $url"
-              if git ls-remote --exit-code --heads "$url" "$ref" >/dev/null 2>&1; then
-                echo "→ Cloning $url ($ref)"
-                git clone --depth=1 --branch "$ref" "$url" susfs4ksu
-                return 0
-              fi
-            done
-            return 1
-          }
-      
-          SUS_URLS=(
-            "https://gitlab.com/simonpunk/susfs4ksu.git"
-            "https://gitlab.com/pershoot/susfs4ksu.git"
-            "https://github.com/simonpunk/susfs4ksu.git"
+
+          # Auto-detect kernel source root (some manifests use common/, some use common/common/)
+          CANDIDATES=(
+            "$KERNEL_PLATFORM/common"
+            "$KERNEL_PLATFORM/common/common"
           )
-      
-          if ! pick_and_clone "$SUSFS_REF" "${SUS_URLS[@]}"; then
-            echo "❌ Could not find branch '$SUSFS_REF' on any susfs4ksu remote."
-            echo "Tried:"; printf ' - %s\n' "${SUS_URLS[@]}"
+
+          KERNEL_DIR=""
+          for c in "${CANDIDATES[@]}"; do
+            if [[ -f "$c/Makefile" && -d "$c/fs" ]]; then
+              KERNEL_DIR="$c"
+              break
+            fi
+          done
+
+          if [[ -z "$KERNEL_DIR" ]]; then
+            echo "::error::Could not detect kernel source root under $KERNEL_PLATFORM"
+            echo "Listing kernel_platform:"
+            ls -la "$KERNEL_PLATFORM" || true
+            echo "Listing common candidates:"
+            ls -la "$KERNEL_PLATFORM/common" || true
+            ls -la "$KERNEL_PLATFORM/common/common" || true
             exit 1
           fi
-      
-          SUS_PATCH_DIR="$work/susfs4ksu/kernel_patches"
-          PATCH_FILE="$SUS_PATCH_DIR/50_add_susfs_in_${SUSFS_REF}.patch"
-          test -d "$SUS_PATCH_DIR/fs" || { echo "❌ susfs4ksu kernel_patches/fs missing"; exit 1; }
-          test -d "$SUS_PATCH_DIR/include/linux" || { echo "❌ susfs4ksu kernel_patches/include/linux missing"; exit 1; }
-      
-          echo "Copying SUSFS source/header files..."
-          rsync -a "$SUS_PATCH_DIR/fs/" "$KERNEL_DIR/fs/"
-          rsync -a "$SUS_PATCH_DIR/include/linux/" "$KERNEL_DIR/include/linux/"
-      
-          if [[ ! -f "$PATCH_FILE" ]]; then
-            echo "❌ SUSFS main patch not found: $PATCH_FILE"
-            echo "Available patches:"; ls -la "$SUS_PATCH_DIR" || true
-            exit 1
-          fi
-      
-          echo "Applying SUSFS patch to kernel (3-way + fuzz fallback)..."
+
+          echo "✅ Kernel root detected: $KERNEL_DIR"
           cd "$KERNEL_DIR"
-          # small pre-adjustments improve patch success on vendor trees
-          grep -q "include/linux/susfs.h" include/linux/mount.h || sed -i '1i#include <linux/susfs.h>' include/linux/mount.h
-          grep -q "include/linux/susfs.h" include/linux/fs.h || sed -i '1i#include <linux/susfs.h>' include/linux/fs.h
-      
-          if git apply --check "$PATCH_FILE" >/dev/null 2>&1; then
-            git apply "$PATCH_FILE"
-          else
-            git apply -3 --reject "$PATCH_FILE" || true
-            if find . -name "*.rej" -print -quit | grep -q .; then
-              echo "❌ SUSFS kernel patch produced rejects (.rej). SUSFS will be incomplete."
-              find . -name "*.rej" -maxdepth 5 -print || true
-              exit 1
+
+          BR="gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
+          echo "Using susfs4ksu branch: $BR"
+
+          SUSFS_FOLDER="$GITHUB_WORKSPACE/susfs4ksu"
+          rm -rf "$SUSFS_FOLDER" || true
+
+          # Prefer upstream that actually carries gki-* branches.
+          repos=(
+            "https://gitlab.com/simonpunk/susfs4ksu.git"
+            "https://github.com/Star-Seven/susfs4ksu.git"
+            "https://gitlab.com/pershoot/susfs4ksu.git"
+          )
+
+          clone_ok=0
+          for repo in "${repos[@]}"; do
+            echo "→ Checking susfs4ksu: $repo"
+            if git ls-remote --exit-code --heads "$repo" "$BR" >/dev/null 2>&1; then
+              echo "→ Cloning $repo ($BR)"
+              git clone --depth 1 --no-tags -b "$BR" "$repo" "$SUSFS_FOLDER"
+              clone_ok=1
+              break
+            else
+              echo "→ Branch not found on this remote: $repo"
             fi
-          fi
-      
-          # Ensure defconfig toggles are set
-          DEFCONF="$KERNEL_DIR/arch/arm64/configs/gki_defconfig"
-          {
-            echo ""
-            echo "# KernelSU + SUSFS"
-            echo "CONFIG_KSU=y"
-            echo "CONFIG_KSU_SUSFS=y"
-            echo "CONFIG_KSU_SUSFS_SUS_PATH=\"/data/adb/ksu/susfs\""
-            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=\"/debug_ramdisk/susfs\""
-          } >> "$DEFCONF"
-      
-          SUSFS_VERSION="$(grep -oE 'SUSFS_VERSION\s+\"v[0-9]+\.[0-9]+\.[0-9]+\"' "$KERNEL_DIR/include/linux/susfs.h" | head -n1 | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' || true)"
-          echo "Detected SUSFS_VERSION: $SUSFS_VERSION"
-      
-          echo "Enabling SUSFS support in KernelSU-Next..."
-          cd "$KSUN_DIR"
-          SUS_KSU_PATCH="$SUS_PATCH_DIR/KernelSU/10_enable_susfs_for_ksu.patch"
-          test -f "$SUS_KSU_PATCH" || { echo "❌ Missing patch: $SUS_KSU_PATCH"; exit 1; }
-          patch -p1 -F 3 --forward < "$SUS_KSU_PATCH" || true
-      
-          KP_DIR="$work/kernel_patches"
-          if [[ ! -d "$KP_DIR" ]]; then
-            echo "Cloning kernel_patches (for KSUN SUSFS fix patches)..."
-            git clone --depth=1 https://github.com/WildKernels/kernel_patches.git "$KP_DIR"
-          fi
-      
-          FIX_BASE=""
-          if [[ -n "$SUSFS_VERSION" ]]; then
-            for d in "$KP_DIR/next/susfs_fix_patches/$SUSFS_VERSION" "$KP_DIR/ksu/susfs_fix_patches/$SUSFS_VERSION"; do
-              if [[ -d "$d" ]]; then FIX_BASE="$d"; break; fi
-            done
-          fi
-      
-          if [[ -n "$FIX_BASE" ]]; then
-            echo "Applying KSUN SUSFS fix patches from: $FIX_BASE"
+          done
 
-            # Apply all available fix_*.patch (forward only). This covers cases where the enable patch
-
-            # applies but still needs API shims for the current SUSFS version.
-
-            for p in "$FIX_BASE"/fix_*.patch "$FIX_BASE"/fix_*.c.patch; do
-
-              [[ -f "$p" ]] || continue
-
-              patch -p1 -F 3 --forward < "$p" || true
-
-            done
-
-            
-
-            # (Optional) also replay fixes based on any reject files (keeps things minimal when available)
-
-            while IFS= read -r -d '' rej; do
-
-              file="$(basename "$rej" .rej)"
-
-              pf1="$FIX_BASE/fix_${file}.patch"
-
-              pf2="$FIX_BASE/fix_${file}.c.patch"
-
-              if [[ -f "$pf1" ]]; then patch -p1 -F 3 --forward < "$pf1" || true; fi
-
-              if [[ -f "$pf2" ]]; then patch -p1 -F 3 --forward < "$pf2" || true; fi
-
-            done < <(find ./kernel -maxdepth 2 -name "*.rej" -print0)
-      
-            if [[ -f "$FIX_BASE/overwrite_hook_mode.patch" ]]; then
-              patch -p1 -F 3 --forward < "$FIX_BASE/overwrite_hook_mode.patch" || true
-            fi
-          else
-            echo "⚠️ No KSUN fix patch directory found for SUSFS_VERSION='$SUSFS_VERSION'."
-          fi
-      
-          if find ./kernel -maxdepth 2 -name "*.rej" -print -quit | grep -q .; then
-            echo "❌ KernelSU-Next still has .rej files after fix patches:"
-            find ./kernel -maxdepth 2 -name "*.rej" -print || true
+          if [[ "$clone_ok" -ne 1 ]]; then
+            echo "::error::Could not find susfs4ksu branch '$BR' on any configured remote."
             exit 1
           fi
-      
+
+          echo "::group::Copy SUSFS source/header files (if present)"
+          # Some SUSFS branches ship extra files outside the main patch.
+          if [[ -d "$SUSFS_FOLDER/kernel_patches/fs" ]]; then
+            cp -a "$SUSFS_FOLDER/kernel_patches/fs/." "$KERNEL_DIR/fs/" || true
+          fi
+          if [[ -d "$SUSFS_FOLDER/kernel_patches/include/linux" ]]; then
+            mkdir -p "$KERNEL_DIR/include/linux"
+            cp -a "$SUSFS_FOLDER/kernel_patches/include/linux/." "$KERNEL_DIR/include/linux/" || true
+          fi
+          echo "::endgroup::"
+
+          # --- Pre-adjustments (borrowed from WildKernel) to help the gki-android15-6.6 patch match ---
+          fake_patched=0
+          if [[ "${{ env.ANDROID_VERSION }}" == "android15" && "${{ env.KERNEL_VERSION }}" == "6.6" ]]; then
+            if [[ -f "./fs/namespace.c" ]] && ! grep -qxF '#include <trace/hooks/fs.h>' ./fs/namespace.c; then
+              if grep -q '#include <trace/hooks/blk.h>' ./fs/namespace.c; then
+                sed -i '/#include <trace\/hooks\/blk.h>/a #include <trace/hooks/fs.h>' ./fs/namespace.c
+              else
+                # Fallback: inject near top of file
+                sed -i '1i #include <trace/hooks/fs.h>' ./fs/namespace.c
+              fi
+            fi
+
+            if [[ -f "./fs/proc/task_mmu.c" ]] && ! grep -qxF $'\tunsigned int nr_subpages = __PAGE_SIZE / PAGE_SIZE;' ./fs/proc/task_mmu.c; then
+              if grep -q 'int ret = 0, copied = 0;' ./fs/proc/task_mmu.c; then
+                echo "Applying temporary context lines for task_mmu.c (for patch matching)..."
+                sed -i -e '/int ret = 0, copied = 0;/a \\tunsigned int nr_subpages = __PAGE_SIZE / PAGE_SIZE;'                  -e '/int ret = 0, copied = 0;/a \\tpagemap_entry_t *res = NULL;' ./fs/proc/task_mmu.c
+                fake_patched=1
+              else
+                echo "::warning::Anchor line not found in fs/proc/task_mmu.c; skipping temporary context insert."
+              fi
+            fi
+          fi
+
+          PATCH_FILE="$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${BR}.patch"
+          if [[ ! -f "$PATCH_FILE" ]]; then
+            echo "::error::Missing SUSFS patch file: $PATCH_FILE"
+            echo "Available patches:"
+            ls -la "$SUSFS_FOLDER/kernel_patches" || true
+            exit 1
+          fi
+
+          echo "::group::Apply SUSFS main patch"
+          if patch -p1 --dry-run -R < "$PATCH_FILE" >/dev/null 2>&1; then
+            echo "↪ SUSFS patch already applied"
+          else
+            if patch -p1 --dry-run --forward < "$PATCH_FILE" >/dev/null 2>&1; then
+              patch -p1 --forward < "$PATCH_FILE"
+            else
+              echo "Patch does not apply cleanly → retrying with fuzz=3"
+              patch -p1 --forward -F 3 < "$PATCH_FILE"
+            fi
+          fi
+          echo "::endgroup::"
+
+          # Revert temporary context lines (if we injected them)
+          if [[ "$fake_patched" == "1" ]]; then
+            sed -i -e '/unsigned int nr_subpages = __PAGE_SIZE \/ PAGE_SIZE;/d'              -e '/pagemap_entry_t \*res = NULL;/d' ./fs/proc/task_mmu.c || true
+          fi
+
+          echo "::group::SUSFS sanity checks"
+          # These checks prevent "SUSFS=On" kernels that actually don't include SUSFS.
+          if [[ ! -f "./fs/susfs.c" ]]; then
+            echo "::warning::fs/susfs.c not found (patch may embed SUSFS in other files)."
+          fi
+
+          if ! grep -Rqs "KSU_SUSFS\|SUSFS" ./fs ./include/linux 2>/dev/null; then
+            echo "::error::SUSFS strings not found in fs/ or include/linux after patching. Integration likely failed."
+            exit 1
+          fi
+          echo "::endgroup::"
+
           echo "✅ SUSFS patching complete."
+
+
       - name: "Enable features via defconfig"
 
         shell: bash
@@ -813,12 +834,6 @@ jobs:
           set -euo pipefail
           sha256sum "${{ env.OUT_ZIP }}" | tee "${{ env.OUT_ZIP }}.sha256"
 
-      - name: "Upload flash zip (artifact)"
-        uses: actions/upload-artifact@v4
-        with:
-          name: OP13_KSU_NEXT_FLASH_ZIP
-          path: ${{ env.OUT_ZIP }}
-          if-no-files-found: error
       - name: Reset PATH for cache save (system tar)
         if: always()
         shell: bash
