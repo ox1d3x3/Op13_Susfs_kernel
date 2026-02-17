@@ -115,6 +115,13 @@ on:
         required: false
         default: "ubuntu-build"
 
+      create_release:
+        description: "Create a GitHub Release (optional)"
+        type: choice
+        required: false
+        default: "false"
+        options: ["false", "true"]
+
 jobs:
   build:
     name: "SUSFS=${{ github.event.inputs.SUSFS }} | Toolchain=${{ github.event.inputs.toolchain }}"
@@ -864,6 +871,16 @@ jobs:
           set -euo pipefail
           sha256sum "${{ env.OUT_ZIP }}" | tee "${{ env.OUT_ZIP }}.sha256"
 
+      - name: "Upload build outputs (Actions artifact)"
+        uses: actions/upload-artifact@v4
+        with:
+          name: OP13_${{ env.SUFFIX }}_${{ github.run_number }}
+          path: |
+            ${{ env.OUT_ZIP }}
+            ${{ env.OUT_ZIP }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Reset PATH for cache save (system tar)
         if: always()
         shell: bash
@@ -872,6 +889,7 @@ jobs:
           echo "TAR=/usr/bin/tar" >> "$GITHUB_ENV"
 
       - name: "Prepare GitHub Release"
+        if: ${{ inputs.create_release == 'true' }}
         id: rel
         shell: bash
         run: |
@@ -883,6 +901,7 @@ jobs:
           echo "Release tag: $TAG"
 
       - name: "Publish GitHub Release (direct-download flash ZIP)"
+        if: ${{ inputs.create_release == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.rel.outputs.tag }}
@@ -903,7 +922,11 @@ jobs:
             echo "- Flashable ZIP: **${{ env.OUT_ZIP }}**"
             echo "- SHA256: **${{ env.OUT_ZIP }}.sha256**"
             echo ""
-            echo "### Note about Artifacts"
-            echo "GitHub Artifacts download as a wrapper ZIP. If you download the Artifact, extract it and flash **${{ env.OUT_ZIP }}**."
-            echo "For direct download (no wrapper ZIP), use the **GitHub Release** asset created by this run."
+            echo "### Note about Downloads"
+            echo "• **Actions Artifact**: downloads as a wrapper ZIP. Extract it and flash **${{ env.OUT_ZIP }}**."
+            if [[ "${{ inputs.create_release }}" == "true" ]]; then
+              echo "• **Release asset**: direct download (no wrapper ZIP)."
+            else
+              echo "• **Release asset**: not created in this run (create_release=false)."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
