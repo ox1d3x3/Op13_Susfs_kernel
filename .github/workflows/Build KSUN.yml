@@ -1,4 +1,4 @@
-name: OP13 KernelSU-Next
+name: OP13 KernelSU/Next
 
 env:
   TZ: Asia/Shanghai
