@@ -28,6 +28,21 @@ on:
         default: balanced
         options: [battery, balanced, performance]
 
+
+      lz4_zram_patch:
+        description: "Apply ZRAM LZ4 perf patch (best-effort, may not apply on all trees)"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+
+      zram_module:
+        description: "Build flashable zram-module.zip (replace zram.ko)"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+
       SUSFS:
         description: "Enable SUSFS"
         type: choice
@@ -385,12 +400,25 @@ jobs:
           fi
 
           # Sanity: ensure KernelSU hooks landed in the kernel tree (expected: ./drivers/kernelsu)
-          if [ ! -d "drivers/kernelsu" ]; then
+          # Some setups create a symlink; repair it if missing/broken.
+          if [ ! -d "drivers/kernelsu" ] && [ ! -L "drivers/kernelsu" ]; then
+            if [ -d "KernelSU/kernel" ]; then
+              echo "::warning::drivers/kernelsu missing; creating symlink to KernelSU/kernel (best-effort)"
+              mkdir -p drivers
+              ln -sfn ../KernelSU/kernel drivers/kernelsu || true
+            fi
+          fi
+
+          # Final check: accept real dir OR symlink (even if not followed by -d in some environments)
+          if [ ! -d "drivers/kernelsu" ] && [ ! -L "drivers/kernelsu" ]; then
             echo "::group::SukiSU integration debug"
             echo "pwd: $(pwd)"
             echo ""
             echo "Top-level:"
             ls -la || true
+            echo ""
+            echo "drivers/ listing:"
+            ls -la drivers || true
             echo ""
             echo "Searching for drivers/kernelsu:"
             find . -maxdepth 8 -type d -path "*/drivers/kernelsu" | head -n 50 || true
@@ -398,7 +426,7 @@ jobs:
             echo "Searching for any *kernelsu* directories:"
             find . -maxdepth 8 -type d -iname "*kernelsu*" | head -n 50 || true
             echo "::endgroup::"
-            die "drivers/kernelsu not found after SukiSU setup (integration did not land in the kernel tree)."
+            die "KernelSU driver not present in tree after SukiSU setup (drivers/kernelsu missing)."
           fi
 
           # Best-effort: stamp version info into KernelSU/kernel/Kbuild (for nicer version display in the manager)
@@ -619,6 +647,33 @@ jobs:
           echo "✅ SUSFS patching complete."
 
 
+      - name: "Optional: Apply ZRAM LZ4 perf patch (best-effort)"
+        if: ${{ github.event.inputs.lz4_zram_patch == 'On' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+
+          mkdir -p lib/lz4/lz4armv8
+
+          P_BASE="https://raw.githubusercontent.com/mrcxlinux/kernel_patches/master/zram"
+          P_MIRROR="https://cdn.jsdelivr.net/gh/mrcxlinux/kernel_patches@master/zram"
+
+          curl -fsSL "$P_BASE/001-lz4.patch" -o 001-lz4.patch || curl -fsSL "$P_MIRROR/001-lz4.patch" -o 001-lz4.patch
+          curl -fsSL "$P_BASE/lz4armv8.S" -o lib/lz4/lz4armv8.S || curl -fsSL "$P_MIRROR/lz4armv8.S" -o lib/lz4/lz4armv8.S
+          cp lib/lz4/lz4armv8.S lib/lz4/lz4armv8/lz4armv8.S
+
+          echo "📦 Applying 001-lz4.patch (best-effort)..."
+          if patch -p1 --dry-run < 001-lz4.patch >/dev/null 2>&1; then
+            patch -p1 < 001-lz4.patch || true
+          else
+            echo "Patch does not apply cleanly → retrying with fuzz=3"
+            patch -p1 -F 3 < 001-lz4.patch || true
+          fi
+
+          echo "✅ LZ4 patch step finished (non-fatal if it didn't apply cleanly)."
+
+
       - name: "Enable features via defconfig"
 
         shell: bash
@@ -653,6 +708,17 @@ jobs:
           # Support Mountify-style tmpfs xattrs (as in your base workflow)
           echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
           echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
+
+
+          # =========================
+          # LZ4 support (for ZRAM / fs / crypto) — enable support only (no forcing)
+          # =========================
+          echo "CONFIG_LZ4_COMPRESS=y" >> "$DEFCONFIG" || true
+          echo "CONFIG_LZ4_DECOMPRESS=y" >> "$DEFCONFIG" || true
+          echo "CONFIG_CRYPTO_LZ4=y" >> "$DEFCONFIG" || true
+          echo "CONFIG_CRYPTO_LZ4HC=y" >> "$DEFCONFIG" || true
+          echo "CONFIG_ZRAM=y" >> "$DEFCONFIG" || true
+          echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG" || true
 
           # Optional features (already in your workflow)
           if [ "${{ github.event.inputs.bbg }}" = "On" ]; then echo "CONFIG_BBG=y" >> "$DEFCONFIG" || true; fi
@@ -727,11 +793,9 @@ jobs:
           # Sanitize: remove whitespace, avoid double '-' prefix
           SUF="${SUF_RAW//[[:space:]]/}"
           SUF="${SUF#-}"
-          if [ "${{ github.event.inputs.profile }}" = "balanced" ]; then
-            LOCALVER="-$SUF"
-          else
-            LOCALVER="-$SUF-$PTAG"
-          fi
+          # IMPORTANT: do NOT bake profile into LOCALVERSION.
+          # Changing uname -r (vermagic) can break vendor module loading and cause bootloops.
+          LOCALVER="-$SUF"
 
           echo "Using suffix: $SUF"
           echo "LOCALVERSION=$LOCALVER" >> "$GITHUB_ENV"
@@ -866,6 +930,19 @@ jobs:
           if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
             grep -q '^CONFIG_KSU_SUSFS=y' "$CFG" || { echo "::error::CONFIG_KSU_SUSFS=y missing in final .config"; grep -n 'KSU_SUSFS' "$CFG" || true; exit 1; }
           fi
+
+          # LZ4 support must be present (y or m). Accept any of these common symbols.
+          if ! grep -qE '^(CONFIG_(LZ4_COMPRESS|LZ4_DECOMPRESS|CRYPTO_LZ4|CRYPTO_LZ4HC))=(y|m)' "$CFG"; then
+            echo "::error::LZ4 support symbols not enabled in final .config"
+            grep -n 'LZ4' "$CFG" || true
+            exit 1
+          fi
+
+          # ZRAM should be enabled if we are going to ship a zram module
+          if ! grep -qE '^CONFIG_ZRAM=(y|m)' "$CFG"; then
+            echo "::warning::CONFIG_ZRAM not enabled — zram module may be unavailable"
+          fi
+
           echo "✅ Config looks good."
 
       - name: "Package AnyKernel3 (single zip, banner, no breakage)"
@@ -984,6 +1061,62 @@ jobs:
           set -euo pipefail
           sha256sum "${{ env.OUT_ZIP }}" | tee "${{ env.OUT_ZIP }}.sha256"
 
+
+      - name: "Build flashable ZRAM module (replace zram.ko)"
+        if: ${{ github.event.inputs.zram_module == 'On' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZRAM_KO="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/out/drivers/block/zram/zram.ko"
+          if [ ! -f "$ZRAM_KO" ]; then
+            echo "::warning::zram.ko not found at: $ZRAM_KO"
+            echo "Listing possible zram.ko locations:"
+            find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/out" -type f -name "zram.ko" -maxdepth 8 2>/dev/null || true
+            echo "Skipping zram module packaging."
+            exit 0
+          fi
+
+          TMP_ZIP="$RUNNER_TEMP/zram_template.zip"
+          rm -f "$TMP_ZIP" || true
+
+          # Template module (known-good). Mirror fallback included.
+          URLS=(
+            "https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/refs/heads/main/zram.zip"
+            "https://cdn.jsdelivr.net/gh/cctv18/oppo_oplus_realme_sm8750@main/zram.zip"
+          )
+
+          ok=0
+          for u in "${URLS[@]}"; do
+            echo "→ Fetching zram template: $u"
+            if curl -fL --retry 3 --retry-delay 2 "$u" -o "$TMP_ZIP"; then
+              ok=1
+              break
+            fi
+          done
+
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::Failed to download zram.zip template from all mirrors"
+            exit 1
+          fi
+
+          WORK="$RUNNER_TEMP/zram_mod"
+          rm -rf "$WORK" || true
+          mkdir -p "$WORK"
+          unzip -q "$TMP_ZIP" -d "$WORK"
+
+          echo "Replacing zram.ko with freshly built one:"
+          echo "  src: $ZRAM_KO"
+          echo "  dst(s):"
+          find "$WORK" -name "zram.ko" -print -exec cp "$ZRAM_KO" {} \;
+
+          OUT_ZRAM="$GITHUB_WORKSPACE/zram-module.zip"
+          rm -f "$OUT_ZRAM" || true
+          (cd "$WORK" && zip -qr "$OUT_ZRAM" .)
+
+          sha256sum "$OUT_ZRAM" | tee "$OUT_ZRAM.sha256"
+          echo "ZRAM_ZIP=$OUT_ZRAM" >> "$GITHUB_ENV"
+
       - name: "Upload build outputs (Actions artifact)"
         uses: actions/upload-artifact@v4
         with:
@@ -991,6 +1124,8 @@ jobs:
           path: |
             ${{ env.OUT_ZIP }}
             ${{ env.OUT_ZIP }}.sha256
+            zram-module.zip
+            zram-module.zip.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -1025,6 +1160,19 @@ jobs:
             ${{ env.OUT_ZIP }}
             ${{ env.OUT_ZIP }}.sha256
 
+
+      - name: "Publish ZRAM module to GitHub Release (optional)"
+        if: ${{ inputs.create_release == 'true' && hashFiles('zram-module.zip') != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.rel.outputs.tag }}
+          name: ${{ steps.rel.outputs.name }}
+          prerelease: true
+          generate_release_notes: false
+          files: |
+            zram-module.zip
+            zram-module.zip.sha256
+
       - name: "Summary"
         shell: bash
         run: |
@@ -1034,6 +1182,8 @@ jobs:
             echo ""
             echo "- Flashable ZIP: **${{ env.OUT_ZIP }}**"
             echo "- SHA256: **${{ env.OUT_ZIP }}.sha256**"
+            echo "- ZRAM module: **zram-module.zip** (if generated)"
+            echo "- ZRAM SHA256: **zram-module.zip.sha256** (if generated)"
             echo ""
             echo "### Note about Downloads"
             echo "• **Actions Artifact**: downloads as a wrapper ZIP. Extract it and flash **${{ env.OUT_ZIP }}**."
