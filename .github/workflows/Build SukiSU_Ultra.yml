@@ -345,6 +345,8 @@ jobs:
       - name: "Apply SUSFS"
         shell: bash
         run: |
+          SUSFS_IN="${{ inputs.SUSFS }}"
+          SUSFS_MODE="${{ inputs.susfs_mode }}"
           set -euo pipefail
 
           if [[ "${{ github.event.inputs.SUSFS }}" != "On" ]]; then
@@ -567,6 +569,8 @@ jobs:
       - name: "Integrate SukiSU Ultra (builtin, official setup.sh)"
         shell: bash
         run: |
+          SUSFS_IN="${{ inputs.SUSFS }}"
+          SUSFS_MODE="${{ inputs.susfs_mode }}"
           set -euo pipefail
           die() { echo "::error::$*"; exit 1; }
 
@@ -977,7 +981,7 @@ jobs:
               echo "::group::Kconfig symbol presence (detected KERNEL_DIR)"
               (cd "$KERNEL_DIR" && grep -Rns "KSU_SUSFS" drivers fs include 2>/dev/null | head -n 80) || true
               echo "::endgroup::"
-              echo "::notice::If both groups are empty, SUSFS patch likely applied to wrong root. Use v6.6 which applies patches from kernel_platform root when patch paths start with common/."
+              echo "::notice::If both groups are empty, SUSFS patch likely applied to wrong root. Use v6.7 which applies patches from kernel_platform root when patch paths start with common/."
               exit 1
             fi
           fi
