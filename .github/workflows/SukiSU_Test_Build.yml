@@ -498,6 +498,37 @@ jobs:
             sed -i -e '/unsigned int nr_subpages = __PAGE_SIZE \/ PAGE_SIZE;/d'              -e '/pagemap_entry_t \*res = NULL;/d' ./fs/proc/task_mmu.c || true
           fi
 
+
+          echo "::group::SUSFS ↔ KernelSU compat (legacy uname helpers)"
+          # KernelSU-Next v3.x (some forks) may still reference legacy SUSFS uname helpers that were removed/renamed in SUSFS v2.
+          # If so, add small compatibility stubs into fs/susfs.c to satisfy linkage without changing runtime behavior.
+          if [[ -f "./drivers/kernelsu/supercalls.c" ]] && grep -q "susfs_uname_is_active" "./drivers/kernelsu/supercalls.c"; then
+            echo "KernelSU references legacy uname helpers → adding SUSFS v2 compat stubs"
+            if [[ -f "./fs/susfs.c" ]] && ! grep -q "susfs_uname_is_active" "./fs/susfs.c"; then
+              cat >> "./fs/susfs.c" <<'EOF'
+
+/* --- SUSFS v2 compatibility for older KernelSU-Next (legacy uname helpers) --- */
+/* Some KernelSU forks still call these legacy helpers. SUSFS v2 uses susfs_set_uname()/susfs_spoof_uname(). */
+bool susfs_uname_is_active(void);
+void susfs_set_uname_from_kernel(void);
+
+#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
+bool susfs_uname_is_active(void) { return true; }
+#else
+bool susfs_uname_is_active(void) { return false; }
+#endif
+
+/* Legacy no-op: SUSFS v2 persists uname spoof via susfs_set_uname() from userspace. */
+void susfs_set_uname_from_kernel(void) { }
+EOF
+            else
+              echo "fs/susfs.c missing or compat stubs already present; skipping."
+            fi
+          else
+            echo "KernelSU does not reference legacy uname helpers; no compat needed."
+          fi
+          echo "::endgroup::"
+
           echo "::group::SUSFS sanity checks"
           # These checks prevent "SUSFS=On" kernels that actually don't include SUSFS.
           if [[ ! -f "./fs/susfs.c" ]]; then
