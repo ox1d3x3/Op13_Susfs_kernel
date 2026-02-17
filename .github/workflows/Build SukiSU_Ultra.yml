@@ -663,9 +663,14 @@ jobs:
           fi
 
       - name: "Apply SUSFS KernelSU patchset (r25 API support)"
-        if: ${{ github.event.inputs.SUSFS == 'On' }}
         shell: bash
         run: |
+          SUSFS_IN="${{ inputs.SUSFS }}"
+          if [[ "$SUSFS_IN" != "On" ]]; then
+            echo "SUSFS is Off -> skipping KernelSU SUSFS patchset (r25 API support)."
+            exit 0
+          fi
+          
           set -euo pipefail
       
           # KERNEL_DIR is exported by the SukiSU integration step.
