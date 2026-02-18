@@ -55,6 +55,8 @@ Optional toggles that may be present in a given build (check release notes):
 
 ✅ **Release notes / changelog** will always be the source of truth for what’s enabled.
 
+NOTE: All the releases are "STOCK/Balanced" profile based. If you want to experiepment with different profile, please fork it and run it. Fork Guide below.
+
 ---
 
 ## 📥 Downloads
@@ -136,6 +138,15 @@ Fix:
 ### zram.ko not found
 Sometimes ZRAM is compiled **built-in** instead of module, so there is no `zram.ko`.  
 Use the runtime checks above (`/sys/block/zram0/...`) instead of relying on `zram.ko`.
+
+
+## Build Yours OWN - BYO
+1. Fork it
+2. Actions
+3. Select the Build
+4. Select the Features of your choice
+5. Start and wait
+
 
 ---
 
