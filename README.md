@@ -5,7 +5,7 @@
 
 <div align="center">
 
-# OP13 GKI Kernel — Ox1d3x3
+# OP13 GKI Kernel
 ### KernelSU-Next • SukiSU Ultra • SUSFS • LZ4 ZRAM
 
 **Daily-driver GKI kernel builds for OnePlus 13** with clean feature set, stability-first defaults, and optional performance goodies.
@@ -26,7 +26,7 @@
 
 ## ✨ What is this?
 
-This repo publishes **flashable AnyKernel3 ZIP releases** for **OnePlus 13 (PJZ110 / sm8750)** based on **Android 6.6 GKI**.
+This repo publishes **GKI+SUSFS+LZ4** for **OnePlus 13 (SUN / sm8750)** based on **Android 6.6 GKI**.
 
 You get two release variants:
 
@@ -61,12 +61,6 @@ Optional toggles that may be present in a given build (check release notes):
 
 ➡️ Grab the latest builds here:  
 **Releases:** https://github.com/ox1d3x3/Op13_Susfs_kernel/releases
-
-What you’ll typically see:
-- `*_FLASH_THIS.zip` (flash in recovery)
-- `*.sha256` (integrity check)
-- Sometimes extra zips/modules depending on the build
-
 ---
 
 ## ⚠️ Warning / Disclaimer
@@ -91,24 +85,20 @@ If your recovery supports it, also back up:
 - **vbmeta** *(some setups)*
 
 If you bootloop:
-- Restore your **boot/init_boot** backup.
+1. Flash sotck boot.img
+2. Reboot to recovery
+3. Restore the backup
 
 ---
 
 ## 📲 Install guide (AnyKernel3 ZIP)
 
 ### Recommended (Recovery)
-1. Download the `*_FLASH_THIS.zip` from Releases
-2. Reboot to recovery
-3. Flash the ZIP
-4. Reboot system
+1. Download the latest Releases zip
+2. Flash through Anykernel3 or Kernel flasher
+3. Reboot
+4. ENJOY!!
 
-### Optional: verify checksum
-On PC:
-```bash
-sha256sum OP13_*.zip
-# compare with the .sha256 file from the same release
-```
 
 ---
 
@@ -135,9 +125,6 @@ su -c 'zcat /proc/config.gz | grep -E "CONFIG_KSU_SUSFS|TRY_UMOUNT|SPOOF_UNAME|C
 
 ## 🩺 Troubleshooting
 
-### SUSFS module error: “0x555e1 / operation not supported / enable it in kernel-r25”
-This is *very often* a **userspace module/binary mismatch**, especially after switching between **KernelSU-Next** and **SukiSU Ultra**.
-
 Fix:
 - Reinstall the SUSFS module after flashing a new kernel variant/version.
 - If you previously had a different SUSFS module, remove it and install the correct version again.
@@ -154,14 +141,7 @@ Use the runtime checks above (`/sys/block/zram0/...`) instead of relying on `zra
 
 ## 🙌 Credits
 
-Huge respect to upstream projects and community patch authors:
-
-- SukiSU Ultra — https://github.com/SukiSU-Ultra/SukiSU-Ultra
-- KernelSU-Next — KernelSU community
-- SUSFS — https://gitlab.com/simonpunk/susfs4ksu
-- Patch sources / community work:
-  - https://github.com/mrcxlinux/kernel_patches
-  - https://github.com/Numbersf/SCHED_PATCH
+[Xiaomichael](https://github.com/xiaomichael) | [cctv18](https://github.com/cctv18) | [vc-teahouse](https://github.com/vc-teahouse) | [Numbersf](https://github.com/Numbersf) | [mrcxlinux](https://github.com/mrcxlinux)
 
 ---
 
