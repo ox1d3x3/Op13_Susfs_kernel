@@ -687,28 +687,30 @@ jobs:
             python3 - "$KSU_KCONFIG" <<'PY'
           import sys
           from pathlib import Path
-          
+
           p = Path(sys.argv[1])
           t = p.read_text()
-          
-          if "config KSU_SUSFS_TRY_UMOUNT" not in t:
-          insert = """config KSU_SUSFS_TRY_UMOUNT
-          \tbool "Try umount at post-fs-data"
-          \tdepends on KSU_SUSFS
-          \tdefault y
-          \thelp
-          \t  SUSFS module (kernel-r25+) compatibility: enables try_umount support.
-          
-          """
-          key = "config KSU_SUSFS_SPOOF_UNAME"
-          if key in t:
-          t = t.replace(key, insert + key, 1)
+
+          sym = 'config KSU_SUSFS_TRY_UMOUNT'
+          if sym not in t:
+              insert = (
+                  'config KSU_SUSFS_TRY_UMOUNT\n'
+                  '\tbool "Try umount at post-fs-data"\n'
+                  '\tdepends on KSU_SUSFS\n'
+                  '\tdefault y\n'
+                  '\thelp\n'
+                  '\t  SUSFS module (kernel-r25+) compatibility: enables try_umount support.\n'
+                  '\n'
+              )
+              key = 'config KSU_SUSFS_SPOOF_UNAME'
+              if key in t:
+                  t = t.replace(key, insert + key, 1)
+              else:
+                  t = t.rstrip() + '\n\n' + insert + '\n'
+              p.write_text(t)
+              print('Inserted KSU_SUSFS_TRY_UMOUNT into Kconfig.')
           else:
-          t = t.rstrip() + "\n\n" + insert + "\n"
-          p.write_text(t)
-          print("Inserted KSU_SUSFS_TRY_UMOUNT into Kconfig.")
-          else:
-          print("KSU_SUSFS_TRY_UMOUNT already present.")
+              print('KSU_SUSFS_TRY_UMOUNT already present.')
           PY
           else
             echo "CONFIG_KSU_SUSFS_TRY_UMOUNT already present."
@@ -719,29 +721,30 @@ jobs:
             python3 - "$KSU_SETUID" <<'PY'
           import sys
           from pathlib import Path
-          
+
           p = Path(sys.argv[1])
           t = p.read_text()
-          
-          if "susfs_try_umount(" in t:
-          print("susfs_try_umount already present.")
-          raise SystemExit(0)
-          
-          marker = "ksu_handle_umount(old_uid, new_uid);"
+
+          if 'susfs_try_umount(' in t:
+              print('susfs_try_umount already present.')
+              raise SystemExit(0)
+
+          marker = 'ksu_handle_umount(old_uid, new_uid);'
           if marker not in t:
-          print("Marker not found; skipping setuid_hook patch.")
-          raise SystemExit(0)
-          
-          ins = marker + """
-          
-          #ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
-          \t// SUSFS module (kernel-r25+) expects this hook
-          \tsusfs_try_umount(new_uid);
-          #endif
-          """
-          t = t.replace(marker, ins, 1)
+              print('Marker not found; skipping setuid_hook patch.')
+              raise SystemExit(0)
+
+          hook = (
+              marker + '\n\n'
+              + '#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT\n'
+              + '\t// SUSFS module (kernel-r25+) compatibility hook\n'
+              + '\tsusfs_try_umount(new_uid);\n'
+              + '#endif\n'
+          )
+
+          t = t.replace(marker, hook, 1)
           p.write_text(t)
-          print("Patched setuid_hook.c to call susfs_try_umount().")
+          print('Patched setuid_hook.c with susfs_try_umount().')
           PY
           else
             echo "setuid_hook.c already contains susfs_try_umount() (or missing) — skipping."
