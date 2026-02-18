@@ -542,7 +542,7 @@ jobs:
           '''
           src = p.read_text(encoding='utf-8')
           if 'susfs_uname_is_active' not in src:
-          p.write_text(src + code, encoding='utf-8')
+              p.write_text(src + code, encoding='utf-8')
           PY
             else
               echo "fs/susfs.c missing or compat stubs already present; skipping."
@@ -1207,7 +1207,7 @@ jobs:
           
           m = re.search(r'\n\.\s+tools/ak3-core\.sh\s*\n', s)
           if not m:
-          raise SystemExit("Cannot find '. tools/ak3-core.sh' marker in anykernel.sh")
+                  raise SystemExit("Cannot find '. tools/ak3-core.sh' marker in anykernel.sh")
           
           run_number = os.environ.get("GITHUB_RUN_NUMBER", "")
           kernel_rel = os.environ.get("KERNEL_RELEASE", "")
