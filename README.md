@@ -63,13 +63,13 @@ Most releases are tuned as a **stable “Balanced/Stock‑like” baseline**, wi
 - **GKI‑compatible** packaging (AnyKernel3 flashable ZIP)
 - **Stability‑first defaults** (daily driver)
 - **Root framework**: KernelSU‑Next *or* SukiSU Ultra (depends on release)
-
-### Optional (depends on release notes)
-- **SUSFS v2 (inline hook)** + **kernel‑r25 module compatibility flags**  
-- **ZRAM + LZ4** (and optional ZRAM/LZ4 performance patch)
+- **SUSFS v2 (inline hook)**
 - **ADIOS I/O scheduler**
 - **Baseband‑Guard (BBG)**
 - **Netfilter extras**: TTL target/match, IP_SET
+
+### Optional (depends on release notes)
+- **ZRAM + LZ4** (and optional ZRAM/LZ4 performance patch)
 - **TCP congestion control**: optional BBR
 - **HMBIRD / FengChi scheduler bundle** *(best‑effort; your base may already include parts of it)*
 
@@ -92,9 +92,9 @@ In recovery, back up:
 - *(optional)* **vbmeta** (depending on your setup)
 
 If you bootloop:
-1. Reboot to recovery  
-2. **Restore boot/init_boot** from your backup (or flash known‑good stock images)  
-3. Reboot  
+1. Reboot to recovery 
+3. **Restore boot/init_boot** from your backup (If recovery not working, flash stock boot.img then reboot to recovery)  
+4. Reboot  
 
 ---
 
@@ -102,7 +102,7 @@ If you bootloop:
 
 ### Recommended (Recovery / Kernel flasher)
 1. Download the correct ZIP from **Releases**
-2. Flash with your recovery / kernel flasher
+2. Flash with kernel flasher or Suki/KSU build in Anykernel3 flasher
 3. Reboot
 4. Enjoy
 
