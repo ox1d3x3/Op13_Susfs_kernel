@@ -1,5 +1,4 @@
 name: OP13 SukiSU Ultra
-
 env:
   TZ: Asia/Shanghai
   ANDROID_VERSION: android15
@@ -1359,6 +1358,108 @@ jobs:
             zram-module.zip.sha256
           if-no-files-found: error
           retention-days: 7
+
+      - name: "Write build summary (selected vs detected)"
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CFG="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/out/.config"
+          SRC="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+          OUTDIR="$SRC/out"
+          IMG="$OUTDIR/arch/arm64/boot/Image"
+          UTS="$OUTDIR/include/generated/utsrelease.h"
+          COMPILE_H="$OUTDIR/include/generated/compile.h"
+
+          yn() { [ "${1:-}" = "On" ] && echo "✅ On" || echo "❌ Off"; }
+          cfg1() { grep -m1 -E "^${1}=" "$CFG" 2>/dev/null || true; }
+          cfgyn() {
+            local key="$1"
+            local line
+            line="$(cfg1 "$key")"
+            if [ -n "$line" ]; then
+              echo "$line"
+            else
+              # show "not set" if present as comment
+              line="$(grep -m1 -E "^# ${key} is not set" "$CFG" 2>/dev/null || true)"
+              if [ -n "$line" ]; then echo "$line"; else echo "—"; fi
+            fi
+          }
+
+          echo "## 🎯 Kernel Build Summary" >> "$GITHUB_STEP_SUMMARY"
+
+          # Basic info
+          KREL="(unknown)"
+          if [ -f "$UTS" ]; then
+            KREL="$(sed -n 's/^#define UTS_RELEASE "\(.*\)"/\1/p' "$UTS" | head -n1 || true)"
+            [ -n "$KREL" ] || KREL="(unknown)"
+          fi
+
+          BUILD_USER_ACT="(unknown)"
+          BUILD_HOST_ACT="(unknown)"
+          if [ -f "$COMPILE_H" ]; then
+            BUILD_USER_ACT="$(sed -n 's/^#define LINUX_COMPILE_BY "\(.*\)"/\1/p' "$COMPILE_H" | head -n1 || true)"
+            BUILD_HOST_ACT="$(sed -n 's/^#define LINUX_COMPILE_HOST "\(.*\)"/\1/p' "$COMPILE_H" | head -n1 || true)"
+          fi
+
+          IMG_SHA="(missing)"
+          if [ -f "$IMG" ]; then
+            IMG_SHA="$(sha256sum "$IMG" | awk '{print $1}')"
+          fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Kernel release (UTS_RELEASE) | \`$KREL\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Image SHA256 | \`$IMG_SHA\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Build user/host (compile.h) | \`${BUILD_USER_ACT}@${BUILD_HOST_ACT}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Toolchain | \`${{ inputs.toolchain }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Profile | \`${{ inputs.profile }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Kernel suffix | \`${{ inputs.kernel_suffix }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Build time input | \`${{ inputs.BUILD_TIME }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Create Release | \`${{ inputs.create_release }}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### 🔧 Feature Selection (Selected vs Detected)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Feature | Selected | Detected (from .config / tree) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+
+          # ZRAM + LZ4
+          echo "| ZRAM module.zip (replace zram.ko) | $(yn "${{ inputs.zram_module }}") | $(cfgyn CONFIG_ZRAM) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| ZRAM default compressor | — | $(cfgyn CONFIG_ZRAM_DEF_COMP) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| LZ4 support (crypto) | — | $(cfgyn CONFIG_CRYPTO_LZ4) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Apply ZRAM LZ4 perf patch (best-effort) | $(yn "${{ inputs.lz4_zram_patch }}") | $(test -d "$SRC/lib/lz4" && echo 'present (tree)' || echo '—') |" >> "$GITHUB_STEP_SUMMARY"
+
+          # SUSFS
+          echo "| SUSFS | $(yn "${{ inputs.SUSFS }}") | $(cfgyn CONFIG_KSU_SUSFS) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SUSFS mode | \`${{ inputs.susfs_mode }}\` | $(test -f "$SRC/include/linux/susfs.h" && echo 'susfs.h present' || echo '—') |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SUSFS TRY_UMOUNT (r25) | — | $(cfgyn CONFIG_KSU_SUSFS_TRY_UMOUNT) |" >> "$GITHUB_STEP_SUMMARY"
+
+          # KernelSU Multi-manager patch (best-effort)
+          echo "| Multi-manager patch (best-effort) | $(yn "${{ inputs.ksunext_multimanager }}") | $(test -d "$SRC/drivers/kernelsu" && echo 'drivers/kernelsu present' || echo '—') |" >> "$GITHUB_STEP_SUMMARY"
+
+          # Net / I/O
+          echo "| Baseband-Guard (BBG) | $(yn "${{ inputs.bbg }}") | $(grep -qE '^CONFIG_.*BBG|^CONFIG_.*BASEBAND' "$CFG" 2>/dev/null && echo 'present (config)' || echo '—') |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| BBR congestion control | $(yn "${{ inputs.bbr }}") | $(cfgyn CONFIG_TCP_CONG_BBR) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| ADIOS I/O scheduler | $(yn "${{ inputs.adios }}") | $(grep -qE '^CONFIG_.*ADIOS' "$CFG" 2>/dev/null && echo 'present (config)' || echo '—') |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Proxy/network tweaks (best-effort) | $(yn "${{ inputs.proxy }}") | — |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| TTL target/match | $(yn "${{ inputs.TTL }}") | $( { cfg1 CONFIG_NETFILTER_XT_TARGET_TTL; cfg1 CONFIG_NETFILTER_XT_MATCH_TTL; } 2>/dev/null | paste -sd ' ' - | sed 's/[[:space:]]*$//' ) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| IP_SET (ipset) | $(yn "${{ inputs.IP_SET }}") | $(cfgyn CONFIG_IP_SET) |" >> "$GITHUB_STEP_SUMMARY"
+
+          # HMBIRD / FengChi
+          DET_HMBIRD="—"
+          if [ -d "$SRC/kernel/sched/hmbird" ] || [ -f "$SRC/include/linux/sched/hmbird_version.h" ]; then
+            DET_HMBIRD="present (tree)"
+          fi
+          echo "| HMBIRD / FengChi (best-effort) | $(yn "${{ inputs.hmbird }}") | $DET_HMBIRD |" >> "$GITHUB_STEP_SUMMARY"
+
+          # Re-kernel support
+          echo "| Re-Kernel support | $(yn "${{ inputs.rekernel }}") | — |" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> Tip: For best-effort patches, ‘Selected ✅’ means the workflow attempted it. ‘Detected’ shows what ended up in the final \`.config\` or source tree." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Reset PATH for cache save (system tar)
         if: always()
