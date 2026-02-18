@@ -6,7 +6,7 @@
 <div align="center">
 
 # OnePlus 13 GKI Kernel Builder  
-### SukiSU Ultra (builtin) • SUSFS • LZ4 ZRAM • AnyKernel3
+### SukiSU Ultra • KernelSU NEXT • SUSFS • LZ4 ZRAM • AnyKernel3
 
 Build **flashable OP13 GKI kernels** via **GitHub Actions** with safe presets for **battery / balanced / performance**, plus optional feature toggles.
 
