@@ -1,162 +1,166 @@
 <!--
-  Kernel-focused README for ox1d3x3/Op13_Susfs_kernel
-  Keep URLs minimal & badges live.
+  OP13 GKI Kernel — README
+  Repo: ox1d3x3/Op13_Susfs_kernel
 -->
 
 <div align="center">
 
-# OP13 GKI Kernel
-### KernelSU-Next • SukiSU Ultra • SUSFS • LZ4 ZRAM
-
-**Daily-driver GKI kernel builds for OnePlus 13** with clean feature set, stability-first defaults, and optional performance goodies.
+<!-- Apple-like hero banner (add file to your repo at: .github/assets/hero.svg) -->
+<img src="./.github/assets/hero.svg" alt="OP13 GKI Kernel banner" width="100%" />
 
 <br/>
 
-[![Release](https://img.shields.io/github/v/release/ox1d3x3/Op13_Susfs_kernel?style=for-the-badge&logo=github&label=Release&color=2ea043)](https://github.com/ox1d3x3/Op13_Susfs_kernel/releases)
-[![Downloads](https://img.shields.io/github/downloads/ox1d3x3/Op13_Susfs_kernel/total?style=for-the-badge&label=Downloads&color=8250df)](https://github.com/ox1d3x3/Op13_Susfs_kernel/releases)
-[![Last Commit](https://img.shields.io/github/last-commit/ox1d3x3/Op13_Susfs_kernel?style=for-the-badge&label=Last%20Commit&logo=git&logoColor=white&color=0e8a16)](https://github.com/ox1d3x3/Op13_Susfs_kernel/commits)
+<!-- Sleek live badges -->
+<a href="https://github.com/ox1d3x3/Op13_Susfs_kernel/releases">
+  <img alt="Release" src="https://img.shields.io/github/v/release/ox1d3x3/Op13_Susfs_kernel?display_name=tag&sort=semver&style=flat-square&label=Release&logo=github" />
+</a>
+<a href="https://github.com/ox1d3x3/Op13_Susfs_kernel/releases">
+  <img alt="Downloads" src="https://img.shields.io/github/downloads/ox1d3x3/Op13_Susfs_kernel/total?style=flat-square&label=Downloads&logo=github" />
+</a>
+<a href="https://github.com/ox1d3x3/Op13_Susfs_kernel/commits">
+  <img alt="Last Commit" src="https://img.shields.io/github/last-commit/ox1d3x3/Op13_Susfs_kernel?style=flat-square&label=Last%20Commit&logo=git" />
+</a>
 
-![Device](https://img.shields.io/badge/Device-OnePlus%2013%20(PJZ110)-1f6feb?style=for-the-badge)
-![Kernel](https://img.shields.io/badge/Kernel-6.6%20(GKI%202.0)-1f6feb?style=for-the-badge)
-![Android](https://img.shields.io/badge/Android-15%20/%2016-1f6feb?style=for-the-badge)
+<br/>
+
+<img alt="Device" src="https://img.shields.io/badge/Device-OnePlus%2013%20(PJZ110)-111111?style=flat-square" />
+<img alt="Kernel"  src="https://img.shields.io/badge/Kernel-6.6%20(GKI%202.0)-111111?style=flat-square" />
+<img alt="Android" src="https://img.shields.io/badge/Android-15%20/%2016-111111?style=flat-square" />
 
 </div>
 
 ---
 
-## ✨ What is this?
+## What this is
 
-This repo publishes **GKI+SUSFS+LZ4** for **OnePlus 13 (SUN / sm8750)** based on **Android 6.6 GKI**.
+**OP13 GKI Kernel** is a daily‑driver focused **Android 15/16 • Linux 6.6 GKI 2.0** kernel for **OnePlus 13 (sm8750 / “sun”)**.
 
-You get two release variants:
+This repo publishes **two kernel variants**:
 
-- **KernelSU-Next builds** (KSU Next)
-- **SukiSU Ultra builds** (Ultra / builtin)
+- **KernelSU‑Next** builds  
+- **SukiSU Ultra** builds (builtin)
 
-> Both variants can include **SUSFS**, and you can choose **battery / balanced / performance** style presets in releases.
+Most releases are tuned as a **stable “Balanced/Stock‑like” baseline**, with optional extras depending on the release notes.
+
+➡️ **Downloads (Releases):** https://github.com/ox1d3x3/Op13_Susfs_kernel/releases
 
 ---
 
-## 🔥 Features & goodies
+## Variants (what to pick)
 
-Core:
-- **Root framework**: KernelSU-Next or SukiSU Ultra (depending on release)
-- **SUSFS v2 support** *(when enabled in a release)*
-- **GKI-compatible packaging** (AnyKernel3 flashable zip)
-- **Clean, stability-first defaults** (daily driver focus)
+| Variant | Best for | Notes |
+|---|---|---|
+| **KernelSU‑Next** | KernelSU‑Next users / compatibility | Classic KSU‑Next experience |
+| **SukiSU Ultra (builtin)** | Ultra users / modern KSU stack | Uses SukiSU Ultra builtin integration |
 
-Optional toggles that may be present in a given build (check release notes):
-- **ZRAM + LZ4** (including optional “ZRAM LZ4 perf” patch)
+> If you switch between variants: **reinstall the SUSFS module** after flashing (to avoid old module state/caches).
+
+---
+
+## Features
+
+### Core (always)
+- **GKI‑compatible** packaging (AnyKernel3 flashable ZIP)
+- **Stability‑first defaults** (daily driver)
+- **Root framework**: KernelSU‑Next *or* SukiSU Ultra (depends on release)
+
+### Optional (depends on release notes)
+- **SUSFS v2 (inline hook)** + **kernel‑r25 module compatibility flags**  
+- **ZRAM + LZ4** (and optional ZRAM/LZ4 performance patch)
 - **ADIOS I/O scheduler**
-- **Baseband Guard (BBG)**
+- **Baseband‑Guard (BBG)**
 - **Netfilter extras**: TTL target/match, IP_SET
 - **TCP congestion control**: optional BBR
-- **HMBIRD / FengChi scheduler bundle** *(best-effort; may be already present or skipped depending on kernel base)*
+- **HMBIRD / FengChi scheduler bundle** *(best‑effort; your base may already include parts of it)*
 
-✅ **Release notes / changelog** will always be the source of truth for what’s enabled.
-
-NOTE: All the releases are "STOCK/Balanced" profile based. If you want to experiepment with different profile, please fork it and run it. Fork Guide below.
+✅ **Source of truth:** each release’s notes/changelog.
 
 ---
 
-## 📥 Downloads
+## Safety first
 
-➡️ Grab the latest builds here:  
-**Releases:** https://github.com/ox1d3x3/Op13_Susfs_kernel/releases
----
-
-## ⚠️ Warning / Disclaimer
-
-Flashing kernels can cause **bootloops**, **soft-bricks**, **data loss**, and **instability**.
-
+### Warning / No warranty
+Flashing kernels can cause **bootloops**, **soft‑bricks**, **data loss**, and **instability**.  
 You are responsible for what you flash.
 
-If you don’t know how to recover from a bootloop, **do not flash**.
+If you’re not comfortable recovering from a bootloop, **do not flash**.
 
----
-
-## 🛟 Backup (do this first)
-
-Before flashing any kernel, make backups in recovery (recommended):
-
-Backup partitions:
+### Backup (do this first)
+In recovery, back up:
 - **boot**
 - **init_boot**
-
-If your recovery supports it, also back up:
-- **vbmeta** *(some setups)*
+- *(optional)* **vbmeta** (depending on your setup)
 
 If you bootloop:
-1. Flash sotck boot.img
-2. Reboot to recovery
-3. Restore the backup
+1. Reboot to recovery  
+2. **Restore boot/init_boot** from your backup (or flash known‑good stock images)  
+3. Reboot  
 
 ---
 
-## 📲 Install guide (AnyKernel3 ZIP)
+## Install guide (AnyKernel3 ZIP)
 
-### Recommended (Recovery)
-1. Download the latest Releases zip
-2. Flash through Anykernel3 or Kernel flasher
+### Recommended (Recovery / Kernel flasher)
+1. Download the correct ZIP from **Releases**
+2. Flash with your recovery / kernel flasher
 3. Reboot
-4. ENJOY!!
-
+4. Enjoy
 
 ---
 
-## ✅ Post-flash verification (quick checks)
+## Post‑flash verification (quick checks)
 
 ### Kernel version
 ```sh
 uname -a
 ```
 
-### Confirm ZRAM + compressor availability
+### ZRAM + compressor
 ```sh
 su -c 'ls -l /sys/block | grep zram || true'
 su -c 'cat /sys/block/zram0/comp_algorithm 2>/dev/null || true'
-su -c 'cat /proc/swaps'
+su -c 'cat /proc/swaps || true'
 ```
 
-### Confirm SUSFS flags (kernel-side)
+### SUSFS flags (kernel-side)
 ```sh
-su -c 'zcat /proc/config.gz | grep -E "CONFIG_KSU_SUSFS|TRY_UMOUNT|SPOOF_UNAME|CMDLINE_OR_BOOTCONFIG"'
+su -c 'zcat /proc/config.gz | grep -E "CONFIG_(KSU|KSU_SUSFS|KSU_SUSFS_TRY_UMOUNT|KSU_SUSFS_SPOOF_UNAME|KSU_SUSFS_(CMDLINE|BOOTCONFIG))" || true'
 ```
+
+> **Tip:** if SUSFS module shows “operation not supported”, reinstall the module after flashing a different variant/build.
 
 ---
 
-## 🩺 Troubleshooting
+## Troubleshooting
 
-Fix:
-- Reinstall the SUSFS module after flashing a new kernel variant/version.
-- If you previously had a different SUSFS module, remove it and install the correct version again.
+### SUSFS module error (0x555e1 / “operation not supported”)
+- Reinstall your SUSFS module after flashing
+- If you had a different SUSFS module before: uninstall it, reboot, then install the correct one
+
+### `zram.ko` not found
+Sometimes ZRAM is compiled **built‑in** (no `zram.ko`).  
+Use the runtime checks above instead of relying on a `.ko` file.
 
 ### Bootloop
 - Restore **boot/init_boot** backups
-- If you changed many features at once, go back to a **balanced baseline** release and add changes one-by-one
-
-### zram.ko not found
-Sometimes ZRAM is compiled **built-in** instead of module, so there is no `zram.ko`.  
-Use the runtime checks above (`/sys/block/zram0/...`) instead of relying on `zram.ko`.
-
-
-## Build Yours OWN - BYO
-1. Fork it
-2. Actions
-3. Select the Build
-4. Select the Features of your choice
-5. Start and wait
-
+- Return to a known‑good baseline (Balanced/Stock‑like) and re‑apply changes one‑by‑one
 
 ---
 
-## 🙌 Credits
-
-[Xiaomichael](https://github.com/xiaomichael) | [cctv18](https://github.com/cctv18) | [vc-teahouse](https://github.com/vc-teahouse) | [Numbersf](https://github.com/Numbersf) | [mrcxlinux](https://github.com/mrcxlinux)
+## Build your own (optional)
+If you want experimental toggles/profiles, fork the repo and build with your preferred options.
 
 ---
 
-## 📜 License
+## Credits
+- https://github.com/xiaomichael
+- https://github.com/cctv18
+- https://github.com/vc-teahouse
+- https://github.com/Numbersf
+- https://github.com/mrcxlinux
 
+---
+
+## License
 This repo distributes kernel builds and build glue.  
 Follow upstream kernel sources and patch project licenses where applicable.
