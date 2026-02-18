@@ -542,7 +542,7 @@ jobs:
           '''
           src = p.read_text(encoding='utf-8')
           if 'susfs_uname_is_active' not in src:
-              p.write_text(src + code, encoding='utf-8')
+          p.write_text(src + code, encoding='utf-8')
           PY
             else
               echo "fs/susfs.c missing or compat stubs already present; skipping."
@@ -685,31 +685,31 @@ jobs:
           if ! grep -q "config KSU_SUSFS_TRY_UMOUNT" "$KSU_KCONFIG"; then
             echo "→ Adding CONFIG_KSU_SUSFS_TRY_UMOUNT to KernelSU Kconfig (required by SUSFS module r25+)."
             python3 - "$KSU_KCONFIG" <<'PY'
-import sys
-from pathlib import Path
-
-p = Path(sys.argv[1])
-t = p.read_text()
-
-if "config KSU_SUSFS_TRY_UMOUNT" not in t:
-    insert = """config KSU_SUSFS_TRY_UMOUNT
-\tbool "Try umount at post-fs-data"
-\tdepends on KSU_SUSFS
-\tdefault y
-\thelp
-\t  SUSFS module (kernel-r25+) compatibility: enables try_umount support.
-
-"""
-    key = "config KSU_SUSFS_SPOOF_UNAME"
-    if key in t:
-        t = t.replace(key, insert + key, 1)
-    else:
-        t = t.rstrip() + "\n\n" + insert + "\n"
-    p.write_text(t)
-    print("Inserted KSU_SUSFS_TRY_UMOUNT into Kconfig.")
-else:
-    print("KSU_SUSFS_TRY_UMOUNT already present.")
-PY
+          import sys
+          from pathlib import Path
+          
+          p = Path(sys.argv[1])
+          t = p.read_text()
+          
+          if "config KSU_SUSFS_TRY_UMOUNT" not in t:
+          insert = """config KSU_SUSFS_TRY_UMOUNT
+          \tbool "Try umount at post-fs-data"
+          \tdepends on KSU_SUSFS
+          \tdefault y
+          \thelp
+          \t  SUSFS module (kernel-r25+) compatibility: enables try_umount support.
+          
+          """
+          key = "config KSU_SUSFS_SPOOF_UNAME"
+          if key in t:
+          t = t.replace(key, insert + key, 1)
+          else:
+          t = t.rstrip() + "\n\n" + insert + "\n"
+          p.write_text(t)
+          print("Inserted KSU_SUSFS_TRY_UMOUNT into Kconfig.")
+          else:
+          print("KSU_SUSFS_TRY_UMOUNT already present.")
+          PY
           else
             echo "CONFIG_KSU_SUSFS_TRY_UMOUNT already present."
           fi
@@ -717,32 +717,32 @@ PY
           if [[ -f "$KSU_SETUID" ]] && ! grep -q "susfs_try_umount(" "$KSU_SETUID"; then
             echo "→ Wiring susfs_try_umount() call after kernel umount."
             python3 - "$KSU_SETUID" <<'PY'
-import sys
-from pathlib import Path
-
-p = Path(sys.argv[1])
-t = p.read_text()
-
-if "susfs_try_umount(" in t:
-    print("susfs_try_umount already present.")
-    raise SystemExit(0)
-
-marker = "ksu_handle_umount(old_uid, new_uid);"
-if marker not in t:
-    print("Marker not found; skipping setuid_hook patch.")
-    raise SystemExit(0)
-
-ins = marker + """
-
-#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
-\t// SUSFS module (kernel-r25+) expects this hook
-\tsusfs_try_umount(new_uid);
-#endif
-"""
-t = t.replace(marker, ins, 1)
-p.write_text(t)
-print("Patched setuid_hook.c to call susfs_try_umount().")
-PY
+          import sys
+          from pathlib import Path
+          
+          p = Path(sys.argv[1])
+          t = p.read_text()
+          
+          if "susfs_try_umount(" in t:
+          print("susfs_try_umount already present.")
+          raise SystemExit(0)
+          
+          marker = "ksu_handle_umount(old_uid, new_uid);"
+          if marker not in t:
+          print("Marker not found; skipping setuid_hook patch.")
+          raise SystemExit(0)
+          
+          ins = marker + """
+          
+          #ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
+          \t// SUSFS module (kernel-r25+) expects this hook
+          \tsusfs_try_umount(new_uid);
+          #endif
+          """
+          t = t.replace(marker, ins, 1)
+          p.write_text(t)
+          print("Patched setuid_hook.c to call susfs_try_umount().")
+          PY
           else
             echo "setuid_hook.c already contains susfs_try_umount() (or missing) — skipping."
           fi
@@ -1191,21 +1191,21 @@ PY
           python3 - <<'PY'
           from pathlib import Path
           import os, re
-
+          
           ak = Path("AnyKernel3/anykernel.sh")
           s = ak.read_text(encoding="utf-8", errors="replace")
-
+          
           # Clean english kernel.string (include profile label)
           profile_label = os.environ.get("PROFILE_LABEL", "Balanced")
           s = re.sub(r'^\s*kernel\.string=.*$', f'kernel.string=PJZ110 | SukiSU Ultra (builtin) [{profile_label}] (OP-OX)', s, flags=re.M)
-
+          
           # Remove previous custom injection (idempotent)
           s = re.sub(r'\n# --- OX1D3X3 CUSTOM START ---.*?# --- OX1D3X3 CUSTOM END ---\n', '\n', s, flags=re.S)
-
+          
           m = re.search(r'\n\.\s+tools/ak3-core\.sh\s*\n', s)
           if not m:
-            raise SystemExit("Cannot find '. tools/ak3-core.sh' marker in anykernel.sh")
-
+          raise SystemExit("Cannot find '. tools/ak3-core.sh' marker in anykernel.sh")
+          
           run_number = os.environ.get("GITHUB_RUN_NUMBER", "")
           kernel_rel = os.environ.get("KERNEL_RELEASE", "")
           suffix = os.environ.get("SUFFIX", "OP-OX")
@@ -1229,7 +1229,7 @@ PY
           ui_print "Builder: @Ox1d3x3"
           ui_print "Credits: @mrcxlinux, WildKernels"
           ui_print " "
-
+          
           device="$(getprop ro.product.device 2>/dev/null || true)"
           model="$(getprop ro.product.model 2>/dev/null || true)"
           android="$(getprop ro.build.version.release 2>/dev/null || true)"
@@ -1238,16 +1238,16 @@ PY
           if [ -n "$android" ]; then ui_print "Android: $android"; fi
           if [ -n "$patch" ]; then ui_print "Patch  : $patch"; fi
           ui_print " "
-
+          
           # Best-effort open project page (may be ignored in recovery)
           if command -v cmd >/dev/null 2>&1; then
-            (cmd activity start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true
+          (cmd activity start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true
           elif command -v am >/dev/null 2>&1; then
-            (am start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true
+          (am start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true
           fi
           # --- OX1D3X3 CUSTOM END ---
           """
-
+          
           s = s[:m.end()] + block + s[m.end():]
           ak.write_text(s, encoding="utf-8")
           PY
