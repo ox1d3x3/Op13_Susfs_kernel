@@ -53,7 +53,7 @@ on:
         description: "SUSFS source (recommended: sukisu; external applies susfs4ksu patch)"
         type: choice
         required: true
-        default: sukisu
+        default: external
         options: [sukisu, external]
 
       ksunext_multimanager:
