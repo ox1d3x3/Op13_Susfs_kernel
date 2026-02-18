@@ -661,77 +661,94 @@ jobs:
             echo "::endgroup::"
             die "KernelSU driver not present after SukiSU setup (drivers/kernelsu missing)."
           fi
-      - name: "Patch KernelSU for SUSFS module (kernel-r25 options)"
+      - name: "SukiSU SUSFS kernel-r25 compat (TRY_UMOUNT)"
         shell: bash
         run: |
           set -euo pipefail
 
           if [[ "${{ github.event.inputs.SUSFS }}" != "On" ]]; then
-            echo "SUSFS Off → skipping KernelSU SUSFS patchset."
+            echo "SUSFS Off → skipping SUSFS r25 compat patch."
             exit 0
           fi
 
-          KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
-          if [[ ! -d "$KDIR" ]]; then
-            echo "::error::Kernel root not found: $KDIR"
+          KDIR="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+
+          # After SukiSU setup.sh, drivers/kernelsu is a symlink into $KDIR/KernelSU/kernel
+          KSU_KCONFIG="$KDIR/drivers/kernelsu/Kconfig"
+          KSU_SETUID="$KDIR/drivers/kernelsu/setuid_hook.c"
+
+          if [[ ! -f "$KSU_KCONFIG" ]]; then
+            echo "::error::KernelSU Kconfig not found at: $KSU_KCONFIG"
             exit 1
           fi
 
-          KSU_ROOT="$KDIR/KernelSU"
-          if [[ ! -d "$KSU_ROOT/.git" ]]; then
-            echo "::error::KernelSU repo not found at: $KSU_ROOT (SukiSU setup step should have created it)."
-            ls -la "$KDIR" || true
-            exit 1
+          if ! grep -q "config KSU_SUSFS_TRY_UMOUNT" "$KSU_KCONFIG"; then
+            echo "→ Adding CONFIG_KSU_SUSFS_TRY_UMOUNT to KernelSU Kconfig (required by SUSFS module r25+)."
+            python3 - "$KSU_KCONFIG" <<'PY'
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+t = p.read_text()
+
+if "config KSU_SUSFS_TRY_UMOUNT" not in t:
+    insert = """config KSU_SUSFS_TRY_UMOUNT
+\tbool "Try umount at post-fs-data"
+\tdepends on KSU_SUSFS
+\tdefault y
+\thelp
+\t  SUSFS module (kernel-r25+) compatibility: enables try_umount support.
+
+"""
+    key = "config KSU_SUSFS_SPOOF_UNAME"
+    if key in t:
+        t = t.replace(key, insert + key, 1)
+    else:
+        t = t.rstrip() + "\n\n" + insert + "\n"
+    p.write_text(t)
+    print("Inserted KSU_SUSFS_TRY_UMOUNT into Kconfig.")
+else:
+    print("KSU_SUSFS_TRY_UMOUNT already present.")
+PY
+          else
+            echo "CONFIG_KSU_SUSFS_TRY_UMOUNT already present."
           fi
 
-          BR="gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
-          SUSFS_FOLDER="$GITHUB_WORKSPACE/susfs4ksu"
-          if [[ ! -d "$SUSFS_FOLDER/.git" ]]; then
-            echo "→ Cloning susfs4ksu ($BR) ..."
-            rm -rf "$SUSFS_FOLDER" || true
-            git clone --depth 1 --no-tags -b "$BR" https://gitlab.com/simonpunk/susfs4ksu.git "$SUSFS_FOLDER"
+          if [[ -f "$KSU_SETUID" ]] && ! grep -q "susfs_try_umount(" "$KSU_SETUID"; then
+            echo "→ Wiring susfs_try_umount() call after kernel umount."
+            python3 - "$KSU_SETUID" <<'PY'
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+t = p.read_text()
+
+if "susfs_try_umount(" in t:
+    print("susfs_try_umount already present.")
+    raise SystemExit(0)
+
+marker = "ksu_handle_umount(old_uid, new_uid);"
+if marker not in t:
+    print("Marker not found; skipping setuid_hook patch.")
+    raise SystemExit(0)
+
+ins = marker + """
+
+#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
+\t// SUSFS module (kernel-r25+) expects this hook
+\tsusfs_try_umount(new_uid);
+#endif
+"""
+t = t.replace(marker, ins, 1)
+p.write_text(t)
+print("Patched setuid_hook.c to call susfs_try_umount().")
+PY
+          else
+            echo "setuid_hook.c already contains susfs_try_umount() (or missing) — skipping."
           fi
 
-          PATCH_DIR="$SUSFS_FOLDER/kernel_patches/KernelSU"
-          if [[ ! -d "$PATCH_DIR" ]]; then
-            echo "::error::KernelSU patch dir not found in susfs4ksu: $PATCH_DIR"
-            find "$SUSFS_FOLDER/kernel_patches" -maxdepth 3 -type d | sed 's|^|  - |' || true
-            exit 1
-          fi
+          echo "✅ SukiSU SUSFS r25 compat patch applied."
 
-          echo "✅ Applying KernelSU SUSFS patchset from: $PATCH_DIR"
-          cd "$KSU_ROOT"
-          APPLY_FAIL=0
-          shopt -s nullglob
-          for p in "$PATCH_DIR"/*.patch; do
-            echo "→ $(basename "$p")"
-            if git apply --check "$p" >/dev/null 2>&1; then
-              git apply --whitespace=nowarn "$p"
-            else
-              if git apply --3way --whitespace=nowarn "$p" >/dev/null 2>&1; then
-                echo "  (applied with 3-way)"
-              else
-                echo "::warning::Patch did not apply cleanly: $(basename "$p")"
-                APPLY_FAIL=1
-              fi
-            fi
-          done
-          shopt -u nullglob
-
-          echo "::group::KernelSU SUSFS symbol scan"
-          grep -Rns "KSU_SUSFS_TRY_UMOUNT" kernel 2>/dev/null | head -n 50 || true
-          grep -Rns "config KSU_SUSFS" kernel 2>/dev/null | head -n 120 || true
-          echo "::endgroup::"
-
-          if ! grep -Rqs "KSU_SUSFS_TRY_UMOUNT" kernel 2>/dev/null; then
-            echo "::error::KSU_SUSFS_TRY_UMOUNT symbol not found in KernelSU sources after patchset."
-            echo "::error::This means the susfs4ksu KernelSU patchset didn't match your SukiSU builtin revision."
-            exit 1
-          fi
-
-          if [[ "$APPLY_FAIL" -eq 1 ]]; then
-            echo "::warning::One or more KernelSU SUSFS patches failed to apply. Proceeding, but module compatibility may be affected."
-          fi
 
 
       - name: "Apply optional Multi-Manager patch"
