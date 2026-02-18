@@ -1,0 +1,745 @@
+name: SUKI_TEST
+
+env:
+  TZ: Asia/Shanghai
+  ANDROID_VERSION: android15
+  # Label only (major.minor). Actual release (e.g. 6.6.89) is detected at build time.
+  KERNEL_VERSION: "6.6"
+  KERNEL_NAME: android15-8-g29d86c5fc9dd-abogki428889875-4k
+  CCACHE_COMPRESS: "true"
+  CCACHE_COMPRESSLEVEL: "6"
+  CCACHE_MAXSIZE: "8G"
+  GIT_TERMINAL_PROMPT: "0"
+
+on:
+  workflow_dispatch:
+    inputs:
+      toolchain:
+        description: "Toolchain"
+        type: choice
+        required: true
+        default: aosp_prebuilt
+        options: [aosp_prebuilt, neutron_clang]
+
+      profile:
+        description: "Build profile (safe presets)"
+        type: choice
+        required: true
+        default: balanced
+        options: [battery, balanced, performance]
+
+      lz4_zram_patch:
+        description: "Apply ZRAM LZ4 perf patch (best-effort, may not apply on all trees)"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+
+      zram_module:
+        description: "Build flashable zram-module.zip (replace zram.ko)"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+
+      SUSFS:
+        description: "Enable SUSFS"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+
+      susfs_mode:
+        description: "SUSFS source (MUST be external for r25+ support)"
+        type: choice
+        required: true
+        default: external
+        options: [external, sukisu]
+
+      ksunext_multimanager:
+        description: "Apply multi-manager patch (best-effort)"
+        type: choice
+        required: true
+        default: "Off"
+        options: ["On", "Off"]
+
+      bbg:
+        description: "Enable Baseband-Guard (BBG)"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+
+      bbr:
+        description: "Enable BBR congestion control"
+        type: choice
+        required: true
+        default: "Off"
+        options: ["On", "Off"]
+
+      adios:
+        description: "Enable ADIOS I/O scheduler"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+
+      rekernel:
+        description: "Enable Re-Kernel support"
+        type: choice
+        required: true
+        default: "Off"
+        options: ["On", "Off"]
+
+      proxy:
+        description: "Enable proxy/network tweaks (best-effort)"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+
+      TTL:
+        description: "Enable TTL target/match (netfilter)"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+
+      IP_SET:
+        description: "Enable IP_SET (netfilter ipset)"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+
+      hmbird:
+        description: "Enable HMBIRD (FengChi + overwriter config) (best-effort)"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+
+      kernel_suffix:
+        description: "Kernel suffix (LOCALVERSION). Leave empty to use KERNEL_NAME"
+        type: string
+        required: false
+        default: ""
+
+      BUILD_TIME:
+        description: "Custom build time string (Enter F to use current UTC)"
+        type: string
+        required: false
+        default: "Thu Dec 11 04:17:27 UTC 2025"
+
+      BUILD_USER:
+        description: "KBUILD_BUILD_USER"
+        type: string
+        required: false
+        default: "OnePlus"
+
+      BUILD_HOST:
+        description: "KBUILD_BUILD_HOST"
+        type: string
+        required: false
+        default: "ubuntu-build"
+
+      create_release:
+        description: "Create a GitHub Release (optional)"
+        type: choice
+        required: false
+        default: "false"
+        options: ["false", "true"]
+
+jobs:
+  build:
+    name: "SUSFS=${{ github.event.inputs.SUSFS }} | Mode=${{ github.event.inputs.susfs_mode }}"
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+
+    steps:
+      - name: "Runner disk preflight"
+        id: disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Memory and swap:"
+          free -h || true
+          echo "Disk usage:"
+          df -hT || true
+          use_maximize=false
+          has_mnt_disk=false
+
+          if findmnt -n /mnt >/dev/null 2>&1; then
+            SRC="$(findmnt -n -o SOURCE /mnt || true)"
+            if [[ "$SRC" == /dev/* ]]; then
+              has_mnt_disk=true
+              MNT_FREE_MB="$(df -Pm /mnt | awk 'NR==2 {print $4}' || true)"
+              if [[ "$MNT_FREE_MB" =~ ^[0-9]+$ ]] && [[ "$MNT_FREE_MB" -gt 20000 ]]; then
+                use_maximize=true
+              fi
+            fi
+          fi
+
+          echo "has_mnt_disk=$has_mnt_disk" >> "$GITHUB_OUTPUT"
+          echo "use_maximize=$use_maximize" >> "$GITHUB_OUTPUT"
+
+      - name: "Maximize build space (only if /mnt temp disk exists)"
+        if: steps.disk.outputs.use_maximize == 'true'
+        uses: easimon/maximize-build-space@v10
+        with:
+          root-reserve-mb: 2048
+          temp-reserve-mb: 1024
+          swap-size-mb: 2048
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+          remove-codeql: "true"
+
+      - name: "Extra disk cleanup"
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost /usr/local/share/powershell /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get clean || true
+          sudo docker image prune -a -f || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Git auth for non-interactive clones
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config --global credential.helper store
+          git config --global core.askPass true
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: "Setup ccache directory"
+        shell: bash
+        run: |
+          echo "CCACHE_DIR=$HOME/.ccache_SukiSUUltra" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.ccache_SukiSUUltra"
+
+      - name: "Restore ccache"
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-op13-sukisuultra-${{ github.event.inputs.toolchain }}-${{ github.event.inputs.SUSFS }}-${{ github.ref_name }}
+          restore-keys: |
+            ccache-${{ runner.os }}-op13-sukisuultra-${{ github.event.inputs.toolchain }}-${{ github.event.inputs.SUSFS }}-
+            ccache-${{ runner.os }}-op13-sukisuultra-
+
+      - name: "Install build dependencies"
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends             python3 python3-pip git curl wget ca-certificates rsync unzip zip file             build-essential flex bison bc gawk ccache             clang lld llvm dwarves             libssl-dev libncurses-dev libelf-dev libdw-dev zlib1g-dev liblz4-tool             libxml2-utils dos2unix jq
+          ccache -M "${{ env.CCACHE_MAXSIZE }}"
+
+      - name: "Install repo tool"
+        shell: bash
+        run: |
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > /tmp/repo
+          chmod a+x /tmp/repo
+          sudo mv /tmp/repo /usr/local/bin/repo
+
+      - name: "Sync kernel sources"
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p kernel_workspace
+          cd kernel_workspace
+          # Manifest repo: only zh branch contains manifest.xml
+          MANIFEST_REPO="https://github.com/mrcxlinux/actions_oplus_sm8750.git"
+          MANIFEST_BRANCH="zh"
+          MANIFEST_FILE="manifest.xml"
+          echo "Using manifest: $MANIFEST_REPO ($MANIFEST_BRANCH/$MANIFEST_FILE)"
+          curl -fsSL "https://raw.githubusercontent.com/mrcxlinux/actions_oplus_sm8750/${MANIFEST_BRANCH}/${MANIFEST_FILE}" >/dev/null
+          repo init -u "$MANIFEST_REPO" -b "$MANIFEST_BRANCH" -m "$MANIFEST_FILE" --depth=1
+          repo sync -c -j"$(nproc)" --no-tags --no-clone-bundle --force-sync
+
+          rm -f kernel_platform/common/android/abi_gki_protected_exports_* || true
+          rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || true
+          # Clean dirty flags
+          sed -i 's/ -dirty//g' kernel_platform/common/scripts/setlocalversion || true
+          sed -i 's/ -dirty//g' kernel_platform/msm-kernel/scripts/setlocalversion || true
+
+      - name: "Select toolchain"
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Selected toolchain: ${{ github.event.inputs.toolchain }}"
+          if [ "${{ github.event.inputs.toolchain }}" = "neutron_clang" ]; then
+            mkdir -p "$HOME/toolchains"
+            cd "$HOME/toolchains"
+            git clone --depth=1 https://github.com/Neutron-Toolchains/antman.git antman
+            cd antman
+            bash antman -S
+            echo "$HOME/toolchains/neutron-clang/bin" >> "$GITHUB_PATH"
+          else
+            cd "$GITHUB_WORKSPACE/kernel_workspace"
+            CANDIDATE="$(find . -type f -path '*prebuilts/clang/host/linux-x86/*/bin/clang' | head -n 1 || true)"
+            if [ -z "$CANDIDATE" ]; then
+              echo "Error: clang prebuilts not found under kernel_workspace."
+              exit 1
+            fi
+            echo "$(dirname "$CANDIDATE")" >> "$GITHUB_PATH"
+          fi
+          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+
+          # Add AOSP kernel build tools
+          KERNEL_PLATFORM="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+          ADD_PATHS=()
+          for p in "$KERNEL_PLATFORM/prebuilts/kernel-build-tools/linux-x86/bin" \
+                    "$KERNEL_PLATFORM/prebuilts/kernel-build-tools/linux_musl-x86/bin"; do
+            if [ -d "$p" ]; then
+              echo "$p" >> "$GITHUB_PATH"
+              ADD_PATHS+=("$p")
+            fi
+          done
+
+          if [ "${#ADD_PATHS[@]}" -gt 0 ]; then
+            export PATH="$(IFS=:; echo "${ADD_PATHS[*]}"):$PATH"
+          fi
+
+      - name: "Apply SUSFS (External Mode)"
+        shell: bash
+        run: |
+          SUSFS_IN="${{ inputs.SUSFS }}"
+          SUSFS_MODE="${{ inputs.susfs_mode }}"
+          set -euo pipefail
+
+          if [[ "$SUSFS_IN" != "On" ]]; then
+            echo "SUSFS disabled → skipping."
+            exit 0
+          fi
+
+          # If user explicitly chose sukisu mode, we skip external patching.
+          # BUT WE STRONGLY RECOMMEND EXTERNAL for fixing the 0x555e1 error.
+          if [[ "$SUSFS_MODE" == "sukisu" ]]; then
+            echo "⚠️  User selected 'sukisu' mode. Skipping external patch."
+            echo "NOTE: 'sukisu' mode might not support kernel-r25 (try_umount) causing 0x555e1 errors."
+            exit 0
+          fi
+
+          echo "🚀 Applying External SUSFS Patch (Recommended for r25+ support)"
+
+          KERNEL_PLATFORM="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+          CANDIDATES=(
+            "$KERNEL_PLATFORM/common"
+            "$KERNEL_PLATFORM/common/common"
+          )
+          KERNEL_DIR=""
+          for c in "${CANDIDATES[@]}"; do
+            if [[ -f "$c/Makefile" && -d "$c/fs" ]]; then
+              KERNEL_DIR="$c"
+              break
+            fi
+          done
+
+          if [[ -z "$KERNEL_DIR" ]]; then
+            echo "::error::Could not detect kernel source root under $KERNEL_PLATFORM"
+            exit 1
+          fi
+
+          echo "✅ Kernel root detected: $KERNEL_DIR"
+          
+          # Detect branch logic
+          BR="gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
+          echo "Using susfs4ksu branch: $BR"
+
+          SUSFS_FOLDER="$GITHUB_WORKSPACE/susfs4ksu"
+          rm -rf "$SUSFS_FOLDER" || true
+
+          # Use simonpunk upstream for best compatibility
+          git clone --depth 1 --no-tags -b "$BR" "https://gitlab.com/simonpunk/susfs4ksu.git" "$SUSFS_FOLDER"
+
+          echo "::group::Copy SUSFS source/header files"
+          if [[ -d "$SUSFS_FOLDER/kernel_patches/fs" ]]; then
+            cp -a "$SUSFS_FOLDER/kernel_patches/fs/." "$KERNEL_DIR/fs/" || true
+          fi
+          if [[ -d "$SUSFS_FOLDER/kernel_patches/include/linux" ]]; then
+            mkdir -p "$KERNEL_DIR/include/linux"
+            cp -a "$SUSFS_FOLDER/kernel_patches/include/linux/." "$KERNEL_DIR/include/linux/" || true
+          fi
+          echo "::endgroup::"
+
+          # Pre-adjustment for 6.6 matching
+          if [[ "${{ env.ANDROID_VERSION }}" == "android15" && "${{ env.KERNEL_VERSION }}" == "6.6" ]]; then
+            if [[ -f "$KERNEL_DIR/fs/namespace.c" ]] && ! grep -qxF '#include <trace/hooks/fs.h>' "$KERNEL_DIR/fs/namespace.c"; then
+               sed -i '1i #include <trace/hooks/fs.h>' "$KERNEL_DIR/fs/namespace.c"
+            fi
+          fi
+
+          PATCH_FILE="$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${BR}.patch"
+          
+          # Decide patch root
+          PATCH_CWD="$KERNEL_DIR"
+          # Simple logic: if patch file refers to common/, use kernel_platform root
+          if grep -qE "^diff --git a/common/|^\+\+\+ b/common/" "$PATCH_FILE"; then
+            PATCH_CWD="$KERNEL_PLATFORM"
+          fi
+          
+          cd "$PATCH_CWD"
+          echo "Applying patch from: $(pwd)"
+
+          if patch -p1 --dry-run -R < "$PATCH_FILE" >/dev/null 2>&1; then
+            echo "↪ SUSFS patch already applied"
+          else
+            if patch -p1 --forward < "$PATCH_FILE"; then
+              echo "✅ Patch applied cleanly."
+            else
+              echo "Patch fuzzing..."
+              patch -p1 --forward -F 3 < "$PATCH_FILE"
+            fi
+          fi
+
+          # Verify
+          if grep -Rqs "KSU_SUSFS" "$KERNEL_DIR/fs/susfs.c"; then
+            echo "✅ SUSFS source present in fs/susfs.c"
+          else
+            echo "::error::SUSFS patching failed."
+            exit 1
+          fi
+
+      - name: "Integrate SukiSU Ultra (builtin, official setup.sh)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          KERNEL_PLATFORM="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+          
+          # Detect kernel root again
+          CANDIDATES=("$KERNEL_PLATFORM/common" "$KERNEL_PLATFORM/common/common" "$KERNEL_PLATFORM")
+          KERNEL_DIR=""
+          for c in "${CANDIDATES[@]}"; do
+            if [[ -f "$c/Makefile" && -d "$c/drivers" ]]; then
+              KERNEL_DIR="$c"
+              break
+            fi
+          done
+          
+          echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
+          cd "$KERNEL_DIR"
+
+          # IMPORTANT: We use 'builtin' arg for SukiSU setup if we are using external SUSFS.
+          # This gives us a clean KernelSU driver that we can then manually wire up to our external SUSFS.
+          if [[ "${{ inputs.susfs_mode }}" == "external" ]]; then
+             SETUP_ARG="builtin"
+             echo "Using external SUSFS -> Installing clean SukiSU (builtin)"
+          else
+             # If user insisted on sukisu mode
+             SETUP_ARG="susfs-main"
+          fi
+
+          curl -fLSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh" | bash -s "$SETUP_ARG"
+
+          if [ ! -d "drivers/kernelsu" ]; then
+             echo "::error::KernelSU driver not found after setup."
+             exit 1
+          fi
+
+      - name: "Wire up SUSFS into SukiSU/KernelSU (Fix 0x555e1)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.SUSFS }}" != "On" ]]; then exit 0; fi
+
+          KDIR="${{ env.KERNEL_DIR }}"
+          KSU_DIR="$KDIR/drivers/kernelsu"
+          KSU_KCONFIG="$KSU_DIR/Kconfig"
+          
+          # Determine which file to patch for the hook. SukiSU usually has setuid_hook.c, 
+          # but some versions use sucompat.c.
+          if [[ -f "$KSU_DIR/setuid_hook.c" ]]; then
+             HOOK_FILE="$KSU_DIR/setuid_hook.c"
+          elif [[ -f "$KSU_DIR/sucompat.c" ]]; then
+             HOOK_FILE="$KSU_DIR/sucompat.c"
+          else
+             echo "::error::Could not find setuid_hook.c or sucompat.c to wire SUSFS hook."
+             exit 1
+          fi
+
+          echo "→ Wiring SUSFS r25+ hook into $HOOK_FILE"
+
+          # 1. Add #include <linux/susfs.h> if missing
+          if ! grep -q "linux/susfs.h" "$HOOK_FILE"; then
+            sed -i '1i #include <linux/susfs.h>' "$HOOK_FILE"
+          fi
+
+          # 2. Inject susfs_try_umount(new_uid)
+          # We look for ksu_handle_umount or similar exit points.
+          python3 - "$HOOK_FILE" <<'PY'
+          import sys
+          from pathlib import Path
+
+          p = Path(sys.argv[1])
+          t = p.read_text(encoding='utf-8', errors='ignore')
+
+          if 'susfs_try_umount' in t:
+              print("Hook already present.")
+              sys.exit(0)
+
+          # Try to find the standard placement after ksu_handle_umount
+          target = 'ksu_handle_umount(old_uid, new_uid);'
+          
+          if target in t:
+              payload = (
+                  target + '\n'
+                  + '#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT\n'
+                  + '\tsusfs_try_umount(new_uid);\n'
+                  + '#endif'
+              )
+              t = t.replace(target, payload)
+              p.write_text(t, encoding='utf-8')
+              print("Patched after ksu_handle_umount.")
+          else:
+              print("::warning::Standard hook marker not found. SUSFS umount might not work.")
+          PY
+
+          # 3. Force CONFIG_KSU_SUSFS_TRY_UMOUNT into drivers/kernelsu/Kconfig
+          # This is the "Enable it in kernel-r25" fix.
+          echo "→ Updating Kconfig for try_umount support..."
+          
+          python3 - "$KSU_KCONFIG" <<'PY'
+          import sys
+          from pathlib import Path
+
+          p = Path(sys.argv[1])
+          t = p.read_text(encoding='utf-8', errors='ignore')
+
+          if 'config KSU_SUSFS_TRY_UMOUNT' in t:
+              print("Kconfig entry already exists.")
+          else:
+              # Append it to the end or after a known config
+              new_config = """
+          config KSU_SUSFS_TRY_UMOUNT
+          \tbool "Try umount at post-fs-data"
+          \tdepends on KSU_SUSFS
+          \tdefault y
+          \thelp
+          \t  SUSFS module (kernel-r25+) compatibility.
+          """
+              if 'config KSU_SUSFS_SPOOF_UNAME' in t:
+                  t = t.replace('config KSU_SUSFS_SPOOF_UNAME', new_config + '\nconfig KSU_SUSFS_SPOOF_UNAME')
+              else:
+                  t = t + '\n' + new_config
+              
+              p.write_text(t, encoding='utf-8')
+              print("Added KSU_SUSFS_TRY_UMOUNT to Kconfig.")
+          PY
+
+          echo "✅ Wired up SUSFS."
+
+      - name: "Apply optional Multi-Manager patch"
+        if: ${{ github.event.inputs.ksunext_multimanager == 'On' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+          if [ -f "$GITHUB_WORKSPACE/patches/kernelsu-next_multimanager.patch" ]; then
+            git apply --whitespace=nowarn "$GITHUB_WORKSPACE/patches/kernelsu-next_multimanager.patch" || true
+          fi
+
+      - name: "Optional: Apply ZRAM LZ4 perf patch"
+        if: ${{ github.event.inputs.lz4_zram_patch == 'On' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+          mkdir -p lib/lz4/lz4armv8
+          P_BASE="https://raw.githubusercontent.com/mrcxlinux/kernel_patches/master/zram"
+          curl -fsSL "$P_BASE/001-lz4.patch" -o 001-lz4.patch
+          curl -fsSL "$P_BASE/lz4armv8.S" -o lib/lz4/lz4armv8/lz4armv8.S
+          patch -p1 < 001-lz4.patch || patch -p1 -F 3 < 001-lz4.patch || true
+
+      - name: "Enable features via defconfig"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+          DEFCONFIG="./common/arch/arm64/configs/gki_defconfig"
+
+          echo "CONFIG_LOCALVERSION_AUTO=n" >> "$DEFCONFIG"
+          echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+
+          if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
+            echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
+            # THIS IS THE KEY FIX for 0x555e1
+            echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$DEFCONFIG"
+          else
+            echo "CONFIG_KSU_SUSFS=n" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$DEFCONFIG"
+          fi
+
+          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
+          
+          # LZ4 / ZRAM settings
+          echo "CONFIG_LZ4_COMPRESS=y" >> "$DEFCONFIG"
+          echo "CONFIG_LZ4_DECOMPRESS=y" >> "$DEFCONFIG"
+          if [ "${{ github.event.inputs.zram_module }}" = "On" ]; then
+            echo "CONFIG_ZRAM=m" >> "$DEFCONFIG"
+            echo "CONFIG_ZSMALLOC=m" >> "$DEFCONFIG"
+            echo 'CONFIG_ZRAM_DEF_COMP="lz4"' >> "$DEFCONFIG"
+          else
+            echo "CONFIG_ZRAM=y" >> "$DEFCONFIG"
+            echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG"
+          fi
+
+          # Safe defaults
+          echo "# CONFIG_KSU_MANUAL_SU is not set" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_THRONE_TRACKER_ALWAYS_THREADED=y" >> "$DEFCONFIG"
+
+          # Options
+          [ "${{ inputs.bbg }}" = "On" ] && echo "CONFIG_BBG=y" >> "$DEFCONFIG" || true
+          [ "${{ inputs.bbr }}" = "On" ] && echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG" || true
+          [ "${{ inputs.adios }}" = "On" ] && { echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> "$DEFCONFIG"; echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> "$DEFCONFIG"; }
+          [ "${{ inputs.rekernel }}" = "On" ] && echo "CONFIG_REKERNEL=y" >> "$DEFCONFIG" || true
+          
+          # Headers fix
+          echo "CONFIG_HEADERS_INSTALL=n" >> "$DEFCONFIG"
+          sed -i 's/check_defconfig//' ./common/build.config.gki || true
+
+      - name: "Set kernel version suffix (LOCALVERSION)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROFILE_IN="${{ github.event.inputs.profile }}"
+          case "$PROFILE_IN" in
+            battery) PTAG="BAT"; PLABEL="Battery" ;;
+            balanced) PTAG="BAL"; PLABEL="Balanced" ;;
+            performance) PTAG="PERF"; PLABEL="Performance" ;;
+            *) PTAG="BAL"; PLABEL="Balanced" ;;
+          esac
+          echo "PROFILE_LABEL=$PLABEL" >> "$GITHUB_ENV"
+          echo "PROFILE_TAG=$PTAG" >> "$GITHUB_ENV"
+          
+          if [ -n "${{ github.event.inputs.kernel_suffix }}" ]; then
+            SUF="${{ github.event.inputs.kernel_suffix }}"
+          else
+            SUF="${{ env.KERNEL_NAME }}"
+          fi
+          SUF="${SUF//[[:space:]]/}"
+          SUF="${SUF#-}"
+          echo "SUFFIX=$SUF" >> "$GITHUB_ENV"
+          echo "LOCALVERSION=-$SUF" >> "$GITHUB_ENV"
+
+      - name: "Set KBUILD build identity"
+        shell: bash
+        run: |
+          echo "KBUILD_BUILD_USER=${{ github.event.inputs.BUILD_USER }}" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_HOST=${{ github.event.inputs.BUILD_HOST }}" >> "$GITHUB_ENV"
+
+      - name: "Clone WildKernel patches (HMBIRD)"
+        if: ${{ github.event.inputs.hmbird == 'On' }}
+        shell: bash
+        run: |
+          git clone --depth=1 https://github.com/TheWildJames/kernel_patches.git kernel_patches
+
+      - name: "Apply WildKernel patches (Best Effort)"
+        if: ${{ github.event.inputs.hmbird == 'On' }}
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+          HMBIRD_DIR="$GITHUB_WORKSPACE/kernel_patches/oneplus/hmbird"
+          
+          # Apply only one FengChi patch
+          for f in "$HMBIRD_DIR"/*OP13* "$HMBIRD_DIR"/*PJZ110*; do
+             if [ -f "$f" ]; then
+                patch -p1 -F 3 -N --silent < "$f" || true
+                break
+             fi
+          done
+          
+          [ -f "$HMBIRD_DIR/overwriter.patch" ] && patch -p1 -F 3 < "$HMBIRD_DIR/overwriter.patch" || true
+          [ -f "$HMBIRD_DIR/hmbird_config.patch" ] && patch -p1 -F 3 < "$HMBIRD_DIR/hmbird_config.patch" || true
+
+      - name: "Build kernel"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
+          
+          make -j"$(nproc)" LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache clang" LD=ld.lld O=out KCFLAGS+=-O2 LOCALVERSION=${LOCALVERSION} gki_defconfig
+
+          CFG="out/.config"
+          
+          # Force Fixes into .config
+          ./scripts/config --file "$CFG" \
+            -e DEBUG_INFO_BTF \
+            -e MODULE_ALLOW_BTF_MISMATCH \
+            -d DEBUG_INFO_REDUCED || true
+
+          if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
+            ./scripts/config --file "$CFG" \
+              -e KSU -e KSU_SUSFS -e KSU_SUSFS_TRY_UMOUNT \
+              -e KSU_SUSFS_SPOOF_UNAME || true
+          fi
+
+          make -j"$(nproc)" LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache clang" LD=ld.lld O=out KCFLAGS+=-O2 LOCALVERSION=${LOCALVERSION} all
+
+          REL="$(cat out/include/config/kernel.release 2>/dev/null || true)"
+          if [ -z "$REL" ]; then REL="$(make -s O=out LOCALVERSION=${LOCALVERSION} kernelrelease 2>/dev/null || true)"; fi
+          echo "KERNEL_RELEASE=$REL" >> "$GITHUB_ENV"
+
+      - name: "Package AnyKernel3"
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          git clone --depth=1 -b gki-2.0 https://github.com/TheWildJames/AnyKernel3 AnyKernel3
+          rm -rf AnyKernel3/.git
+
+          IMAGE_PATH="$(find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/out" -type f -name Image | head -n 1)"
+          cp "$IMAGE_PATH" "AnyKernel3/Image"
+
+          # AnyKernel banner modifications...
+          sed -i "s/kernel.string=.*/kernel.string=SukiSU Ultra Fixed [${PROFILE_LABEL}] (OP13)/" AnyKernel3/anykernel.sh
+
+          OUT="OP13_${{ env.SUFFIX }}_${{ env.PROFILE_TAG }}_FIXED_SUSFS_${{ github.run_number }}.zip"
+          (cd AnyKernel3 && zip -r9 "../$OUT" . -x "*README*" -x "*.git*")
+          echo "OUT_ZIP=$OUT" >> "$GITHUB_ENV"
+
+      - name: "Build ZRAM module"
+        if: ${{ github.event.inputs.zram_module == 'On' }}
+        shell: bash
+        run: |
+          ZRAM_KO="$(find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -type f -name "zram.ko" | head -n 1 || true)"
+          if [ -f "$ZRAM_KO" ]; then
+             curl -fsSL "https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/zram.zip" -o zram.zip
+             unzip -q zram.zip -d zram_mod
+             cp "$ZRAM_KO" zram_mod/zram.ko
+             (cd zram_mod && zip -qr "../zram-module.zip" .)
+          fi
+
+      - name: "Upload Artifacts"
+        uses: actions/upload-artifact@v4
+        with:
+          name: OP13_Fixed_${{ github.run_number }}
+          path: |
+            ${{ env.OUT_ZIP }}
+            zram-module.zip
+
+      - name: "Release"
+        if: ${{ inputs.create_release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ github.run_number }}-FIXED"
+          files: |
+            ${{ env.OUT_ZIP }}
+            zram-module.zip
