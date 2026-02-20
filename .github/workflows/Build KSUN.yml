@@ -85,7 +85,7 @@ on:
         options: ["On", "Off"]
 
       hmbird:
-        description: "Dont use Fengchi/May Create instability"
+        description: "Dont use HMBIRD/Fengchi option/May Create instability"
         type: choice
         required: true
         default: "Off"
