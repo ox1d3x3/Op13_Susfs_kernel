@@ -113,10 +113,10 @@ on:
         options: ["On", "Off"]
 
       hmbird:
-        description: "Enable HMBIRD (FengChi + overwriter config) (best-effort)"
+        description: "Dont use this option/May Create instability"
         type: choice
         required: true
-        default: "On"
+        default: "Off"
         options: ["On", "Off"]
 
       kernel_suffix:
