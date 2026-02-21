@@ -1052,7 +1052,7 @@ jobs:
           }
 
           # 1) Generate config first
-          make -j"$(nproc)" LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache clang" LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 LOCALVERSION=${LOCALVERSION:-} gki_defconfig
+          make -j"$(nproc)" LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache clang" LD=ld.lld HOSTLD=ld.lld O=out LOCALVERSION=${LOCALVERSION:-} gki_defconfig
 
           CFG="out/.config"
           if [[ ! -f "$CFG" ]]; then
@@ -1072,8 +1072,6 @@ jobs:
             -e DEBUG_INFO_BTF_MODULES \
             -e MODULE_ALLOW_BTF_MISMATCH \
             -e PROBE_EVENTS_BTF_ARGS \
-            -e CC_OPTIMIZE_FOR_PERFORMANCE \
-            -d CC_OPTIMIZE_FOR_SIZE \
             -d DEBUG_INFO_REDUCED || true
 
           # 3) Force-enable SUSFS module (kernel-r25) options if SUSFS is On
@@ -1090,7 +1088,7 @@ jobs:
           fi
 
           # Re-resolve dependencies once
-          make -j"$(nproc)" LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache clang" LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 LOCALVERSION=${LOCALVERSION:-} olddefconfig
+          make -j"$(nproc)" LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache clang" LD=ld.lld HOSTLD=ld.lld O=out LOCALVERSION=${LOCALVERSION:-} olddefconfig
 
           echo "::group::Key options in final .config"
           grep -nE '^(CONFIG_DEBUG_INFO_BTF=|CONFIG_DEBUG_INFO_BTF_MODULES=|CONFIG_MODULE_ALLOW_BTF_MISMATCH=|CONFIG_PROBE_EVENTS_BTF_ARGS=|CONFIG_CC_OPTIMIZE_FOR_)=|^# CONFIG_CC_OPTIMIZE_FOR_SIZE is not set|^# CONFIG_DEBUG_INFO_REDUCED is not set' "$CFG" || true
@@ -1099,7 +1097,7 @@ jobs:
           echo "::endgroup::"
 
           # 4) Build
-          make -j"$(nproc)" LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache clang" LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 LOCALVERSION=${LOCALVERSION:-} all
+          make -j"$(nproc)" LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache clang" LD=ld.lld HOSTLD=ld.lld O=out LOCALVERSION=${LOCALVERSION:-} all
 
           REL="$(cat out/include/config/kernel.release 2>/dev/null || true)"
           if [ -z "$REL" ]; then REL="$(make -s O=out LOCALVERSION=${LOCALVERSION:-} kernelrelease 2>/dev/null || true)"; fi
