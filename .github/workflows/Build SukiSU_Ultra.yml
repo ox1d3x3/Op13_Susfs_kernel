@@ -81,7 +81,7 @@ on:
         description: "Enable ADIOS I/O scheduler"
         type: choice
         required: true
-        default: "Off"
+        default: "On"
         options: ["On", "Off"]
 
       rekernel:
