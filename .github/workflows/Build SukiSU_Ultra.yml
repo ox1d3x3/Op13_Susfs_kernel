@@ -27,13 +27,6 @@ on:
         default: balanced
         options: [battery, balanced, performance]
 
-      dev_debug:
-        description: "Developer debug/sanitizers (KASAN/UBSAN/KFENCE/DEBUG_KERNEL). Keep ON for safety; set OFF for daily-driver performance/battery."
-        type: choice
-        required: true
-        default: "Off"
-        options: ["On", "Off"]
-
 
       lz4_zram_patch:
         description: "Apply ZRAM LZ4 perf patch (best-effort, may not apply on all trees)"
@@ -1092,13 +1085,6 @@ jobs:
               -e KSU_SUSFS_SPOOF_UNAME \
               -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
               -e KSU_SUSFS_TRY_UMOUNT || true
-          fi
-
-          # 3.5) Optional: disable heavy debug/sanitizers for daily-driver
-          #      (keeps features in source; only toggles this build's .config)
-          if [[ "${{ github.event.inputs.dev_debug }}" == "Off" ]]; then
-            echo "🧹 dev_debug=Off → disabling DEBUG_KERNEL/KASAN/UBSAN/KFENCE"
-            ./scripts/config --file "$CFG"               -d DEBUG_KERNEL               -d KASAN               -d KASAN_HW_TAGS               -d UBSAN               -d UBSAN_SANITIZE_ALL               -d UBSAN_TRAP               -d KFENCE || true
           fi
 
           # Re-resolve dependencies once
