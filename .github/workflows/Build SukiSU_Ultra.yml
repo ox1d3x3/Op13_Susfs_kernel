@@ -27,6 +27,14 @@ on:
         default: balanced
         options: [battery, balanced, performance]
 
+      dev_debug:
+        description: "Keep heavy debug/sanitizers (KASAN/UBSAN/KFENCE/DEBUG_KERNEL) — for testing only"
+        type: choice
+        required: true
+        default: "Off"
+        options: ["Off", "On"]
+
+
 
       lz4_zram_patch:
         description: "Apply ZRAM LZ4 perf patch (best-effort, may not apply on all trees)"
@@ -859,7 +867,7 @@ jobs:
           if [ "${{ github.event.inputs.bbr }}" = "On" ]; then echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"; fi
           if [ "${{ github.event.inputs.adios }}" = "On" ]; then
             echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> "$DEFCONFIG"
-            echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> "$DEFCONFIG"
+            # Keep ADIOS available but do NOT set it as default (vendor/userspace often overrides at runtime)
           fi
           if [ "${{ github.event.inputs.rekernel }}" = "On" ]; then echo "CONFIG_REKERNEL=y" >> "$DEFCONFIG"; fi
           if [ "${{ github.event.inputs.TTL }}" = "On" ]; then
@@ -1073,6 +1081,37 @@ jobs:
             -e MODULE_ALLOW_BTF_MISMATCH \
             -e PROBE_EVENTS_BTF_ARGS \
             -d DEBUG_INFO_REDUCED || true
+
+          # 2b) Daily-driver defaults: drop heavy runtime debug/sanitizers unless explicitly requested
+          #     (keeps features available in Kconfig; just disables them in release profiles)
+          if [[ "${{ github.event.inputs.dev_debug }}" != "On" ]]; then
+            ./scripts/config --file "$CFG" \
+              -d DEBUG_KERNEL \
+              -d KASAN \
+              -d KASAN_HW_TAGS \
+              -d UBSAN \
+              -d UBSAN_SANITIZE_ALL \
+              -d UBSAN_TRAP \
+              -d KFENCE || true
+          fi
+
+          # 2c) I/O scheduler default: keep ADIOS available (if enabled) but don't force it as default
+          ./scripts/config --file "$CFG" \
+            -d MQ_IOSCHED_DEFAULT_ADIOS \
+            -e MQ_IOSCHED_DEFAULT_DEADLINE || true
+
+          # 2d) ZRAM default compressor: prefer LZ4 when zram is built as a module (your zram-module.zip path)
+          if [[ "${{ github.event.inputs.zram_module }}" == "On" ]]; then
+            ./scripts/config --file "$CFG" \
+              -m ZRAM \
+              -m ZSMALLOC \
+              -d ZRAM_DEF_COMP_LZORLE \
+              -d ZRAM_DEF_COMP_ZSTD \
+              -d ZRAM_DEF_COMP_LZO \
+              -d ZRAM_DEF_COMP_LZ4HC \
+              -e ZRAM_DEF_COMP_LZ4 \
+              --set-str ZRAM_DEF_COMP lz4 || true
+          fi
 
           # 3) Force-enable SUSFS module (kernel-r25) options if SUSFS is On
           if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
