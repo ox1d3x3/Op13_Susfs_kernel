@@ -12,7 +12,8 @@
 
 <!-- Sleek live badges -->
 <a href="https://github.com/ox1d3x3/Op13_Susfs_kernel/releases">
-  <img alt="Release" src="https://img.shields.io/github/v/release/ox1d3x3/Op13_Susfs_kernel?display_name=tag&sort=semver&style=flat-square&label=Release&logo=github" />
+  <img alt="Release"
+       src="https://img.shields.io/github/v/release/ox1d3x3/Op13_Susfs_kernel?display_name=tag&sort=date&filter=V*&style=flat-square&label=Release&logo=github" />
 </a>
 <a href="https://github.com/ox1d3x3/Op13_Susfs_kernel/releases">
   <img alt="Downloads" src="https://img.shields.io/github/downloads/ox1d3x3/Op13_Susfs_kernel/total?style=flat-square&label=Downloads&logo=github" />
