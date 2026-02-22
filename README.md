@@ -107,6 +107,11 @@ If you bootloop:
 3. Reboot
 4. Enjoy
 
+## Force use LZ4
+1. Download the "X1 Kernel Manager"sub-module from the release
+2. Flash it, Reboot the device
+3. Open the module and select "Force Lz4" apply and reboot
+
 ---
 
 ## Post‑flash verification (quick checks)
@@ -159,6 +164,7 @@ If you want experimental toggles/profiles, fork the repo and build with your pre
 - https://github.com/vc-teahouse
 - https://github.com/Numbersf
 - https://github.com/mrcxlinux
+- https://github.com/WildKernels
 
 ---
 
