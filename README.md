@@ -101,7 +101,7 @@ If you bootloop:
 
 ## Install guide (AnyKernel3 ZIP)
 
-### Recommended (Recovery / Kernel flasher)
+### Recommended (Kernel flasher / Suki/KSUN Manager)
 1. Download the correct ZIP from **Releases**
 2. Flash with kernel flasher or Suki/KSU build in Anykernel3 flasher
 3. Reboot
