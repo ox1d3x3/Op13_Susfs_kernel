@@ -663,55 +663,55 @@ jobs:
             if [[ "$need_fix" == "1" ]]; then
               echo "Applying compatibility repair to drivers/kernelsu/supercalls.[ch]"
               python3 - <<'PY'
-              from pathlib import Path
-              import re
+          from pathlib import Path
+          import re
 
-              h = Path('./drivers/kernelsu/supercalls.h')
-              c = Path('./drivers/kernelsu/supercalls.c')
-              ht = h.read_text(encoding='utf-8')
-              ct = c.read_text(encoding='utf-8')
+          h = Path('./drivers/kernelsu/supercalls.h')
+          c = Path('./drivers/kernelsu/supercalls.c')
+          ht = h.read_text(encoding='utf-8')
+          ct = c.read_text(encoding='utf-8')
 
-              # Fix broken macro invocations seen on some builtin revisions.
-              ct = ct.replace(
-                  'KSU_IOCTL(KSU_IOCTL_NEW_GET_ALLOW_LIST, "NEW_GET_ALLOW_LIST", do_new_get_allow_list,',
-                  'KSU_IOCTL(NEW_GET_ALLOW_LIST, "NEW_GET_ALLOW_LIST", do_new_get_allow_list,',
-              )
-              ct = ct.replace(
-                  'KSU_IOCTL(KSU_IOCTL_NEW_GET_DENY_LIST, "NEW_GET_DENY_LIST", do_new_get_deny_list,',
-                  'KSU_IOCTL(NEW_GET_DENY_LIST, "NEW_GET_DENY_LIST", do_new_get_deny_list,',
-              )
+          # Fix broken macro invocations seen on some builtin revisions.
+          ct = ct.replace(
+              'KSU_IOCTL(KSU_IOCTL_NEW_GET_ALLOW_LIST, "NEW_GET_ALLOW_LIST", do_new_get_allow_list,',
+              'KSU_IOCTL(NEW_GET_ALLOW_LIST, "NEW_GET_ALLOW_LIST", do_new_get_allow_list,',
+          )
+          ct = ct.replace(
+              'KSU_IOCTL(KSU_IOCTL_NEW_GET_DENY_LIST, "NEW_GET_DENY_LIST", do_new_get_deny_list,',
+              'KSU_IOCTL(NEW_GET_DENY_LIST, "NEW_GET_DENY_LIST", do_new_get_deny_list,',
+          )
 
-              def insert_before_endif(src: str, block: str) -> str:
-                  if block in src:
-                      return src
-                  m = re.search(r'\n#endif\s*$', src)
-                  if m:
-                      return src[:m.start()] + '\n' + block.rstrip() + '\n' + src[m.start():]
-                  return src.rstrip() + '\n\n' + block.rstrip() + '\n'
+          def insert_before_endif(src: str, block: str) -> str:
+              if block in src:
+                  return src
+              m = re.search(r'\n#endif\s*$', src)
+              if m:
+                  return src[:m.start()] + '\n' + block.rstrip() + '\n' + src[m.start():]
+              return src.rstrip() + '\n\n' + block.rstrip() + '\n'
 
-              new_struct = """struct ksu_new_get_allow_list_cmd {
-                __u16 count; // Input / Output: number of UIDs in array
-                __u16 total_count; // Output: total number of UIDs in requested list
-                __u32 uids[0]; // Output: array of allowed/denied UIDs
-              };"""
-              legacy_defs = """#define KSU_IOCTL_GET_ALLOW_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 6, 0)
-              #define KSU_IOCTL_GET_DENY_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 7, 0)"""
-              new_defs = """#define KSU_IOCTL_NEW_GET_ALLOW_LIST \
-                _IOWR('K', 6, struct ksu_new_get_allow_list_cmd)
-              #define KSU_IOCTL_NEW_GET_DENY_LIST \
-                _IOWR('K', 7, struct ksu_new_get_allow_list_cmd)"""
+          new_struct = """struct ksu_new_get_allow_list_cmd {
+            __u16 count; // Input / Output: number of UIDs in array
+            __u16 total_count; // Output: total number of UIDs in requested list
+            __u32 uids[0]; // Output: array of allowed/denied UIDs
+          };"""
+          legacy_defs = """#define KSU_IOCTL_GET_ALLOW_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 6, 0)
+          #define KSU_IOCTL_GET_DENY_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 7, 0)"""
+          new_defs = """#define KSU_IOCTL_NEW_GET_ALLOW_LIST \
+            _IOWR('K', 6, struct ksu_new_get_allow_list_cmd)
+          #define KSU_IOCTL_NEW_GET_DENY_LIST \
+            _IOWR('K', 7, struct ksu_new_get_allow_list_cmd)"""
 
-              if 'struct ksu_new_get_allow_list_cmd' not in ht:
-                  ht = insert_before_endif(ht, new_struct)
-              if '#define KSU_IOCTL_GET_ALLOW_LIST' not in ht or '#define KSU_IOCTL_GET_DENY_LIST' not in ht:
-                  ht = insert_before_endif(ht, legacy_defs)
-              if '#define KSU_IOCTL_NEW_GET_ALLOW_LIST' not in ht or '#define KSU_IOCTL_NEW_GET_DENY_LIST' not in ht:
-                  ht = insert_before_endif(ht, new_defs)
+          if 'struct ksu_new_get_allow_list_cmd' not in ht:
+              ht = insert_before_endif(ht, new_struct)
+          if '#define KSU_IOCTL_GET_ALLOW_LIST' not in ht or '#define KSU_IOCTL_GET_DENY_LIST' not in ht:
+              ht = insert_before_endif(ht, legacy_defs)
+          if '#define KSU_IOCTL_NEW_GET_ALLOW_LIST' not in ht or '#define KSU_IOCTL_NEW_GET_DENY_LIST' not in ht:
+              ht = insert_before_endif(ht, new_defs)
 
-              h.write_text(ht, encoding='utf-8')
-              c.write_text(ct, encoding='utf-8')
-              print('Repaired supercalls compatibility for legacy/new allow-deny list ioctls.')
-              PY
+          h.write_text(ht, encoding='utf-8')
+          c.write_text(ct, encoding='utf-8')
+          print('Repaired supercalls compatibility for legacy/new allow-deny list ioctls.')
+          PY
               echo "Post-repair symbol check:"
               grep -nE 'KSU_IOCTL_(GET|NEW_GET)_(ALLOW|DENY)_LIST|ksu_new_get_allow_list_cmd' "$KSU_H" || true
             else
