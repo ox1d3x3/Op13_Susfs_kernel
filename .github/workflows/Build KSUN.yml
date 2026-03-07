@@ -414,36 +414,24 @@ jobs:
           echo "✅ Kernel root detected: $KERNEL_DIR"
           cd "$KERNEL_DIR"
 
-          BR="gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
-          echo "Using susfs4ksu branch: $BR"
+          SUSFS_BRANCH="oki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
+          SUSFS_PATCH_TAG="gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
+          SUSFS_REPO="https://github.com/cctv18/susfs4oki.git"
+          echo "Using susfs4oki repo: $SUSFS_REPO"
+          echo "Using susfs4oki branch: $SUSFS_BRANCH"
+          echo "Using SUSFS patch tag: $SUSFS_PATCH_TAG"
 
-          SUSFS_FOLDER="$GITHUB_WORKSPACE/susfs4ksu"
+          SUSFS_FOLDER="$GITHUB_WORKSPACE/susfs4oki"
           rm -rf "$SUSFS_FOLDER" || true
 
-          # Prefer upstream that actually carries gki-* branches.
-          repos=(
-            "https://gitlab.com/simonpunk/susfs4ksu.git"
-            "https://github.com/Star-Seven/susfs4ksu.git"
-            "https://gitlab.com/pershoot/susfs4ksu.git"
-          )
-
-          clone_ok=0
-          for repo in "${repos[@]}"; do
-            echo "→ Checking susfs4ksu: $repo"
-            if git ls-remote --exit-code --heads "$repo" "$BR" >/dev/null 2>&1; then
-              echo "→ Cloning $repo ($BR)"
-              git clone --depth 1 --no-tags -b "$BR" "$repo" "$SUSFS_FOLDER"
-              clone_ok=1
-              break
-            else
-              echo "→ Branch not found on this remote: $repo"
-            fi
-          done
-
-          if [[ "$clone_ok" -ne 1 ]]; then
-            echo "::error::Could not find susfs4ksu branch '$BR' on any configured remote."
+          echo "→ Checking susfs4oki: $SUSFS_REPO"
+          if ! git ls-remote --exit-code --heads "$SUSFS_REPO" "$SUSFS_BRANCH" >/dev/null 2>&1; then
+            echo "::error::Could not find susfs4oki branch '$SUSFS_BRANCH' on $SUSFS_REPO"
             exit 1
           fi
+
+          echo "→ Cloning $SUSFS_REPO ($SUSFS_BRANCH)"
+          git clone --depth 1 --no-tags -b "$SUSFS_BRANCH" "$SUSFS_REPO" "$SUSFS_FOLDER"
 
           echo "::group::Copy SUSFS source/header files (if present)"
           # Some SUSFS branches ship extra files outside the main patch.
@@ -479,7 +467,7 @@ jobs:
             fi
           fi
 
-          PATCH_FILE="$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${BR}.patch"
+          PATCH_FILE="$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${SUSFS_PATCH_TAG}.patch"
           if [[ ! -f "$PATCH_FILE" ]]; then
             echo "::error::Missing SUSFS patch file: $PATCH_FILE"
             echo "Available patches:"
