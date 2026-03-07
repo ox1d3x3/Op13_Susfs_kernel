@@ -159,12 +159,12 @@ If you want experimental toggles/profiles, fork the repo and build with your pre
 ---
 
 ## Credits
-- https://github.com/xiaomichael
-- https://github.com/cctv18
-- https://github.com/vc-teahouse
-- https://github.com/Numbersf
-- https://github.com/mrcxlinux
-- https://github.com/WildKernels
+- @xiaomichael
+- @cctv18
+- @vc-teahouse
+- @Numbersf
+- @mrcxlinux
+- @WildKernels
 
 ---
 
