@@ -664,37 +664,37 @@ jobs:
 
             if [[ "$need_fix" == "1" ]]; then
               echo "Applying compatibility repair to drivers/kernelsu/supercalls.[ch]"
-              python3 - <<'PY'
-              from pathlib import Path
+          python3 - <<'PY'
+          from pathlib import Path
 
-              h = Path('./drivers/kernelsu/supercalls.h')
-              c = Path('./drivers/kernelsu/supercalls.c')
-              ht = h.read_text(encoding='utf-8')
-              ct = c.read_text(encoding='utf-8')
+          h = Path('./drivers/kernelsu/supercalls.h')
+          c = Path('./drivers/kernelsu/supercalls.c')
+          ht = h.read_text(encoding='utf-8')
+          ct = c.read_text(encoding='utf-8')
 
-              ct = ct.replace(
-                  'KSU_IOCTL(KSU_IOCTL_NEW_GET_ALLOW_LIST, "NEW_GET_ALLOW_LIST", do_new_get_allow_list,',
-                  'KSU_IOCTL(NEW_GET_ALLOW_LIST, "NEW_GET_ALLOW_LIST", do_new_get_allow_list,',
-              )
-              ct = ct.replace(
-                  'KSU_IOCTL(KSU_IOCTL_NEW_GET_DENY_LIST, "NEW_GET_DENY_LIST", do_new_get_deny_list,',
-                  'KSU_IOCTL(NEW_GET_DENY_LIST, "NEW_GET_DENY_LIST", do_new_get_deny_list,',
-              )
+          ct = ct.replace(
+              'KSU_IOCTL(KSU_IOCTL_NEW_GET_ALLOW_LIST, "NEW_GET_ALLOW_LIST", do_new_get_allow_list,',
+              'KSU_IOCTL(NEW_GET_ALLOW_LIST, "NEW_GET_ALLOW_LIST", do_new_get_allow_list,',
+          )
+          ct = ct.replace(
+              'KSU_IOCTL(KSU_IOCTL_NEW_GET_DENY_LIST, "NEW_GET_DENY_LIST", do_new_get_deny_list,',
+              'KSU_IOCTL(NEW_GET_DENY_LIST, "NEW_GET_DENY_LIST", do_new_get_deny_list,',
+          )
 
-              marker = "struct ksu_get_allow_list_cmd {\n\t__u32 uids[128]; // Output: array of allowed/denied UIDs\n\t__u32 count; // Output: number of UIDs in array\n\t__u8 allow; // Input: true for allow list, false for deny list\n};\n"
-              new_struct = "\nstruct ksu_new_get_allow_list_cmd {\n\t__u16 count; // Input / Output: number of UIDs in array\n\t__u16 total_count; // Output: total number of UIDs in requested list\n\t__u32 uids[0]; // Output: array of allowed/denied UIDs\n};\n"
-              if 'struct ksu_new_get_allow_list_cmd' not in ht and marker in ht:
-                  ht = ht.replace(marker, marker + new_struct, 1)
+          marker = "struct ksu_get_allow_list_cmd {\n\t__u32 uids[128]; // Output: array of allowed/denied UIDs\n\t__u32 count; // Output: number of UIDs in array\n\t__u8 allow; // Input: true for allow list, false for deny list\n};\n"
+          new_struct = "\nstruct ksu_new_get_allow_list_cmd {\n\t__u16 count; // Input / Output: number of UIDs in array\n\t__u16 total_count; // Output: total number of UIDs in requested list\n\t__u32 uids[0]; // Output: array of allowed/denied UIDs\n};\n"
+          if 'struct ksu_new_get_allow_list_cmd' not in ht and marker in ht:
+              ht = ht.replace(marker, marker + new_struct, 1)
 
-              old = "#define KSU_IOCTL_GET_ALLOW_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 6, 0)\n#define KSU_IOCTL_GET_DENY_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 7, 0)\n"
-              new = old + "#define KSU_IOCTL_NEW_GET_ALLOW_LIST \\\n\t_IOWR('K', 6, struct ksu_new_get_allow_list_cmd)\n#define KSU_IOCTL_NEW_GET_DENY_LIST \\\n\t_IOWR('K', 7, struct ksu_new_get_allow_list_cmd)\n"
-              if '#define KSU_IOCTL_NEW_GET_ALLOW_LIST' not in ht and old in ht:
-                  ht = ht.replace(old, new, 1)
+          old = "#define KSU_IOCTL_GET_ALLOW_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 6, 0)\n#define KSU_IOCTL_GET_DENY_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 7, 0)\n"
+          new = old + "#define KSU_IOCTL_NEW_GET_ALLOW_LIST \\\n\t_IOWR('K', 6, struct ksu_new_get_allow_list_cmd)\n#define KSU_IOCTL_NEW_GET_DENY_LIST \\\n\t_IOWR('K', 7, struct ksu_new_get_allow_list_cmd)\n"
+          if '#define KSU_IOCTL_NEW_GET_ALLOW_LIST' not in ht and old in ht:
+              ht = ht.replace(old, new, 1)
 
-              h.write_text(ht, encoding='utf-8')
-              c.write_text(ct, encoding='utf-8')
-              print('Repaired supercalls compatibility for allow/deny list ioctls.')
-              PY
+          h.write_text(ht, encoding='utf-8')
+          c.write_text(ct, encoding='utf-8')
+          print('Repaired supercalls compatibility for allow/deny list ioctls.')
+          PY
             else
               echo "No supercalls repair needed."
             fi
