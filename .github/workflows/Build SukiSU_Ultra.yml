@@ -353,7 +353,7 @@ jobs:
             exit 0
           fi
 
-          # If SukiSU was integrated with susfs-main, DO NOT apply external susfs4ksu patches again.
+          # If SukiSU was integrated with susfs-main, DO NOT apply external susfs4oki patches again.
           if [[ "${SUKISU_HAS_SUSFS:-0}" == "1" ]]; then
             echo "SUSFS provided by SukiSU setup (susfs-main) → skipping external SUSFS patch to avoid double-patching."
             exit 0
@@ -387,29 +387,29 @@ jobs:
           fi
 
                     echo "✅ Kernel root detected: $KERNEL_DIR"
-          # susfs4ksu patches sometimes are generated relative to kernel_platform root (paths start with common/)
+          # susfs4oki patches sometimes are generated relative to kernel_platform root (paths start with common/)
           # so we dynamically choose where to apply the patch from.
           KERNEL_PLATFORM="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
           SRC_REL="$(realpath --relative-to="$KERNEL_PLATFORM" "$KERNEL_DIR" 2>/dev/null || echo "common")"
           echo "Kernel source relpath: $SRC_REL"
-          SUSFS_REPO="https://github.com/cctv18/susfs4oki.git"
-          SUSFS_BRANCH="oki-android15-6.6"
+
+          SUSFS_SRC_BRANCH="oki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
           SUSFS_PATCH_TAG="gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
-          echo "Using external SUSFS repo: $SUSFS_REPO"
-          echo "Using external SUSFS branch: $SUSFS_BRANCH"
-          echo "Using external SUSFS patch tag: $SUSFS_PATCH_TAG"
+          echo "Using susfs4oki clone branch: $SUSFS_SRC_BRANCH"
+          echo "Using SUSFS patch tag: $SUSFS_PATCH_TAG"
 
           SUSFS_FOLDER="$GITHUB_WORKSPACE/susfs4oki"
           rm -rf "$SUSFS_FOLDER" || true
 
-          echo "→ Verifying SUSFS branch exists"
-          if ! git ls-remote --exit-code --heads "$SUSFS_REPO" "$SUSFS_BRANCH" >/dev/null 2>&1; then
-            echo "::error::Could not find SUSFS branch '$SUSFS_BRANCH' on $SUSFS_REPO"
+          repo="https://github.com/cctv18/susfs4oki.git"
+          echo "→ Checking susfs4oki: $repo"
+          if ! git ls-remote --exit-code --heads "$repo" "$SUSFS_SRC_BRANCH" >/dev/null 2>&1; then
+            echo "::error::Could not find susfs4oki branch '$SUSFS_SRC_BRANCH' on $repo"
             exit 1
           fi
 
-          echo "→ Cloning $SUSFS_REPO ($SUSFS_BRANCH)"
-          git clone --depth 1 --no-tags -b "$SUSFS_BRANCH" "$SUSFS_REPO" "$SUSFS_FOLDER"
+          echo "→ Cloning $repo ($SUSFS_SRC_BRANCH)"
+          git clone --depth 1 --no-tags -b "$SUSFS_SRC_BRANCH" "$repo" "$SUSFS_FOLDER"
 
           echo "::group::Copy SUSFS source/header files (if present)"
           # Some SUSFS branches ship extra files outside the main patch.
@@ -596,17 +596,19 @@ jobs:
 
           # If user selected SukiSU susfs-* branch, we still verify whether SUSFS symbols actually exist in this kernel tree.
           # (setup.sh only integrates drivers/kernelsu; many kernel trees still need external SUSFS patching.)
+          # Important: do NOT use the current builtin branch for external SUSFS mode.
+          # That branch currently has a broken supercalls.c/supercalls.h pairing for GET_ALLOW_LIST / NEW_GET_ALLOW_LIST.
           if [[ "$SUSFS_IN" == "On" && "$SUSFS_MODE" == "sukisu" ]]; then
             SETUP_ARG="susfs-main"
           else
-            SETUP_ARG="builtin"
+            SETUP_ARG="main"
           fi
           echo "SUKISU_HAS_SUSFS=0" >> "$GITHUB_ENV"
 
-          echo "→ Fetching SukiSU Ultra setup (prefer builtin): https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh"
+          echo "→ Fetching SukiSU Ultra setup: https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh"
           echo "→ Setup arg: $SETUP_ARG"
-          SETUP_URL_PRIMARY="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh"
-          SETUP_URL_FALLBACK="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh"
+          SETUP_URL_PRIMARY="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh"
+          SETUP_URL_FALLBACK="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh"
           echo "Running: curl -fLSs $SETUP_URL_PRIMARY | bash -s \"$SETUP_ARG\" (fallback: $SETUP_URL_FALLBACK)"
           (curl -fLSs "$SETUP_URL_PRIMARY" | bash -s "$SETUP_ARG") || (curl -fLSs "$SETUP_URL_FALLBACK" | bash -s "$SETUP_ARG")
           # Detect whether this kernel tree actually contains SUSFS config symbols after SukiSU setup.
@@ -648,6 +650,58 @@ jobs:
             echo "::endgroup::"
             die "KernelSU driver not present after SukiSU setup (drivers/kernelsu missing)."
           fi
+
+          echo "::group::Repair SukiSU supercalls mismatch (allow/deny list IOCTLs)"
+          KSU_H="./drivers/kernelsu/supercalls.h"
+          KSU_C="./drivers/kernelsu/supercalls.c"
+          if [[ -f "$KSU_H" && -f "$KSU_C" ]]; then
+            need_fix=0
+            grep -q "KSU_IOCTL(KSU_IOCTL_NEW_GET_ALLOW_LIST" "$KSU_C" && need_fix=1 || true
+            grep -q "KSU_IOCTL(KSU_IOCTL_NEW_GET_DENY_LIST" "$KSU_C" && need_fix=1 || true
+            grep -q "struct ksu_new_get_allow_list_cmd" "$KSU_H" || need_fix=1
+            grep -q "#define KSU_IOCTL_NEW_GET_ALLOW_LIST" "$KSU_H" || need_fix=1
+            grep -q "#define KSU_IOCTL_NEW_GET_DENY_LIST" "$KSU_H" || need_fix=1
+
+            if [[ "$need_fix" == "1" ]]; then
+              echo "Applying compatibility repair to drivers/kernelsu/supercalls.[ch]"
+              python3 - <<'PY'
+              from pathlib import Path
+
+              h = Path('./drivers/kernelsu/supercalls.h')
+              c = Path('./drivers/kernelsu/supercalls.c')
+              ht = h.read_text(encoding='utf-8')
+              ct = c.read_text(encoding='utf-8')
+
+              ct = ct.replace(
+                  'KSU_IOCTL(KSU_IOCTL_NEW_GET_ALLOW_LIST, "NEW_GET_ALLOW_LIST", do_new_get_allow_list,',
+                  'KSU_IOCTL(NEW_GET_ALLOW_LIST, "NEW_GET_ALLOW_LIST", do_new_get_allow_list,',
+              )
+              ct = ct.replace(
+                  'KSU_IOCTL(KSU_IOCTL_NEW_GET_DENY_LIST, "NEW_GET_DENY_LIST", do_new_get_deny_list,',
+                  'KSU_IOCTL(NEW_GET_DENY_LIST, "NEW_GET_DENY_LIST", do_new_get_deny_list,',
+              )
+
+              marker = "struct ksu_get_allow_list_cmd {\n\t__u32 uids[128]; // Output: array of allowed/denied UIDs\n\t__u32 count; // Output: number of UIDs in array\n\t__u8 allow; // Input: true for allow list, false for deny list\n};\n"
+              new_struct = "\nstruct ksu_new_get_allow_list_cmd {\n\t__u16 count; // Input / Output: number of UIDs in array\n\t__u16 total_count; // Output: total number of UIDs in requested list\n\t__u32 uids[0]; // Output: array of allowed/denied UIDs\n};\n"
+              if 'struct ksu_new_get_allow_list_cmd' not in ht and marker in ht:
+                  ht = ht.replace(marker, marker + new_struct, 1)
+
+              old = "#define KSU_IOCTL_GET_ALLOW_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 6, 0)\n#define KSU_IOCTL_GET_DENY_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 7, 0)\n"
+              new = old + "#define KSU_IOCTL_NEW_GET_ALLOW_LIST \\\n\t_IOWR('K', 6, struct ksu_new_get_allow_list_cmd)\n#define KSU_IOCTL_NEW_GET_DENY_LIST \\\n\t_IOWR('K', 7, struct ksu_new_get_allow_list_cmd)\n"
+              if '#define KSU_IOCTL_NEW_GET_ALLOW_LIST' not in ht and old in ht:
+                  ht = ht.replace(old, new, 1)
+
+              h.write_text(ht, encoding='utf-8')
+              c.write_text(ct, encoding='utf-8')
+              print('Repaired supercalls compatibility for allow/deny list ioctls.')
+              PY
+            else
+              echo "No supercalls repair needed."
+            fi
+          else
+            echo "drivers/kernelsu/supercalls.[ch] not found; skipping repair."
+          fi
+          echo "::endgroup::"
       - name: "SukiSU SUSFS kernel-r25 compat (TRY_UMOUNT)"
         shell: bash
         run: |
