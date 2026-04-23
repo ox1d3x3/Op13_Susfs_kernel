@@ -130,7 +130,7 @@ on:
         description: "Custom build time string (Enter F to use current UTC)"
         type: string
         required: false
-        default: "Thu Dec 11 04:17:27 UTC 2025"
+        default: "F"
 
       BUILD_USER:
         description: "KBUILD_BUILD_USER"
@@ -1032,7 +1032,13 @@ jobs:
           echo "CONFIG_KSU_THRONE_TRACKER_ALWAYS_THREADED=y" >> "$DEFCONFIG" || true
 
           if [ "${{ github.event.inputs.bbg }}" = "On" ]; then echo "CONFIG_BBG=y" >> "$DEFCONFIG" || true; fi
-          if [ "${{ github.event.inputs.bbr }}" = "On" ]; then echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"; fi
+          if [ "${{ github.event.inputs.bbr }}" = "On" ]; then
+            echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"
+            echo "CONFIG_DEFAULT_BBR=y" >> "$DEFCONFIG" || true
+          else
+            echo "# CONFIG_TCP_CONG_BBR is not set" >> "$DEFCONFIG"
+            echo "# CONFIG_DEFAULT_BBR is not set" >> "$DEFCONFIG" || true
+          fi
           if [ "${{ github.event.inputs.adios }}" = "On" ]; then
             echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> "$DEFCONFIG"
             echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> "$DEFCONFIG"
@@ -1169,8 +1175,39 @@ jobs:
           cd "${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
           chmod +x drivers/of/overwriter/overwrite_configs/convert_configs.sh 2>/dev/null || true
           chmod +x drivers/of/overwriter/overwrite_configs/*.sh 2>/dev/null || true
+
+      - name: "Export build identity"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUILD_USER_IN="${{ github.event.inputs.BUILD_USER }}"
+          BUILD_HOST_IN="${{ github.event.inputs.BUILD_HOST }}"
+          BUILD_TIME_IN="${{ github.event.inputs.BUILD_TIME }}"
+
+          [ -n "$BUILD_USER_IN" ] || BUILD_USER_IN="OnePlus"
+          [ -n "$BUILD_HOST_IN" ] || BUILD_HOST_IN="ubuntu-build"
+
+          if [ "$BUILD_TIME_IN" = "F" ] || [ -z "$BUILD_TIME_IN" ]; then
+            BUILD_TIME_REAL="$(LC_ALL=C date -u '+%a %b %e %T UTC %Y')"
+          else
+            BUILD_TIME_REAL="$BUILD_TIME_IN"
+          fi
+
+          echo "KBUILD_BUILD_USER=$BUILD_USER_IN" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_HOST=$BUILD_HOST_IN" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_TIMESTAMP=$BUILD_TIME_REAL" >> "$GITHUB_ENV"
+
+          echo "BUILD_USER_EFFECTIVE=$BUILD_USER_IN" >> "$GITHUB_ENV"
+          echo "BUILD_HOST_EFFECTIVE=$BUILD_HOST_IN" >> "$GITHUB_ENV"
+          echo "BUILD_TIME_EFFECTIVE=$BUILD_TIME_REAL" >> "$GITHUB_ENV"
+
       - name: "Build kernel"
         shell: bash
+        env:
+          KBUILD_BUILD_USER: ${{ env.KBUILD_BUILD_USER }}
+          KBUILD_BUILD_HOST: ${{ env.KBUILD_BUILD_HOST }}
+          KBUILD_BUILD_TIMESTAMP: ${{ env.KBUILD_BUILD_TIMESTAMP }}
         run: |
           set -euo pipefail
 
@@ -1534,6 +1571,10 @@ jobs:
             BUILD_HOST_ACT="$(sed -n 's/^#define LINUX_COMPILE_HOST "\(.*\)"/\1/p' "$COMPILE_H" | head -n1 || true)"
           fi
 
+          [ -n "${BUILD_USER_ACT:-}" ] && [ "$BUILD_USER_ACT" != "(unknown)" ] || BUILD_USER_ACT="${BUILD_USER_EFFECTIVE:-${{ inputs.BUILD_USER }}}"
+          [ -n "${BUILD_HOST_ACT:-}" ] && [ "$BUILD_HOST_ACT" != "(unknown)" ] || BUILD_HOST_ACT="${BUILD_HOST_EFFECTIVE:-${{ inputs.BUILD_HOST }}}"
+          BUILD_TIME_ACT="${BUILD_TIME_EFFECTIVE:-${{ inputs.BUILD_TIME }}}"
+
           IMG_SHA="(missing)"
           if [ -f "$IMG" ]; then
             IMG_SHA="$(sha256sum "$IMG" | awk '{print $1}')"
@@ -1547,8 +1588,8 @@ jobs:
           echo "| Build user/host (compile.h) | \`${BUILD_USER_ACT}@${BUILD_HOST_ACT}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Toolchain | \`${{ inputs.toolchain }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Profile | \`${{ inputs.profile }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Kernel suffix | \`${{ inputs.kernel_suffix }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Build time input | \`${{ inputs.BUILD_TIME }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Kernel suffix | \`${SUFFIX:-${{ env.KERNEL_NAME }}}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Build time | \`${BUILD_TIME_ACT}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Create Release | \`${{ inputs.create_release }}\` |" >> "$GITHUB_STEP_SUMMARY"
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
