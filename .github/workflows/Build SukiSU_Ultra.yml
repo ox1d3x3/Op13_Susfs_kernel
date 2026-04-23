@@ -227,7 +227,7 @@ jobs:
           df -hT
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Git auth for non-interactive clones
         shell: bash
@@ -249,7 +249,7 @@ jobs:
           mkdir -p "$HOME/.ccache_SukiSUUltra"
 
       - name: "Restore ccache"
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-op13-sukisuultra-${{ github.event.inputs.toolchain }}-${{ github.event.inputs.SUSFS }}-${{ github.ref_name }}
@@ -1516,7 +1516,7 @@ jobs:
           echo "ZRAM_ZIP=$OUT_ZRAM" >> "$GITHUB_ENV"
 
       - name: "Upload build outputs (Actions artifact)"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: OP13_${{ env.SUFFIX }}_${{ env.PROFILE_TAG }}_${{ github.run_number }}
           path: |
