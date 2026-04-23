@@ -9,6 +9,7 @@ env:
   CCACHE_COMPRESSLEVEL: "6"
   CCACHE_MAXSIZE: "8G"
   GIT_TERMINAL_PROMPT: "0"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 on:
   workflow_dispatch:
@@ -579,6 +580,136 @@ jobs:
           if [[ -d "$SUSFS_FOLDER/kernel_patches/include/linux" ]]; then
             mkdir -p "$KERNEL_DIR/include/linux"
             cp -a "$SUSFS_FOLDER/kernel_patches/include/linux/." "$KERNEL_DIR/include/linux/" || true
+          fi
+          echo "::endgroup::"
+          echo "::group::Apply KernelSU SUSFS enable patch (external SUSFS only)"
+          KSU_PATCH_FILE=""
+          for p in \
+            "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
+            "$SUSFS_FOLDER/kernel_patches/kernelsu/10_enable_susfs_for_ksu.patch" \
+            "$SUSFS_FOLDER/10_enable_susfs_for_ksu.patch"
+          do
+            if [[ -f "$p" ]]; then
+              KSU_PATCH_FILE="$p"
+              break
+            fi
+          done
+
+          KSU_REPO=""
+          for d in "$KERNEL_DIR/KernelSU" "$KERNEL_DIR/KernelSU-Next"; do
+            if [[ -f "$d/kernel/Kconfig" ]]; then
+              KSU_REPO="$d"
+              break
+            fi
+          done
+          if [[ -z "$KSU_REPO" ]]; then
+            KSU_REPO="$(find "$KERNEL_DIR" -maxdepth 4 -type f -path '*/kernel/Kconfig' | sed 's#/kernel/Kconfig$##' | head -n 1 || true)"
+          fi
+
+          if [[ -n "$KSU_PATCH_FILE" && -n "$KSU_REPO" ]]; then
+            echo "→ KernelSU repo: $KSU_REPO"
+            echo "→ KernelSU SUSFS patch: $KSU_PATCH_FILE"
+
+            TMP_KSU_PATCH="$RUNNER_TEMP/10_enable_susfs_for_ksu.patch"
+            cp -f "$KSU_PATCH_FILE" "$TMP_KSU_PATCH"
+
+            if [[ -f "$KSU_REPO/kernel/Kbuild" && ! -f "$KSU_REPO/kernel/Makefile" ]] && grep -q 'kernel/Makefile' "$TMP_KSU_PATCH"; then
+              echo "→ Rewriting legacy patch path kernel/Makefile -> kernel/Kbuild"
+              sed -i 's|kernel/Makefile|kernel/Kbuild|g' "$TMP_KSU_PATCH"
+            fi
+
+            if (cd "$KSU_REPO" && patch -p1 --dry-run -R < "$TMP_KSU_PATCH" >/dev/null 2>&1); then
+              echo "↪ KernelSU SUSFS patch already applied"
+            else
+              if (cd "$KSU_REPO" && patch -p1 --dry-run --forward < "$TMP_KSU_PATCH" >/dev/null 2>&1); then
+                (cd "$KSU_REPO" && patch -p1 --forward < "$TMP_KSU_PATCH")
+              else
+                echo "KernelSU SUSFS patch does not apply cleanly -> retrying with fuzz=3"
+                if ! (cd "$KSU_REPO" && patch -p1 --forward -F 3 < "$TMP_KSU_PATCH"); then
+                  echo "::warning::KernelSU SUSFS patch did not apply cleanly. Continuing to compatibility fallback checks."
+                fi
+              fi
+            fi
+          else
+            echo "::warning::KernelSU SUSFS patch file or KernelSU repo not found. External SUSFS may be incomplete."
+            echo "  KSU_PATCH_FILE=${KSU_PATCH_FILE:-<none>}"
+            echo "  KSU_REPO=${KSU_REPO:-<none>}"
+          fi
+
+          KSU_KCONFIG=""
+          for p in \
+            "$KERNEL_DIR/drivers/kernelsu/Kconfig" \
+            "$KERNEL_DIR/KernelSU/kernel/Kconfig" \
+            "$KERNEL_DIR/KernelSU-Next/kernel/Kconfig"
+          do
+            if [[ -f "$p" ]]; then
+              KSU_KCONFIG="$p"
+              break
+            fi
+          done
+
+          if [[ -n "$KSU_KCONFIG" ]] && ! grep -q '^config KSU_SUSFS$' "$KSU_KCONFIG"; then
+            echo "::warning::config KSU_SUSFS still missing after patch attempt. Appending minimal SUSFS Kconfig block so olddefconfig can keep SUSFS enabled."
+            {
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS'
+              printf '%s\n' '    bool "SUSFS support"'
+              printf '%s\n' '    depends on KSU'
+              printf '%s\n' '    default y'
+              printf '%s\n' '    help'
+              printf '%s\n' '      Enable SUSFS integration for KernelSU.'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_SUS_PATH'
+              printf '%s\n' '    bool "sus_path"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_SUS_MOUNT'
+              printf '%s\n' '    bool "sus_mount"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_SUS_KSTAT'
+              printf '%s\n' '    bool "sus_kstat"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_SPOOF_UNAME'
+              printf '%s\n' '    bool "spoof uname"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_ENABLE_LOG'
+              printf '%s\n' '    bool "enable susfs log"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS'
+              printf '%s\n' '    bool "hide ksu susfs symbols"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG'
+              printf '%s\n' '    bool "spoof cmdline or bootconfig"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_OPEN_REDIRECT'
+              printf '%s\n' '    bool "open redirect"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_SUS_MAP'
+              printf '%s\n' '    bool "sus map"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+            } >> "$KSU_KCONFIG"
+          fi
+
+          if [[ -n "$KSU_KCONFIG" ]]; then
+            echo "::group::KernelSU Kconfig SUSFS symbols"
+            grep -nE '^config KSU_SUSFS|^config KSU_SUSFS_' "$KSU_KCONFIG" || true
+            echo "::endgroup::"
           fi
           echo "::endgroup::"
 
