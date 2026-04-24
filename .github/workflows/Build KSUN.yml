@@ -1,4 +1,4 @@
-name: OP13 KernelSU-Next
+name: OP13 SukiSU Ultra Legacy External cctv18
 env:
   TZ: Asia/Shanghai
   ANDROID_VERSION: android15
@@ -20,12 +20,6 @@ on:
         required: true
         default: aosp_prebuilt
         options: [aosp_prebuilt, neutron_clang]
-
-      ksu_next_ref:
-        description: "KernelSU-Next ref (stable recommended; use latest, dev, legacy, or a tag like v3.1.0)"
-        type: string
-        required: false
-        default: "stable"
 
       profile:
         description: "Build profile (safe presets)"
@@ -57,11 +51,17 @@ on:
         options: ["On", "Off"]
 
       susfs_mode:
-        description: "SUSFS source (KernelSU-Next uses external susfs4oki patch)"
+        description: "SUSFS source (legacy external cctv18 preset)"
         type: choice
         required: true
         default: external
-        options: [external]
+        options: [sukisu, external]
+
+      sukisu_ref:
+        description: "SukiSU ref (pinned to v4.1.1 / 256c955 by default)"
+        type: string
+        required: false
+        default: "256c955"
 
       ksunext_multimanager:
         description: "Apply multi-manager patch (best-effort)"
@@ -159,7 +159,7 @@ on:
 
 jobs:
   build:
-    name: "KSUN=${{ github.event.inputs.ksu_next_ref }} | SUSFS=${{ github.event.inputs.SUSFS }} | Toolchain=${{ github.event.inputs.toolchain }}"
+    name: "Legacy preset | SUSFS=${{ github.event.inputs.SUSFS }} | Toolchain=${{ github.event.inputs.toolchain }}"
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -251,17 +251,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "CCACHE_DIR=$HOME/.ccache_KernelSUNext" >> "$GITHUB_ENV"
-          mkdir -p "$HOME/.ccache_KernelSUNext"
+          echo "CCACHE_DIR=$HOME/.ccache_SukiSUUltra" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.ccache_SukiSUUltra"
 
       - name: "Restore ccache"
         uses: actions/cache@v5
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-op13-kernelsunext-${{ github.event.inputs.toolchain }}-${{ github.event.inputs.SUSFS }}-${{ github.ref_name }}
+          key: ccache-${{ runner.os }}-op13-sukisuultra-${{ github.event.inputs.toolchain }}-${{ github.event.inputs.SUSFS }}-${{ github.ref_name }}
           restore-keys: |
-            ccache-${{ runner.os }}-op13-kernelsunext-${{ github.event.inputs.toolchain }}-${{ github.event.inputs.SUSFS }}-
-            ccache-${{ runner.os }}-op13-kernelsunext-
+            ccache-${{ runner.os }}-op13-sukisuultra-${{ github.event.inputs.toolchain }}-${{ github.event.inputs.SUSFS }}-
+            ccache-${{ runner.os }}-op13-sukisuultra-
 
       - name: "Install build dependencies"
         shell: bash
@@ -408,41 +408,135 @@ jobs:
           clang --version || true
           ld.lld --version || true
 
-      - name: "Integrate KernelSU-Next (official setup.sh)"
+      - name: "Integrate SukiSU Ultra (official setup.sh)"
         shell: bash
         run: |
+          SUSFS_IN="${{ inputs.SUSFS }}"
+          SUSFS_MODE="${{ inputs.susfs_mode }}"
+          SUKISU_REF="${{ inputs.sukisu_ref }}"
           set -euo pipefail
           die() { echo "::error::$*"; exit 1; }
 
           cd "$KERNEL_DIR"
 
-          KSU_NEXT_REF="${{ github.event.inputs.ksu_next_ref }}"
-          SETUP_URL="https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh"
-          echo "ROOT_HAS_SUSFS=0" >> "$GITHUB_ENV"
-          echo "→ Kernel root: $KERNEL_DIR"
-          echo "→ KernelSU-Next ref: ${KSU_NEXT_REF:-stable}"
-          echo "→ Fetching KernelSU-Next setup: $SETUP_URL"
+          [[ -n "$SUKISU_REF" ]] || SUKISU_REF="main"
 
-          case "${KSU_NEXT_REF:-stable}" in
-            ""|latest)
-              curl -fLSs "$SETUP_URL" | bash -
-              ;;
-            *)
-              curl -fLSs "$SETUP_URL" | bash -s "$KSU_NEXT_REF"
-              ;;
-          esac
+          SETUP_ARG="builtin"
+          if [[ "$SUSFS_IN" == "On" && "$SUSFS_MODE" == "sukisu" ]]; then
+            SETUP_ARG="susfs-main"
+          fi
+
+          echo "ROOT_HAS_SUSFS=0" >> "$GITHUB_ENV"
+          echo "SUKISU_REF_EFFECTIVE=$SUKISU_REF" >> "$GITHUB_ENV"
+          echo "→ Kernel root: $KERNEL_DIR"
+          echo "→ Requested setup arg: $SETUP_ARG"
+          echo "→ Requested SukiSU ref: $SUKISU_REF"
+
+          SETUP_URL="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SUKISU_REF}/kernel/setup.sh"
+          echo "→ Fetching SukiSU Ultra setup: $SETUP_URL"
+          curl -fLSs "$SETUP_URL" | bash -s "$SETUP_ARG"
+
+          if [[ "$SUSFS_IN" == "On" ]]; then
+            if grep -Rqs "KSU_SUSFS" ./drivers ./fs ./include 2>/dev/null; then
+              echo "✅ Detected KSU_SUSFS symbols after SukiSU setup."
+              echo "ROOT_HAS_SUSFS=1" >> "$GITHUB_ENV"
+            else
+              echo "::notice::KSU_SUSFS symbols not found after SukiSU setup; using external SUSFS fallback as designed."
+              echo "ROOT_HAS_SUSFS=0" >> "$GITHUB_ENV"
+            fi
+          fi
+
+          if [[ ! -d "KernelSU" ]]; then
+            found="$(find . -maxdepth 5 -type d -name KernelSU | head -n 1 || true)"
+            [[ -n "$found" ]] || die "KernelSU directory not found after SukiSU setup."
+            echo "Found KernelSU at: $found"
+          fi
 
           if [[ ! -d "drivers/kernelsu" && ! -L "drivers/kernelsu" ]]; then
-            echo "::group::KernelSU-Next integration debug"
+            echo "::group::SukiSU integration debug"
             echo "pwd: $(pwd)"
             ls -la || true
             echo ""
             ls -la drivers || true
             echo ""
-            find . -maxdepth 8 -type d \( -name 'KernelSU-Next' -o -name 'KernelSU' -o -path '*/drivers/kernelsu' \) | head -n 80 || true
+            find . -maxdepth 8 -type d -path '*/drivers/kernelsu' | head -n 50 || true
             echo "::endgroup::"
-            die "KernelSU-Next driver not present after setup (drivers/kernelsu missing)."
+            die "KernelSU driver not present after SukiSU setup (drivers/kernelsu missing)."
           fi
+          echo "::group::Repair SukiSU supercalls mismatch (allow/deny list IOCTLs)"
+          KSU_H="./drivers/kernelsu/supercalls.h"
+          KSU_C="./drivers/kernelsu/supercalls.c"
+          if [[ -f "$KSU_H" && -f "$KSU_C" ]]; then
+            need_fix=0
+            grep -q "KSU_IOCTL(KSU_IOCTL_NEW_GET_ALLOW_LIST" "$KSU_C" && need_fix=1 || true
+            grep -q "KSU_IOCTL(KSU_IOCTL_NEW_GET_DENY_LIST" "$KSU_C" && need_fix=1 || true
+            grep -q "#define KSU_IOCTL_GET_ALLOW_LIST" "$KSU_H" || need_fix=1
+            grep -q "#define KSU_IOCTL_GET_DENY_LIST" "$KSU_H" || need_fix=1
+            grep -q "struct ksu_new_get_allow_list_cmd" "$KSU_H" || need_fix=1
+            grep -q "#define KSU_IOCTL_NEW_GET_ALLOW_LIST" "$KSU_H" || need_fix=1
+            grep -q "#define KSU_IOCTL_NEW_GET_DENY_LIST" "$KSU_H" || need_fix=1
+
+            if [[ "$need_fix" == "1" ]]; then
+              echo "Applying compatibility repair to drivers/kernelsu/supercalls.[ch]"
+              python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          h = Path('./drivers/kernelsu/supercalls.h')
+          c = Path('./drivers/kernelsu/supercalls.c')
+          ht = h.read_text(encoding='utf-8')
+          ct = c.read_text(encoding='utf-8')
+
+          # Fix broken macro invocations seen on some builtin revisions.
+          ct = ct.replace(
+              'KSU_IOCTL(KSU_IOCTL_NEW_GET_ALLOW_LIST, "NEW_GET_ALLOW_LIST", do_new_get_allow_list,',
+              'KSU_IOCTL(NEW_GET_ALLOW_LIST, "NEW_GET_ALLOW_LIST", do_new_get_allow_list,',
+          )
+          ct = ct.replace(
+              'KSU_IOCTL(KSU_IOCTL_NEW_GET_DENY_LIST, "NEW_GET_DENY_LIST", do_new_get_deny_list,',
+              'KSU_IOCTL(NEW_GET_DENY_LIST, "NEW_GET_DENY_LIST", do_new_get_deny_list,',
+          )
+
+          def insert_before_endif(src: str, block: str) -> str:
+              if block in src:
+                  return src
+              m = re.search(r'\n#endif\s*$', src)
+              if m:
+                  return src[:m.start()] + '\n' + block.rstrip() + '\n' + src[m.start():]
+              return src.rstrip() + '\n\n' + block.rstrip() + '\n'
+
+          new_struct = """struct ksu_new_get_allow_list_cmd {
+            __u16 count; // Input / Output: number of UIDs in array
+            __u16 total_count; // Output: total number of UIDs in requested list
+            __u32 uids[0]; // Output: array of allowed/denied UIDs
+          };"""
+          legacy_defs = """#define KSU_IOCTL_GET_ALLOW_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 6, 0)
+          #define KSU_IOCTL_GET_DENY_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 7, 0)"""
+          new_defs = """#define KSU_IOCTL_NEW_GET_ALLOW_LIST \
+            _IOWR('K', 6, struct ksu_new_get_allow_list_cmd)
+          #define KSU_IOCTL_NEW_GET_DENY_LIST \
+            _IOWR('K', 7, struct ksu_new_get_allow_list_cmd)"""
+
+          if 'struct ksu_new_get_allow_list_cmd' not in ht:
+              ht = insert_before_endif(ht, new_struct)
+          if '#define KSU_IOCTL_GET_ALLOW_LIST' not in ht or '#define KSU_IOCTL_GET_DENY_LIST' not in ht:
+              ht = insert_before_endif(ht, legacy_defs)
+          if '#define KSU_IOCTL_NEW_GET_ALLOW_LIST' not in ht or '#define KSU_IOCTL_NEW_GET_DENY_LIST' not in ht:
+              ht = insert_before_endif(ht, new_defs)
+
+          h.write_text(ht, encoding='utf-8')
+          c.write_text(ct, encoding='utf-8')
+          print('Repaired supercalls compatibility for legacy/new allow-deny list ioctls.')
+          PY
+              echo "Post-repair symbol check:"
+              grep -nE 'KSU_IOCTL_(GET|NEW_GET)_(ALLOW|DENY)_LIST|ksu_new_get_allow_list_cmd' "$KSU_H" || true
+            else
+              echo "No supercalls repair needed."
+            fi
+          else
+            echo "drivers/kernelsu/supercalls.[ch] not found; skipping repair."
+          fi
+          echo "::endgroup::"
       - name: "Apply SUSFS"
         shell: bash
         run: |
@@ -501,10 +595,7 @@ jobs:
           echo "::endgroup::"
           echo "::group::Apply KernelSU SUSFS enable patch (external SUSFS only)"
           KSU_PATCH_FILE=""
-          for p in \
-            "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
-            "$SUSFS_FOLDER/kernel_patches/kernelsu/10_enable_susfs_for_ksu.patch" \
-            "$SUSFS_FOLDER/10_enable_susfs_for_ksu.patch"
+          for p in             "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"             "$SUSFS_FOLDER/kernel_patches/kernelsu/10_enable_susfs_for_ksu.patch"             "$SUSFS_FOLDER/10_enable_susfs_for_ksu.patch"
           do
             if [[ -f "$p" ]]; then
               KSU_PATCH_FILE="$p"
@@ -528,6 +619,7 @@ jobs:
             echo "→ KernelSU SUSFS patch: $KSU_PATCH_FILE"
 
             TMP_KSU_PATCH="$RUNNER_TEMP/10_enable_susfs_for_ksu.patch"
+            TMP_KSU_PATCH_SAFE="$RUNNER_TEMP/10_enable_susfs_for_ksu.safe.patch"
             cp -f "$KSU_PATCH_FILE" "$TMP_KSU_PATCH"
 
             if [[ -f "$KSU_REPO/kernel/Kbuild" && ! -f "$KSU_REPO/kernel/Makefile" ]] && grep -q 'kernel/Makefile' "$TMP_KSU_PATCH"; then
@@ -535,24 +627,52 @@ jobs:
               sed -i 's|kernel/Makefile|kernel/Kbuild|g' "$TMP_KSU_PATCH"
             fi
 
-            if (cd "$KSU_REPO" && patch -p1 --dry-run -R < "$TMP_KSU_PATCH" >/dev/null 2>&1); then
-              echo "↪ KernelSU SUSFS patch already applied"
+            python3 - "$TMP_KSU_PATCH" "$TMP_KSU_PATCH_SAFE" <<'PYBLOCK'
+            from pathlib import Path
+            import sys
+            src = Path(sys.argv[1]).read_text(encoding='utf-8', errors='ignore').splitlines(True)
+            out = []
+            keep = False
+            allowed = {
+                'diff --git a/kernel/Kconfig b/kernel/Kconfig',
+                'diff --git a/kernel/Kbuild b/kernel/Kbuild',
+                'diff --git a/kernel/Makefile b/kernel/Makefile',
+            }
+            for line in src:
+                if line.startswith('diff --git '):
+                    keep = line.strip() in allowed
+                if keep:
+                    out.append(line)
+            Path(sys.argv[2]).write_text(''.join(out), encoding='utf-8')
+            print('Sanitized KernelSU SUSFS patch to Kconfig/Kbuild-only hunks.')
+            PYBLOCK
+
+            if [[ ! -s "$TMP_KSU_PATCH_SAFE" ]]; then
+              echo "::warning::Sanitized KernelSU SUSFS patch ended up empty. Falling back to manual Kconfig/Kbuild compatibility only."
             else
-              if (cd "$KSU_REPO" && patch -p1 --dry-run --forward < "$TMP_KSU_PATCH" >/dev/null 2>&1); then
-                (cd "$KSU_REPO" && patch -p1 --forward < "$TMP_KSU_PATCH")
+              if (cd "$KSU_REPO" && patch -p1 --dry-run -R < "$TMP_KSU_PATCH_SAFE" >/dev/null 2>&1); then
+                echo "↪ KernelSU SUSFS patch already applied"
               else
-                echo "KernelSU SUSFS patch does not apply cleanly -> retrying with fuzz=3"
-                if ! (cd "$KSU_REPO" && patch -p1 --forward -F 3 < "$TMP_KSU_PATCH"); then
-                  echo "::warning::KernelSU SUSFS patch did not apply cleanly. Continuing to compatibility fallback checks."
+                if (cd "$KSU_REPO" && patch -p1 --dry-run --forward < "$TMP_KSU_PATCH_SAFE" >/dev/null 2>&1); then
+                  (cd "$KSU_REPO" && patch -p1 --forward < "$TMP_KSU_PATCH_SAFE")
+                else
+                  echo "Sanitized KernelSU SUSFS patch does not apply cleanly -> retrying with fuzz=3"
+                  if ! (cd "$KSU_REPO" && patch -p1 --forward -F 3 < "$TMP_KSU_PATCH_SAFE"); then
+                    echo "::warning::Sanitized KernelSU SUSFS patch did not apply cleanly. Continuing to manual compatibility fallback checks."
+                  fi
                 fi
               fi
+            fi
+
+            if [[ -f "$KSU_REPO/kernel/Kbuild" ]]; then
+              grep -q 'feature/susfs.o' "$KSU_REPO/kernel/Kbuild" || echo 'kernelsu-objs += feature/susfs.o' >> "$KSU_REPO/kernel/Kbuild"
+              grep -q 'feature/sus_su.o' "$KSU_REPO/kernel/Kbuild" || echo 'kernelsu-objs += feature/sus_su.o' >> "$KSU_REPO/kernel/Kbuild"
             fi
           else
             echo "::warning::KernelSU SUSFS patch file or KernelSU repo not found. External SUSFS may be incomplete."
             echo "  KSU_PATCH_FILE=${KSU_PATCH_FILE:-<none>}"
             echo "  KSU_REPO=${KSU_REPO:-<none>}"
           fi
-
           KSU_KCONFIG=""
           for p in \
             "$KERNEL_DIR/drivers/kernelsu/Kconfig" \
@@ -761,7 +881,7 @@ jobs:
 
           echo "✅ SUSFS patching complete."
 
-      - name: "KernelSU-Next SUSFS kernel-r25 compat (TRY_UMOUNT)"
+      - name: "KernelSU SUSFS kernel-r25 compat (TRY_UMOUNT)"
         shell: bash
         run: |
           set -euo pipefail
@@ -943,7 +1063,10 @@ jobs:
             echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG" || true
           fi
 
-          # Keep KSUN conservative; avoid forcing extra experimental toggles here
+          # SukiSU safety: avoid experimental modes that can destabilize OEM kernels
+          echo "# CONFIG_KSU_MANUAL_SU is not set" >> "$DEFCONFIG" || true
+          echo "# CONFIG_KSU_NONE_HOOK is not set" >> "$DEFCONFIG" || true
+          echo "CONFIG_KSU_THRONE_TRACKER_ALWAYS_THREADED=y" >> "$DEFCONFIG" || true
 
           if [ "${{ github.event.inputs.bbg }}" = "On" ]; then echo "CONFIG_BBG=y" >> "$DEFCONFIG" || true; fi
           if [ "${{ github.event.inputs.bbr }}" = "On" ]; then
@@ -1189,7 +1312,7 @@ jobs:
           echo "Kernel release: $REL"
 
 
-      - name: Verify final config (KernelSU-Next / SUSFS)
+      - name: Verify final config (SukiSU Ultra / SUSFS)
         shell: bash
         run: |
           set -euo pipefail
@@ -1281,7 +1404,7 @@ jobs:
           
           # Clean english kernel.string (include profile label)
           profile_label = os.environ.get("PROFILE_LABEL", "Balanced")
-          s = re.sub(r'^\s*kernel\.string=.*$', f'kernel.string=PJZ110 | KernelSU-Next [{profile_label}] (OP-OX)', s, flags=re.M)
+          s = re.sub(r'^\s*kernel\.string=.*$', f'kernel.string=PJZ110 | SukiSU Ultra (builtin) [{profile_label}] (OP-OX)', s, flags=re.M)
           
           # Remove previous custom injection (idempotent)
           s = re.sub(r'\n# --- OX1D3X3 CUSTOM START ---.*?# --- OX1D3X3 CUSTOM END ---\n', '\n', s, flags=re.S)
@@ -1307,7 +1430,7 @@ jobs:
           ui_print "                 /_/ \\_\\  |_|"
           ui_print "===================================================="
           ui_print " "
-          ui_print "PJZ110 | KernelSU-Next [{os.environ.get('PROFILE_LABEL','Balanced')}] + {feat}"
+          ui_print "PJZ110 | SukiSU Ultra (builtin) [{os.environ.get('PROFILE_LABEL','Balanced')}] + {feat}"
           ui_print "Kernel : {kernel_rel}"
           ui_print "Build  : #{run_number} ({suffix})"
           ui_print "Builder: @Ox1d3x3"
@@ -1349,7 +1472,7 @@ jobs:
           cat > AnyKernel3/banner <<EOF
           ====================================================
                          Ox1d3x3 Kernel
-          KernelSU-Next [${PROFILE_LABEL}] + ${MODE_BANNER}
+          SukiSU Ultra (builtin) [${PROFILE_LABEL}] + ${MODE_BANNER}
           ====================================================
           EOF
 
@@ -1501,6 +1624,8 @@ jobs:
           echo "| Image SHA256 | \`$IMG_SHA\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build user/host (compile.h) | \`${BUILD_USER_ACT}@${BUILD_HOST_ACT}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Toolchain | \`${{ inputs.toolchain }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SukiSU ref | \`${SUKISU_REF_EFFECTIVE:-${{ inputs.sukisu_ref }}}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Preset | `legacy-v4.1.1-external` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Profile | \`${{ inputs.profile }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Kernel suffix | \`${SUFFIX:-${{ env.KERNEL_NAME }}}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build time | \`${BUILD_TIME_ACT}\` |" >> "$GITHUB_STEP_SUMMARY"
@@ -1563,7 +1688,7 @@ jobs:
           # Use run_attempt so re-runs don't collide with existing tags
           TAG="v${{ github.run_number }}.${{ github.run_attempt }}-${{ env.SUFFIX }}-${{ env.PROFILE_TAG }}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "name=OP13 KernelSUNext [${{ env.PROFILE_TAG }}] $TAG" >> "$GITHUB_OUTPUT"
+          echo "name=OP13 SukiSUUltra [${{ env.PROFILE_TAG }}] $TAG" >> "$GITHUB_OUTPUT"
           echo "Release tag: $TAG"
 
       - name: "Publish GitHub Release (direct-download flash ZIP)"
