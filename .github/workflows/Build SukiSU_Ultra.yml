@@ -57,6 +57,12 @@ on:
         default: sukisu
         options: [sukisu, external]
 
+      sukisu_ref:
+        description: "SukiSU ref (branch/tag/commit). Use main for modern lane, or pin an older known-good ref for legacy testing"
+        type: string
+        required: false
+        default: "main"
+
       ksunext_multimanager:
         description: "Apply multi-manager patch (best-effort)"
         type: choice
@@ -407,10 +413,13 @@ jobs:
         run: |
           SUSFS_IN="${{ inputs.SUSFS }}"
           SUSFS_MODE="${{ inputs.susfs_mode }}"
+          SUKISU_REF="${{ inputs.sukisu_ref }}"
           set -euo pipefail
           die() { echo "::error::$*"; exit 1; }
 
           cd "$KERNEL_DIR"
+
+          [[ -n "$SUKISU_REF" ]] || SUKISU_REF="main"
 
           SETUP_ARG="builtin"
           if [[ "$SUSFS_IN" == "On" && "$SUSFS_MODE" == "sukisu" ]]; then
@@ -418,10 +427,12 @@ jobs:
           fi
 
           echo "ROOT_HAS_SUSFS=0" >> "$GITHUB_ENV"
+          echo "SUKISU_REF_EFFECTIVE=$SUKISU_REF" >> "$GITHUB_ENV"
           echo "→ Kernel root: $KERNEL_DIR"
           echo "→ Requested setup arg: $SETUP_ARG"
+          echo "→ Requested SukiSU ref: $SUKISU_REF"
 
-          SETUP_URL="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh"
+          SETUP_URL="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SUKISU_REF}/kernel/setup.sh"
           echo "→ Fetching SukiSU Ultra setup: $SETUP_URL"
           curl -fLSs "$SETUP_URL" | bash -s "$SETUP_ARG"
 
@@ -430,7 +441,7 @@ jobs:
               echo "✅ Detected KSU_SUSFS symbols after SukiSU setup."
               echo "ROOT_HAS_SUSFS=1" >> "$GITHUB_ENV"
             else
-              echo "::warning::KSU_SUSFS symbols not found after SukiSU setup; external SUSFS patch step will be allowed to run."
+              echo "::notice::KSU_SUSFS symbols not found after SukiSU setup; using external SUSFS fallback as designed."
               echo "ROOT_HAS_SUSFS=0" >> "$GITHUB_ENV"
             fi
           fi
@@ -1587,6 +1598,7 @@ jobs:
           echo "| Image SHA256 | \`$IMG_SHA\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build user/host (compile.h) | \`${BUILD_USER_ACT}@${BUILD_HOST_ACT}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Toolchain | \`${{ inputs.toolchain }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SukiSU ref | \`${SUKISU_REF_EFFECTIVE:-${{ inputs.sukisu_ref }}}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Profile | \`${{ inputs.profile }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Kernel suffix | \`${SUFFIX:-${{ env.KERNEL_NAME }}}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build time | \`${BUILD_TIME_ACT}\` |" >> "$GITHUB_STEP_SUMMARY"
