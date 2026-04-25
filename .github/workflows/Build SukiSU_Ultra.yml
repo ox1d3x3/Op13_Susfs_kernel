@@ -51,11 +51,11 @@ on:
         options: ["On", "Off"]
 
       susfs_mode:
-        description: "SUSFS source (recommended: sukisu; external applies susfs4oki patch)"
+        description: "SUSFS source (recommended: external = cctv18/susfs4oki; sukisu = SukiSU susfs-main)"
         type: choice
         required: true
-        default: sukisu
-        options: [sukisu, external]
+        default: external
+        options: [external, sukisu]
 
       sukisu_ref:
         description: "SukiSU ref (branch/tag/commit). Recommended stable pin: v4.1.2. Use main only when you intentionally want latest upstream."
@@ -479,31 +479,44 @@ jobs:
           set -euo pipefail
           die() { echo "::error::$*"; exit 1; }
 
-          cd "$KERNEL_DIR"
+          # For OnePlus/OKI trees, run SukiSU setup from kernel_platform root.
+          # This matches mrcx/cctv18 layout: KernelSU lives at kernel_platform/KernelSU,
+          # while the real kernel source is kernel_platform/common.
+          cd "$KERNEL_PLATFORM"
 
           [[ -n "$SUKISU_REF" ]] || SUKISU_REF="main"
 
+          # IMPORTANT:
+          # - external = SukiSU root only, then apply cctv18/susfs4oki to the kernel tree.
+          # - sukisu   = SukiSU's own susfs-main path.
+          # Daily-driver default is external so SUSFS comes from cctv18, not from SukiSU.
           SETUP_ARG="builtin"
           if [[ "$SUSFS_IN" == "On" && "$SUSFS_MODE" == "sukisu" ]]; then
             SETUP_ARG="susfs-main"
           fi
 
           echo "ROOT_HAS_SUSFS=0" >> "$GITHUB_ENV"
+          echo "SUSFS_SOURCE_EFFECTIVE=$SUSFS_MODE" >> "$GITHUB_ENV"
           echo "SUKISU_REF_EFFECTIVE=$SUKISU_REF" >> "$GITHUB_ENV"
-          echo "→ Kernel root: $KERNEL_DIR"
+          echo "→ Kernel platform: $KERNEL_PLATFORM"
+          echo "→ Kernel source:   $KERNEL_DIR"
           echo "→ Requested setup arg: $SETUP_ARG"
           echo "→ Requested SukiSU ref: $SUKISU_REF"
+          echo "→ SUSFS source mode: $SUSFS_MODE"
 
           SETUP_URL="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SUKISU_REF}/kernel/setup.sh"
           echo "→ Fetching SukiSU Ultra setup: $SETUP_URL"
           curl -fLSs "$SETUP_URL" | bash -s "$SETUP_ARG"
 
           if [[ "$SUSFS_IN" == "On" ]]; then
-            if grep -Rqs "KSU_SUSFS" ./drivers ./fs ./include 2>/dev/null; then
+            if [[ "$SUSFS_MODE" == "external" ]]; then
+              echo "✅ CCTV18 external SUSFS selected. Keeping SukiSU as builtin root only and forcing cctv18/susfs4oki patch step to run."
+              echo "ROOT_HAS_SUSFS=0" >> "$GITHUB_ENV"
+            elif grep -Rqs "KSU_SUSFS" ./drivers ./fs ./include 2>/dev/null; then
               echo "✅ Detected KSU_SUSFS symbols after SukiSU setup."
               echo "ROOT_HAS_SUSFS=1" >> "$GITHUB_ENV"
             else
-              echo "::notice::KSU_SUSFS symbols not found after SukiSU setup; using external SUSFS fallback as designed."
+              echo "::notice::KSU_SUSFS symbols not found after SukiSU setup; external SUSFS fallback will run."
               echo "ROOT_HAS_SUSFS=0" >> "$GITHUB_ENV"
             fi
           fi
@@ -514,17 +527,22 @@ jobs:
             echo "Found KernelSU at: $found"
           fi
 
-          if [[ ! -d "drivers/kernelsu" && ! -L "drivers/kernelsu" ]]; then
+          if [[ ! -d "$KERNEL_DIR/drivers/kernelsu" && ! -L "$KERNEL_DIR/drivers/kernelsu" ]]; then
             echo "::group::SukiSU integration debug"
             echo "pwd: $(pwd)"
-            ls -la || true
+            echo "KERNEL_PLATFORM=$KERNEL_PLATFORM"
+            echo "KERNEL_DIR=$KERNEL_DIR"
+            ls -la "$KERNEL_PLATFORM" || true
             echo ""
-            ls -la drivers || true
+            ls -la "$KERNEL_DIR/drivers" || true
             echo ""
-            find . -maxdepth 8 -type d -path '*/drivers/kernelsu' | head -n 50 || true
+            find "$KERNEL_PLATFORM" -maxdepth 8 -type d -path '*/drivers/kernelsu' | head -n 50 || true
             echo "::endgroup::"
-            die "KernelSU driver not present after SukiSU setup (drivers/kernelsu missing)."
+            die "KernelSU driver not present after SukiSU setup ($KERNEL_DIR/drivers/kernelsu missing)."
           fi
+
+          # From this point onward, operate relative to the real kernel source.
+          cd "$KERNEL_DIR"
           echo "::group::Repair SukiSU supercalls mismatch (allow/deny list IOCTLs)"
           KSU_H="./drivers/kernelsu/supercalls.h"
           KSU_C="./drivers/kernelsu/supercalls.c"
@@ -611,9 +629,13 @@ jobs:
             exit 0
           fi
 
-          if [[ "${ROOT_HAS_SUSFS:-0}" == "1" ]]; then
-            echo "SUSFS already provided by the selected root integration -> skipping external SUSFS patch to avoid double-patching."
+          if [[ "$SUSFS_MODE" == "sukisu" && "${ROOT_HAS_SUSFS:-0}" == "1" ]]; then
+            echo "SUSFS already provided by SukiSU susfs-main -> skipping external SUSFS patch to avoid double-patching."
             exit 0
+          fi
+
+          if [[ "$SUSFS_MODE" == "external" ]]; then
+            echo "✅ External SUSFS mode selected: applying cctv18/susfs4oki, not SukiSU susfs-main."
           fi
 
           KERNEL_PLATFORM="${KERNEL_PLATFORM:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform}"
@@ -645,15 +667,43 @@ jobs:
           echo "→ Cloning $repo ($SUSFS_SRC_BRANCH)"
           git clone --depth 1 --no-tags -b "$SUSFS_SRC_BRANCH" "$repo" "$SUSFS_FOLDER"
 
-          echo "::group::Copy SUSFS source/header files (if present)"
-          # Some SUSFS branches ship extra files outside the main patch.
+          echo "::group::Copy CCTV18 SUSFS source/header files"
+          # cctv18/susfs4oki expects this layout:
+          #   kernel_platform/KernelSU              -> KernelSU/SukiSU repo
+          #   kernel_platform/common/fs             -> SUSFS source
+          #   kernel_platform/common/include/linux   -> SUSFS headers
+          # Be strict here: if linux/susfs.h is missing, SukiSU builds fail with:
+          #   fatal error: 'linux/susfs.h' file not found
+          mkdir -p "$KERNEL_DIR/fs" "$KERNEL_DIR/include/linux"
+
           if [[ -d "$SUSFS_FOLDER/kernel_patches/fs" ]]; then
-            cp -a "$SUSFS_FOLDER/kernel_patches/fs/." "$KERNEL_DIR/fs/" || true
+            cp -af "$SUSFS_FOLDER/kernel_patches/fs/." "$KERNEL_DIR/fs/"
+          else
+            echo "::warning::Missing $SUSFS_FOLDER/kernel_patches/fs"
           fi
+
           if [[ -d "$SUSFS_FOLDER/kernel_patches/include/linux" ]]; then
-            mkdir -p "$KERNEL_DIR/include/linux"
-            cp -a "$SUSFS_FOLDER/kernel_patches/include/linux/." "$KERNEL_DIR/include/linux/" || true
+            cp -af "$SUSFS_FOLDER/kernel_patches/include/linux/." "$KERNEL_DIR/include/linux/"
+          else
+            echo "::warning::Missing $SUSFS_FOLDER/kernel_patches/include/linux"
           fi
+
+          # Last-resort direct fetch for the exact files. This prevents reaching compile-time
+          # with a patched KernelSU tree but a missing <linux/susfs.h>.
+          if [[ ! -f "$KERNEL_DIR/include/linux/susfs.h" ]]; then
+            echo "susfs.h still missing after cp -> fetching directly from cctv18/$SUSFS_SRC_BRANCH"
+            curl -fL "https://raw.githubusercontent.com/cctv18/susfs4oki/${SUSFS_SRC_BRANCH}/kernel_patches/include/linux/susfs.h"               -o "$KERNEL_DIR/include/linux/susfs.h"
+          fi
+
+          if [[ ! -f "$KERNEL_DIR/fs/susfs.c" ]]; then
+            echo "fs/susfs.c still missing after cp -> fetching directly from cctv18/$SUSFS_SRC_BRANCH"
+            curl -fL "https://raw.githubusercontent.com/cctv18/susfs4oki/${SUSFS_SRC_BRANCH}/kernel_patches/fs/susfs.c"               -o "$KERNEL_DIR/fs/susfs.c"
+          fi
+
+          test -f "$KERNEL_DIR/include/linux/susfs.h" || { echo "::error::CCTV18 SUSFS header copy failed"; exit 1; }
+          test -f "$KERNEL_DIR/fs/susfs.c" || { echo "::error::CCTV18 SUSFS source copy failed"; exit 1; }
+          echo "✅ SUSFS header: $KERNEL_DIR/include/linux/susfs.h"
+          echo "✅ SUSFS source: $KERNEL_DIR/fs/susfs.c"
           echo "::endgroup::"
           echo "::group::Apply KernelSU SUSFS enable patch (external SUSFS only)"
           KSU_PATCH_FILE=""
@@ -669,14 +719,19 @@ jobs:
           done
 
           KSU_REPO=""
-          for d in "$KERNEL_DIR/KernelSU" "$KERNEL_DIR/KernelSU-Next"; do
+          for d in \
+            "$KERNEL_PLATFORM/KernelSU" \
+            "$KERNEL_PLATFORM/KernelSU-Next" \
+            "$KERNEL_DIR/KernelSU" \
+            "$KERNEL_DIR/KernelSU-Next"
+          do
             if [[ -f "$d/kernel/Kconfig" ]]; then
               KSU_REPO="$d"
               break
             fi
           done
           if [[ -z "$KSU_REPO" ]]; then
-            KSU_REPO="$(find "$KERNEL_DIR" -maxdepth 4 -type f -path '*/kernel/Kconfig' | sed 's#/kernel/Kconfig$##' | head -n 1 || true)"
+            KSU_REPO="$(find "$KERNEL_PLATFORM" "$KERNEL_DIR" -maxdepth 5 -type f -path '*/kernel/Kconfig' 2>/dev/null | sed 's#/kernel/Kconfig$##' | head -n 1 || true)"
           fi
 
           if [[ -n "$KSU_PATCH_FILE" && -n "$KSU_REPO" ]]; then
@@ -712,6 +767,8 @@ jobs:
           KSU_KCONFIG=""
           for p in \
             "$KERNEL_DIR/drivers/kernelsu/Kconfig" \
+            "$KERNEL_PLATFORM/KernelSU/kernel/Kconfig" \
+            "$KERNEL_PLATFORM/KernelSU-Next/kernel/Kconfig" \
             "$KERNEL_DIR/KernelSU/kernel/Kconfig" \
             "$KERNEL_DIR/KernelSU-Next/kernel/Kconfig"
           do
@@ -839,6 +896,20 @@ jobs:
             fi
           fi
           echo "::endgroup::"
+
+          # Continue relative to the real kernel source, even when patch was applied
+          # from kernel_platform because the patch paths started with common/.
+          cd "$KERNEL_DIR"
+
+          # Re-assert required external files.
+          mkdir -p "$KERNEL_DIR/include/linux" "$KERNEL_DIR/fs"
+          if [[ ! -f "$KERNEL_DIR/include/linux/susfs.h" && -f "$SUSFS_FOLDER/kernel_patches/include/linux/susfs.h" ]]; then
+            cp -af "$SUSFS_FOLDER/kernel_patches/include/linux/susfs.h" "$KERNEL_DIR/include/linux/susfs.h"
+          fi
+          if [[ ! -f "$KERNEL_DIR/fs/susfs.c" && -f "$SUSFS_FOLDER/kernel_patches/fs/susfs.c" ]]; then
+            cp -af "$SUSFS_FOLDER/kernel_patches/fs/susfs.c" "$KERNEL_DIR/fs/susfs.c"
+          fi
+
           echo "::group::Post-patch SUSFS symbol check"
           if grep -Rqs "KSU_SUSFS" "$KERNEL_DIR" 2>/dev/null; then
             echo "✅ KSU_SUSFS symbols present after SUSFS patch."
@@ -1286,6 +1357,33 @@ jobs:
 
           cd "${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
 
+          if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
+            echo "::group::Pre-build SUSFS file guard"
+            SUSFS_FOLDER="$GITHUB_WORKSPACE/susfs4oki"
+            mkdir -p include/linux fs
+            if [[ ! -f "include/linux/susfs.h" && -f "$SUSFS_FOLDER/kernel_patches/include/linux/susfs.h" ]]; then
+              echo "Restoring missing include/linux/susfs.h from cctv18/susfs4oki clone"
+              cp -af "$SUSFS_FOLDER/kernel_patches/include/linux/susfs.h" include/linux/susfs.h
+            fi
+            if [[ ! -f "fs/susfs.c" && -f "$SUSFS_FOLDER/kernel_patches/fs/susfs.c" ]]; then
+              echo "Restoring missing fs/susfs.c from cctv18/susfs4oki clone"
+              cp -af "$SUSFS_FOLDER/kernel_patches/fs/susfs.c" fs/susfs.c
+            fi
+            if [[ ! -f "include/linux/susfs.h" ]]; then
+              echo "::error::include/linux/susfs.h missing before build. External CCTV18 SUSFS did not land in the real kernel source."
+              find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -name susfs.h -o -path '*/include/linux/susfs.h' | head -n 50 || true
+              exit 1
+            fi
+            if [[ ! -f "fs/susfs.c" ]]; then
+              echo "::error::fs/susfs.c missing before build. External CCTV18 SUSFS did not land in the real kernel source."
+              find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -name susfs.c -o -path '*/fs/susfs.c' | head -n 50 || true
+              exit 1
+            fi
+            echo "✅ include/linux/susfs.h present"
+            echo "✅ fs/susfs.c present"
+            echo "::endgroup::"
+          fi
+
           command -v ld.lld >/dev/null 2>&1 || {
             echo "::error::ld.lld not found in PATH"
             echo "PATH=$PATH"
@@ -1662,6 +1760,7 @@ jobs:
           echo "| Toolchain | \`${{ inputs.toolchain }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Repo sync strategy | `conservative retry: 8/4 -> 4/2 -> 1/1 fail-fast` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| SukiSU ref | \`${SUKISU_REF_EFFECTIVE:-${{ inputs.sukisu_ref }}}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SUSFS source | \`${SUSFS_SOURCE_EFFECTIVE:-${{ inputs.susfs_mode }}}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Profile | \`${{ inputs.profile }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Kernel suffix | \`${SUFFIX:-${{ env.KERNEL_NAME }}}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build time | \`${BUILD_TIME_ACT}\` |" >> "$GITHUB_STEP_SUMMARY"
@@ -1680,8 +1779,14 @@ jobs:
           echo "| Apply ZRAM LZ4 perf patch (best-effort) | $(yn "${{ inputs.lz4_zram_patch }}") | $(test -d "$SRC/lib/lz4" && echo 'present (tree)' || echo '—') |" >> "$GITHUB_STEP_SUMMARY"
 
           # SUSFS
+          SUSFS_MODE_LABEL="${{ inputs.susfs_mode }}"
+          if [ "$SUSFS_MODE_LABEL" = "external" ]; then
+            SUSFS_MODE_LABEL="external (cctv18/susfs4oki)"
+          elif [ "$SUSFS_MODE_LABEL" = "sukisu" ]; then
+            SUSFS_MODE_LABEL="sukisu (SukiSU susfs-main)"
+          fi
           echo "| SUSFS | $(yn "${{ inputs.SUSFS }}") | $(cfgyn CONFIG_KSU_SUSFS) |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| SUSFS mode | \`${{ inputs.susfs_mode }}\` | $(test -f "$SRC/include/linux/susfs.h" && echo 'susfs.h present' || echo '—') |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SUSFS mode | \`${SUSFS_MODE_LABEL}\` | $(test -f "$SRC/include/linux/susfs.h" && echo 'susfs.h present' || echo '—') |" >> "$GITHUB_STEP_SUMMARY"
           echo "| SUSFS TRY_UMOUNT (r25) | — | $(cfgyn CONFIG_KSU_SUSFS_TRY_UMOUNT) |" >> "$GITHUB_STEP_SUMMARY"
 
           # KernelSU Multi-manager patch (best-effort)
