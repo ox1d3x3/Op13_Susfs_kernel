@@ -1338,29 +1338,29 @@ jobs:
             fi
 
             if [[ "$has_real_def" != "1" ]]; then
-              cat > "$KSU_DIR/manual_hook_keys_compat.c" <<'EOF2'
-#include <linux/jump_label.h>
-
-/*
- * OP13 SukiSU builtin + CCTV18/susfs4oki compat.
- *
- * CCTV18/OKI manual-hook kernel patches add static-branch references from
- * core kernel files such as fs/stat.c and drivers/input/input.c.
- * SukiSU v4.1.2 builtin can declare/reference these canonical keys without
- * defining them when mixed with external CCTV18 SUSFS.
- */
-DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);
-DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);
-EOF2
+              {
+                echo '#include <linux/jump_label.h>'
+                echo ''
+                echo '/*'
+                echo ' * OP13 SukiSU builtin + CCTV18/susfs4oki compat.'
+                echo ' *'
+                echo ' * CCTV18/OKI manual-hook kernel patches add static-branch references from'
+                echo ' * core kernel files such as fs/stat.c and drivers/input/input.c.'
+                echo ' * SukiSU v4.1.2 builtin can declare/reference these canonical keys without'
+                echo ' * defining them when mixed with external CCTV18 SUSFS.'
+                echo ' */'
+                echo 'DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);'
+                echo 'DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);'
+              } > "$KSU_DIR/manual_hook_keys_compat.c"
 
               # Include the compat unit from the monolithic SukiSU ksu.c, because this tree
               # builds drivers/kernelsu/ksu.o rather than compiling many separate SukiSU objects.
               if ! grep -q 'manual_hook_keys_compat.c' "$KSU_DIR/ksu.c"; then
-                cat >> "$KSU_DIR/ksu.c" <<'EOF2'
-
-/* OP13 SukiSU builtin + CCTV18 manual-hook static-key compatibility */
-#include "manual_hook_keys_compat.c"
-EOF2
+                {
+                  echo ''
+                  echo '/* OP13 SukiSU builtin + CCTV18 manual-hook static-key compatibility */'
+                  echo '#include "manual_hook_keys_compat.c"'
+                } >> "$KSU_DIR/ksu.c"
               fi
               echo "✅ Forced canonical manual-hook static-key definitions"
             else
