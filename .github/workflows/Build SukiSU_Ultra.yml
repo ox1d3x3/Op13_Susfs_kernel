@@ -1292,81 +1292,92 @@ jobs:
 
           echo "::group::Repair SukiSU manual-hook static keys"
 
-          KSU_DIR=""
-          for d in \
-            "${KERNEL_PLATFORM:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform}/KernelSU/kernel" \
-            "${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}/drivers/kernelsu" \
-            "${KERNEL_PLATFORM:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform}/common/drivers/kernelsu"
-          do
-            if [[ -d "$d" && -f "$d/ksu.c" ]]; then
-              KSU_DIR="$d"
-              break
+          KP="${KERNEL_PLATFORM:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform}"
+          KD="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
+
+          # SukiSU setup on OnePlus/OKI trees can expose the source in more than one place:
+          #   kernel_platform/KernelSU/kernel
+          #   kernel_platform/common/drivers/kernelsu  (often symlink/copy used by the kernel build)
+          # Patch every real source dir we can find, not just the first one.
+          mapfile -t KSU_DIRS < <(
+            {
+              printf '%s\n' \
+                "$KP/KernelSU/kernel" \
+                "$KD/drivers/kernelsu" \
+                "$KP/common/drivers/kernelsu"
+              find "$KP" -maxdepth 6 -type f -path '*/drivers/kernelsu/ksu.c' -printf '%h\n' 2>/dev/null || true
+              find "$KP" -maxdepth 6 -type f -path '*/KernelSU/kernel/ksu.c' -printf '%h\n' 2>/dev/null || true
+            } | awk '!seen[$0]++'
+          )
+
+          patched=0
+          for KSU_DIR in "${KSU_DIRS[@]}"; do
+            [[ -d "$KSU_DIR" && -f "$KSU_DIR/ksu.c" ]] || continue
+            echo "→ Patching KSU_DIR=$KSU_DIR"
+            patched=1
+
+            # CCTV18/OKI manual-hook kernel patches reference these canonical keys:
+            #   ksu_is_input_hook_enabled      -> drivers/input/input.c jump labels
+            #   ksu_is_init_rc_hook_enabled    -> fs/stat.c jump labels
+            # Some SukiSU builtin revisions use older internal names in runtime/ksud.c.
+            # Rewrite ksud.c to toggle the same canonical keys read by the kernel hooks.
+            if [[ -f "$KSU_DIR/runtime/ksud.c" ]]; then
+              sed -i \
+                -e 's/ksu_input_hook_key_false/ksu_is_input_hook_enabled/g' \
+                -e 's/ksu_init_rc_hook_key_false/ksu_is_init_rc_hook_enabled/g' \
+                "$KSU_DIR/runtime/ksud.c"
+            fi
+
+            # Important: do NOT treat "extern struct static_key_false ..." as a definition.
+            # Your last build failed at final vmlinux link because the symbols were declared/referenced
+            # but never actually defined anywhere.
+            has_real_def=0
+            if grep -RqsE '^[[:space:]]*DEFINE_STATIC_KEY_FALSE[[:space:]]*\([[:space:]]*ksu_is_input_hook_enabled[[:space:]]*\)' "$KSU_DIR" 2>/dev/null && \
+               grep -RqsE '^[[:space:]]*DEFINE_STATIC_KEY_FALSE[[:space:]]*\([[:space:]]*ksu_is_init_rc_hook_enabled[[:space:]]*\)' "$KSU_DIR" 2>/dev/null; then
+              has_real_def=1
+            fi
+
+            if [[ "$has_real_def" != "1" ]]; then
+              cat > "$KSU_DIR/manual_hook_keys_compat.c" <<'EOF2'
+#include <linux/jump_label.h>
+
+/*
+ * OP13 SukiSU builtin + CCTV18/susfs4oki compat.
+ *
+ * CCTV18/OKI manual-hook kernel patches add static-branch references from
+ * core kernel files such as fs/stat.c and drivers/input/input.c.
+ * SukiSU v4.1.2 builtin can declare/reference these canonical keys without
+ * defining them when mixed with external CCTV18 SUSFS.
+ */
+DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);
+DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);
+EOF2
+
+              # Include the compat unit from the monolithic SukiSU ksu.c, because this tree
+              # builds drivers/kernelsu/ksu.o rather than compiling many separate SukiSU objects.
+              if ! grep -q 'manual_hook_keys_compat.c' "$KSU_DIR/ksu.c"; then
+                cat >> "$KSU_DIR/ksu.c" <<'EOF2'
+
+/* OP13 SukiSU builtin + CCTV18 manual-hook static-key compatibility */
+#include "manual_hook_keys_compat.c"
+EOF2
+              fi
+              echo "✅ Forced canonical manual-hook static-key definitions"
+            else
+              echo "✅ Canonical manual-hook static keys already have real DEFINE_STATIC_KEY_FALSE definitions"
             fi
           done
 
-          if [[ -z "$KSU_DIR" ]]; then
-            echo "::warning::Could not find SukiSU/KernelSU source dir for manual-hook static-key repair."
-            find "${KERNEL_PLATFORM:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform}" -maxdepth 5 -type f -name ksu.c | head -n 20 || true
+          if [[ "$patched" != "1" ]]; then
+            echo "::error::Could not find SukiSU/KernelSU source dir for manual-hook static-key repair."
+            find "$KP" -maxdepth 6 -type f -name ksu.c | head -n 30 || true
             echo "::endgroup::"
-            exit 0
+            exit 1
           fi
 
-          echo "Using KSU_DIR=$KSU_DIR"
-
-          # CCTV18/OKI manual-hook kernel patches reference these canonical keys:
-          #   ksu_is_input_hook_enabled      -> drivers/input/input.c jump labels
-          #   ksu_is_init_rc_hook_enabled    -> fs/stat.c jump labels
-          # Some SukiSU builtin revisions refer to the older internal names below from ksud.c.
-          # Rewrite them to the canonical names so ksud.c enables the same keys that the kernel hooks read.
-          if [[ -f "$KSU_DIR/runtime/ksud.c" ]]; then
-            sed -i \
-              -e 's/ksu_input_hook_key_false/ksu_is_input_hook_enabled/g' \
-              -e 's/ksu_init_rc_hook_key_false/ksu_is_init_rc_hook_enabled/g' \
-              "$KSU_DIR/runtime/ksud.c"
-          fi
-
-          # If the canonical static keys are still not defined anywhere in SukiSU, add one tiny compat unit
-          # and include it from ksu.c. This fixes final vmlinux link failures such as:
-          #   undefined symbol: ksu_is_input_hook_enabled
-          #   undefined symbol: ksu_is_init_rc_hook_enabled
-          need_keys=0
-          if ! grep -RqsE 'DEFINE_STATIC_KEY_FALSE[[:space:]]*\([[:space:]]*ksu_is_input_hook_enabled[[:space:]]*\)|struct[[:space:]]+static_key_false[[:space:]]+ksu_is_input_hook_enabled' "$KSU_DIR" 2>/dev/null; then
-            need_keys=1
-          fi
-
-          if [[ "$need_keys" == "1" ]]; then
-            cat > "$KSU_DIR/manual_hook_keys_compat.c" <<'EOF'
-          #include <linux/jump_label.h>
-
-          /*
-           * OP13 SukiSU builtin + CCTV18/susfs4oki compat.
-           *
-           * The CCTV18/OKI manual-hook kernel patches add static-branch references from
-           * core kernel files such as fs/stat.c and drivers/input/input.c. Some SukiSU
-           * builtin revisions use different internal static-key names, which links ksu.o
-           * successfully but fails at final vmlinux with missing ksu_is_* symbols.
-           *
-           * Keep one canonical key pair here and make ksud.c toggle these same keys.
-           */
-          DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);
-          DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);
-          EOF
-
-            if ! grep -q 'manual_hook_keys_compat.c' "$KSU_DIR/ksu.c"; then
-              cat >> "$KSU_DIR/ksu.c" <<'EOF'
-
-          /* OP13 SukiSU + CCTV18 manual-hook static-key compatibility */
-          #include "manual_hook_keys_compat.c"
-          EOF
-            fi
-            echo "✅ Added manual_hook_keys_compat.c and included it from ksu.c"
-          else
-            echo "✅ Canonical manual-hook static keys already defined"
-          fi
-
-          echo "Manual-hook symbol scan:"
+          echo "Manual-hook definition/reference scan:"
           grep -RnsE 'ksu_(is_)?(input|init_rc)_hook(_key_false|_enabled)?|DEFINE_STATIC_KEY_FALSE' \
-            "$KSU_DIR" 2>/dev/null | head -n 80 || true
+            "$KP/KernelSU" "$KD/drivers/kernelsu" 2>/dev/null | head -n 120 || true
 
           echo "::endgroup::"
 
