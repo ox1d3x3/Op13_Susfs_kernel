@@ -51,17 +51,17 @@ on:
         options: ["On", "Off"]
 
       susfs_mode:
-        description: "SUSFS source (legacy external cctv18 preset)"
+        description: "SUSFS source (recommended: sukisu; external applies susfs4oki patch)"
         type: choice
         required: true
-        default: external
+        default: sukisu
         options: [sukisu, external]
 
       sukisu_ref:
-        description: "SukiSU ref (pinned to v4.1.1 / 256c955 by default)"
+        description: "SukiSU ref (branch/tag/commit). Recommended stable pin: v4.1.2. Use main only when you intentionally want latest upstream."
         type: string
         required: false
-        default: "256c955"
+        default: "v4.1.2"
 
       ksunext_multimanager:
         description: "Apply multi-manager patch (best-effort)"
@@ -159,7 +159,7 @@ on:
 
 jobs:
   build:
-    name: "Legacy preset | SUSFS=${{ github.event.inputs.SUSFS }} | Toolchain=${{ github.event.inputs.toolchain }}"
+    name: "SUSFS=${{ github.event.inputs.SUSFS }} | Toolchain=${{ github.event.inputs.toolchain }}"
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -281,20 +281,82 @@ jobs:
           sudo mv /tmp/repo /usr/local/bin/repo
           repo --version
 
-      - name: "Sync kernel sources"
+      - name: "Sync kernel sources (robust CodeLinaro retry)"
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p kernel_workspace
           cd kernel_workspace
+
           # Manifest repo: only zh branch contains manifest.xml
           MANIFEST_REPO="https://github.com/mrcxlinux/actions_oplus_sm8750.git"
           MANIFEST_BRANCH="zh"
           MANIFEST_FILE="manifest.xml"
           echo "Using manifest: $MANIFEST_REPO ($MANIFEST_BRANCH/$MANIFEST_FILE)"
           curl -fsSL "https://raw.githubusercontent.com/mrcxlinux/actions_oplus_sm8750/${MANIFEST_BRANCH}/${MANIFEST_FILE}" >/dev/null
+
+          # CodeLinaro sometimes resets connections or returns 502 when repo sync fetches too many
+          # projects in parallel. Keep network fetches conservative and retry with lower parallelism.
+          git config --global http.version HTTP/1.1
+          git config --global http.lowSpeedLimit 1000
+          git config --global http.lowSpeedTime 600
+          git config --global fetch.parallel 2
+          git config --global transfer.fsckobjects false
+          git config --global advice.detachedHead false
+
           repo init -u "$MANIFEST_REPO" -b "$MANIFEST_BRANCH" -m "$MANIFEST_FILE" --depth=1
-          repo sync -c -j"$(nproc)" --no-tags --no-clone-bundle --force-sync
+
+          repo_sync_try() {
+            local jobs="$1"
+            local net_jobs="$2"
+            local label="$3"
+            shift 3
+
+            local sync_args=(
+              -c
+              --no-tags
+              --no-clone-bundle
+              --force-sync
+              --optimized-fetch
+              --prune
+              -j"$jobs"
+            )
+
+            if repo sync -h 2>&1 | grep -q -- '--retry-fetches'; then
+              sync_args+=(--retry-fetches=8)
+            fi
+
+            if repo sync -h 2>&1 | grep -q -- '--jobs-network'; then
+              sync_args+=(--jobs-network="$net_jobs")
+            fi
+
+            if [[ "${1:-}" == "failfast" ]]; then
+              sync_args+=(--fail-fast)
+            fi
+
+            echo "::group::repo sync attempt: $label"
+            echo "repo sync ${sync_args[*]}"
+            set +e
+            repo sync "${sync_args[@]}"
+            local rc=$?
+            set -e
+            echo "::endgroup::"
+            return "$rc"
+          }
+
+          if repo_sync_try 8 4 "balanced retry-friendly sync"; then
+            echo "✅ repo sync completed on first attempt."
+          else
+            echo "::warning::repo sync failed. Retrying with lower network parallelism after short cooldown."
+            sleep 30
+            if repo_sync_try 4 2 "reduced parallel sync"; then
+              echo "✅ repo sync completed on second attempt."
+            else
+              echo "::warning::repo sync failed again. Retrying serial fail-fast mode."
+              sleep 45
+              repo_sync_try 1 1 "serial fail-fast recovery sync" failfast
+            fi
+          fi
 
           rm -f kernel_platform/common/android/abi_gki_protected_exports_* || true
           rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || true
@@ -595,7 +657,10 @@ jobs:
           echo "::endgroup::"
           echo "::group::Apply KernelSU SUSFS enable patch (external SUSFS only)"
           KSU_PATCH_FILE=""
-          for p in             "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"             "$SUSFS_FOLDER/kernel_patches/kernelsu/10_enable_susfs_for_ksu.patch"             "$SUSFS_FOLDER/10_enable_susfs_for_ksu.patch"
+          for p in \
+            "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
+            "$SUSFS_FOLDER/kernel_patches/kernelsu/10_enable_susfs_for_ksu.patch" \
+            "$SUSFS_FOLDER/10_enable_susfs_for_ksu.patch"
           do
             if [[ -f "$p" ]]; then
               KSU_PATCH_FILE="$p"
@@ -619,7 +684,6 @@ jobs:
             echo "→ KernelSU SUSFS patch: $KSU_PATCH_FILE"
 
             TMP_KSU_PATCH="$RUNNER_TEMP/10_enable_susfs_for_ksu.patch"
-            TMP_KSU_PATCH_SAFE="$RUNNER_TEMP/10_enable_susfs_for_ksu.safe.patch"
             cp -f "$KSU_PATCH_FILE" "$TMP_KSU_PATCH"
 
             if [[ -f "$KSU_REPO/kernel/Kbuild" && ! -f "$KSU_REPO/kernel/Makefile" ]] && grep -q 'kernel/Makefile' "$TMP_KSU_PATCH"; then
@@ -627,52 +691,24 @@ jobs:
               sed -i 's|kernel/Makefile|kernel/Kbuild|g' "$TMP_KSU_PATCH"
             fi
 
-            python3 - "$TMP_KSU_PATCH" "$TMP_KSU_PATCH_SAFE" <<'PYBLOCK'
-            from pathlib import Path
-            import sys
-            src = Path(sys.argv[1]).read_text(encoding='utf-8', errors='ignore').splitlines(True)
-            out = []
-            keep = False
-            allowed = {
-                'diff --git a/kernel/Kconfig b/kernel/Kconfig',
-                'diff --git a/kernel/Kbuild b/kernel/Kbuild',
-                'diff --git a/kernel/Makefile b/kernel/Makefile',
-            }
-            for line in src:
-                if line.startswith('diff --git '):
-                    keep = line.strip() in allowed
-                if keep:
-                    out.append(line)
-            Path(sys.argv[2]).write_text(''.join(out), encoding='utf-8')
-            print('Sanitized KernelSU SUSFS patch to Kconfig/Kbuild-only hunks.')
-            PYBLOCK
-
-            if [[ ! -s "$TMP_KSU_PATCH_SAFE" ]]; then
-              echo "::warning::Sanitized KernelSU SUSFS patch ended up empty. Falling back to manual Kconfig/Kbuild compatibility only."
+            if (cd "$KSU_REPO" && patch -p1 --dry-run -R < "$TMP_KSU_PATCH" >/dev/null 2>&1); then
+              echo "↪ KernelSU SUSFS patch already applied"
             else
-              if (cd "$KSU_REPO" && patch -p1 --dry-run -R < "$TMP_KSU_PATCH_SAFE" >/dev/null 2>&1); then
-                echo "↪ KernelSU SUSFS patch already applied"
+              if (cd "$KSU_REPO" && patch -p1 --dry-run --forward < "$TMP_KSU_PATCH" >/dev/null 2>&1); then
+                (cd "$KSU_REPO" && patch -p1 --forward < "$TMP_KSU_PATCH")
               else
-                if (cd "$KSU_REPO" && patch -p1 --dry-run --forward < "$TMP_KSU_PATCH_SAFE" >/dev/null 2>&1); then
-                  (cd "$KSU_REPO" && patch -p1 --forward < "$TMP_KSU_PATCH_SAFE")
-                else
-                  echo "Sanitized KernelSU SUSFS patch does not apply cleanly -> retrying with fuzz=3"
-                  if ! (cd "$KSU_REPO" && patch -p1 --forward -F 3 < "$TMP_KSU_PATCH_SAFE"); then
-                    echo "::warning::Sanitized KernelSU SUSFS patch did not apply cleanly. Continuing to manual compatibility fallback checks."
-                  fi
+                echo "KernelSU SUSFS patch does not apply cleanly -> retrying with fuzz=3"
+                if ! (cd "$KSU_REPO" && patch -p1 --forward -F 3 < "$TMP_KSU_PATCH"); then
+                  echo "::warning::KernelSU SUSFS patch did not apply cleanly. Continuing to compatibility fallback checks."
                 fi
               fi
-            fi
-
-            if [[ -f "$KSU_REPO/kernel/Kbuild" ]]; then
-              grep -q 'feature/susfs.o' "$KSU_REPO/kernel/Kbuild" || echo 'kernelsu-objs += feature/susfs.o' >> "$KSU_REPO/kernel/Kbuild"
-              grep -q 'feature/sus_su.o' "$KSU_REPO/kernel/Kbuild" || echo 'kernelsu-objs += feature/sus_su.o' >> "$KSU_REPO/kernel/Kbuild"
             fi
           else
             echo "::warning::KernelSU SUSFS patch file or KernelSU repo not found. External SUSFS may be incomplete."
             echo "  KSU_PATCH_FILE=${KSU_PATCH_FILE:-<none>}"
             echo "  KSU_REPO=${KSU_REPO:-<none>}"
           fi
+
           KSU_KCONFIG=""
           for p in \
             "$KERNEL_DIR/drivers/kernelsu/Kconfig" \
@@ -1624,8 +1660,8 @@ jobs:
           echo "| Image SHA256 | \`$IMG_SHA\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build user/host (compile.h) | \`${BUILD_USER_ACT}@${BUILD_HOST_ACT}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Toolchain | \`${{ inputs.toolchain }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Repo sync strategy | `conservative retry: 8/4 -> 4/2 -> 1/1 fail-fast` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| SukiSU ref | \`${SUKISU_REF_EFFECTIVE:-${{ inputs.sukisu_ref }}}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Preset | `legacy-v4.1.1-external` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Profile | \`${{ inputs.profile }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Kernel suffix | \`${SUFFIX:-${{ env.KERNEL_NAME }}}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build time | \`${BUILD_TIME_ACT}\` |" >> "$GITHUB_STEP_SUMMARY"
