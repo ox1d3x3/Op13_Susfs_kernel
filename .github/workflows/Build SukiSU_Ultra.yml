@@ -1283,6 +1283,93 @@ jobs:
           chmod +x drivers/of/overwriter/overwrite_configs/convert_configs.sh 2>/dev/null || true
           chmod +x drivers/of/overwriter/overwrite_configs/*.sh 2>/dev/null || true
 
+
+      - name: "Repair SukiSU manual-hook static keys"
+        if: ${{ github.event.inputs.SUSFS == 'On' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "::group::Repair SukiSU manual-hook static keys"
+
+          KSU_DIR=""
+          for d in \
+            "${KERNEL_PLATFORM:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform}/KernelSU/kernel" \
+            "${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}/drivers/kernelsu" \
+            "${KERNEL_PLATFORM:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform}/common/drivers/kernelsu"
+          do
+            if [[ -d "$d" && -f "$d/ksu.c" ]]; then
+              KSU_DIR="$d"
+              break
+            fi
+          done
+
+          if [[ -z "$KSU_DIR" ]]; then
+            echo "::warning::Could not find SukiSU/KernelSU source dir for manual-hook static-key repair."
+            find "${KERNEL_PLATFORM:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform}" -maxdepth 5 -type f -name ksu.c | head -n 20 || true
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          echo "Using KSU_DIR=$KSU_DIR"
+
+          # CCTV18/OKI manual-hook kernel patches reference these canonical keys:
+          #   ksu_is_input_hook_enabled      -> drivers/input/input.c jump labels
+          #   ksu_is_init_rc_hook_enabled    -> fs/stat.c jump labels
+          # Some SukiSU builtin revisions refer to the older internal names below from ksud.c.
+          # Rewrite them to the canonical names so ksud.c enables the same keys that the kernel hooks read.
+          if [[ -f "$KSU_DIR/runtime/ksud.c" ]]; then
+            sed -i \
+              -e 's/ksu_input_hook_key_false/ksu_is_input_hook_enabled/g' \
+              -e 's/ksu_init_rc_hook_key_false/ksu_is_init_rc_hook_enabled/g' \
+              "$KSU_DIR/runtime/ksud.c"
+          fi
+
+          # If the canonical static keys are still not defined anywhere in SukiSU, add one tiny compat unit
+          # and include it from ksu.c. This fixes final vmlinux link failures such as:
+          #   undefined symbol: ksu_is_input_hook_enabled
+          #   undefined symbol: ksu_is_init_rc_hook_enabled
+          need_keys=0
+          if ! grep -RqsE 'DEFINE_STATIC_KEY_FALSE[[:space:]]*\([[:space:]]*ksu_is_input_hook_enabled[[:space:]]*\)|struct[[:space:]]+static_key_false[[:space:]]+ksu_is_input_hook_enabled' "$KSU_DIR" 2>/dev/null; then
+            need_keys=1
+          fi
+
+          if [[ "$need_keys" == "1" ]]; then
+            cat > "$KSU_DIR/manual_hook_keys_compat.c" <<'EOF'
+          #include <linux/jump_label.h>
+
+          /*
+           * OP13 SukiSU builtin + CCTV18/susfs4oki compat.
+           *
+           * The CCTV18/OKI manual-hook kernel patches add static-branch references from
+           * core kernel files such as fs/stat.c and drivers/input/input.c. Some SukiSU
+           * builtin revisions use different internal static-key names, which links ksu.o
+           * successfully but fails at final vmlinux with missing ksu_is_* symbols.
+           *
+           * Keep one canonical key pair here and make ksud.c toggle these same keys.
+           */
+          DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);
+          DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);
+          EOF
+
+            if ! grep -q 'manual_hook_keys_compat.c' "$KSU_DIR/ksu.c"; then
+              cat >> "$KSU_DIR/ksu.c" <<'EOF'
+
+          /* OP13 SukiSU + CCTV18 manual-hook static-key compatibility */
+          #include "manual_hook_keys_compat.c"
+          EOF
+            fi
+            echo "✅ Added manual_hook_keys_compat.c and included it from ksu.c"
+          else
+            echo "✅ Canonical manual-hook static keys already defined"
+          fi
+
+          echo "Manual-hook symbol scan:"
+          grep -RnsE 'ksu_(is_)?(input|init_rc)_hook(_key_false|_enabled)?|DEFINE_STATIC_KEY_FALSE' \
+            "$KSU_DIR" 2>/dev/null | head -n 80 || true
+
+          echo "::endgroup::"
+
       - name: "Export build identity"
         shell: bash
         run: |
