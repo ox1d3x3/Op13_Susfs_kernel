@@ -51,7 +51,7 @@ on:
         options: ["On", "Off"]
 
       susfs_mode:
-        description: "SUSFS source (recommended: external = cctv18/susfs4oki; sukisu = SukiSU susfs-main)"
+        description: "SUSFS source (external = CCTV18 kernel-side SUSFS with SukiSU builtin; sukisu = SukiSU susfs-main)"
         type: choice
         required: true
         default: external
@@ -705,64 +705,15 @@ jobs:
           echo "✅ SUSFS header: $KERNEL_DIR/include/linux/susfs.h"
           echo "✅ SUSFS source: $KERNEL_DIR/fs/susfs.c"
           echo "::endgroup::"
-          echo "::group::Apply KernelSU SUSFS enable patch (external SUSFS only)"
-          KSU_PATCH_FILE=""
-          for p in \
-            "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" \
-            "$SUSFS_FOLDER/kernel_patches/kernelsu/10_enable_susfs_for_ksu.patch" \
-            "$SUSFS_FOLDER/10_enable_susfs_for_ksu.patch"
-          do
-            if [[ -f "$p" ]]; then
-              KSU_PATCH_FILE="$p"
-              break
-            fi
-          done
-
-          KSU_REPO=""
-          for d in \
-            "$KERNEL_PLATFORM/KernelSU" \
-            "$KERNEL_PLATFORM/KernelSU-Next" \
-            "$KERNEL_DIR/KernelSU" \
-            "$KERNEL_DIR/KernelSU-Next"
-          do
-            if [[ -f "$d/kernel/Kconfig" ]]; then
-              KSU_REPO="$d"
-              break
-            fi
-          done
-          if [[ -z "$KSU_REPO" ]]; then
-            KSU_REPO="$(find "$KERNEL_PLATFORM" "$KERNEL_DIR" -maxdepth 5 -type f -path '*/kernel/Kconfig' 2>/dev/null | sed 's#/kernel/Kconfig$##' | head -n 1 || true)"
-          fi
-
-          if [[ -n "$KSU_PATCH_FILE" && -n "$KSU_REPO" ]]; then
-            echo "→ KernelSU repo: $KSU_REPO"
-            echo "→ KernelSU SUSFS patch: $KSU_PATCH_FILE"
-
-            TMP_KSU_PATCH="$RUNNER_TEMP/10_enable_susfs_for_ksu.patch"
-            cp -f "$KSU_PATCH_FILE" "$TMP_KSU_PATCH"
-
-            if [[ -f "$KSU_REPO/kernel/Kbuild" && ! -f "$KSU_REPO/kernel/Makefile" ]] && grep -q 'kernel/Makefile' "$TMP_KSU_PATCH"; then
-              echo "→ Rewriting legacy patch path kernel/Makefile -> kernel/Kbuild"
-              sed -i 's|kernel/Makefile|kernel/Kbuild|g' "$TMP_KSU_PATCH"
-            fi
-
-            if (cd "$KSU_REPO" && patch -p1 --dry-run -R < "$TMP_KSU_PATCH" >/dev/null 2>&1); then
-              echo "↪ KernelSU SUSFS patch already applied"
-            else
-              if (cd "$KSU_REPO" && patch -p1 --dry-run --forward < "$TMP_KSU_PATCH" >/dev/null 2>&1); then
-                (cd "$KSU_REPO" && patch -p1 --forward < "$TMP_KSU_PATCH")
-              else
-                echo "KernelSU SUSFS patch does not apply cleanly -> retrying with fuzz=3"
-                if ! (cd "$KSU_REPO" && patch -p1 --forward -F 3 < "$TMP_KSU_PATCH"); then
-                  echo "::warning::KernelSU SUSFS patch did not apply cleanly. Continuing to compatibility fallback checks."
-                fi
-              fi
-            fi
-          else
-            echo "::warning::KernelSU SUSFS patch file or KernelSU repo not found. External SUSFS may be incomplete."
-            echo "  KSU_PATCH_FILE=${KSU_PATCH_FILE:-<none>}"
-            echo "  KSU_REPO=${KSU_REPO:-<none>}"
-          fi
+          echo "::group::SukiSU builtin + CCTV18 SUSFS Kconfig only"
+          # IMPORTANT:
+          # SukiSU v4.1.2 @ builtin already contains the SukiSU/KernelSU-side SUSFS glue.
+          # Do NOT apply cctv18's full KernelSU/10_enable_susfs_for_ksu.patch here.
+          # That patch is for older/plain KernelSU-style trees and touches source files like:
+          #   policy/app_profile.c, supercall/dispatch.c, selinux/selinux.c, core/init.c
+          # On current SukiSU builtin, applying it causes duplicate functions and compile errors.
+          # For this lane, CCTV18 is used for kernel-side SUSFS files/patches only:
+          #   fs/susfs.c, include/linux/susfs.h, and 50_add_susfs_in_gki-*.patch.
 
           KSU_KCONFIG=""
           for p in \
@@ -778,69 +729,81 @@ jobs:
             fi
           done
 
-          if [[ -n "$KSU_KCONFIG" ]] && ! grep -q '^config KSU_SUSFS$' "$KSU_KCONFIG"; then
-            echo "::warning::config KSU_SUSFS still missing after patch attempt. Appending minimal SUSFS Kconfig block so olddefconfig can keep SUSFS enabled."
+          if [[ -z "$KSU_KCONFIG" ]]; then
+            echo "::error::KernelSU/SukiSU Kconfig not found. Cannot enable KSU_SUSFS safely."
+            find "$KERNEL_PLATFORM" "$KERNEL_DIR" -maxdepth 6 -type f -path '*/Kconfig' | head -n 80 || true
+            exit 1
+          fi
+
+          echo "→ KernelSU/SukiSU Kconfig: $KSU_KCONFIG"
+
+          if grep -q '^config KSU_SUSFS$' "$KSU_KCONFIG"; then
+            echo "✅ KSU_SUSFS already exists in SukiSU Kconfig. Skipping old cctv18 KernelSU source patch."
+          else
+            echo "→ KSU_SUSFS missing in Kconfig. Appending config symbols only, without patching SukiSU source files."
             {
               printf '%s\n' ''
+              printf '%s\n' 'menu "KernelSU - SUSFS"'
               printf '%s\n' 'config KSU_SUSFS'
-              printf '%s\n' '    bool "SUSFS support"'
+              printf '%s\n' '    bool "KernelSU addon - SUSFS"'
               printf '%s\n' '    depends on KSU'
+              printf '%s\n' '    depends on THREAD_INFO_IN_TASK'
               printf '%s\n' '    default y'
               printf '%s\n' '    help'
-              printf '%s\n' '      Enable SUSFS integration for KernelSU.'
+              printf '%s\n' '      Enable SUSFS support for SukiSU builtin with external CCTV18 kernel-side SUSFS.'
               printf '%s\n' ''
               printf '%s\n' 'config KSU_SUSFS_SUS_PATH'
-              printf '%s\n' '    bool "sus_path"'
+              printf '%s\n' '    bool "Enable sus path"'
               printf '%s\n' '    depends on KSU_SUSFS'
               printf '%s\n' '    default y'
               printf '%s\n' ''
               printf '%s\n' 'config KSU_SUSFS_SUS_MOUNT'
-              printf '%s\n' '    bool "sus_mount"'
+              printf '%s\n' '    bool "Enable sus mount"'
               printf '%s\n' '    depends on KSU_SUSFS'
               printf '%s\n' '    default y'
               printf '%s\n' ''
               printf '%s\n' 'config KSU_SUSFS_SUS_KSTAT'
-              printf '%s\n' '    bool "sus_kstat"'
+              printf '%s\n' '    bool "Enable sus kstat"'
               printf '%s\n' '    depends on KSU_SUSFS'
               printf '%s\n' '    default y'
               printf '%s\n' ''
               printf '%s\n' 'config KSU_SUSFS_SPOOF_UNAME'
-              printf '%s\n' '    bool "spoof uname"'
+              printf '%s\n' '    bool "Enable spoof uname"'
               printf '%s\n' '    depends on KSU_SUSFS'
               printf '%s\n' '    default y'
               printf '%s\n' ''
               printf '%s\n' 'config KSU_SUSFS_ENABLE_LOG'
-              printf '%s\n' '    bool "enable susfs log"'
+              printf '%s\n' '    bool "Enable SUSFS logging"'
               printf '%s\n' '    depends on KSU_SUSFS'
               printf '%s\n' '    default y'
               printf '%s\n' ''
               printf '%s\n' 'config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS'
-              printf '%s\n' '    bool "hide ksu susfs symbols"'
+              printf '%s\n' '    bool "Hide KSU/SUSFS symbols"'
               printf '%s\n' '    depends on KSU_SUSFS'
               printf '%s\n' '    default y'
               printf '%s\n' ''
               printf '%s\n' 'config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG'
-              printf '%s\n' '    bool "spoof cmdline or bootconfig"'
+              printf '%s\n' '    bool "Spoof cmdline or bootconfig"'
               printf '%s\n' '    depends on KSU_SUSFS'
               printf '%s\n' '    default y'
               printf '%s\n' ''
               printf '%s\n' 'config KSU_SUSFS_OPEN_REDIRECT'
-              printf '%s\n' '    bool "open redirect"'
+              printf '%s\n' '    bool "Open redirect"'
               printf '%s\n' '    depends on KSU_SUSFS'
               printf '%s\n' '    default y'
               printf '%s\n' ''
               printf '%s\n' 'config KSU_SUSFS_SUS_MAP'
-              printf '%s\n' '    bool "sus map"'
+              printf '%s\n' '    bool "Enable sus map"'
               printf '%s\n' '    depends on KSU_SUSFS'
               printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'endmenu'
             } >> "$KSU_KCONFIG"
           fi
 
-          if [[ -n "$KSU_KCONFIG" ]]; then
-            echo "::group::KernelSU Kconfig SUSFS symbols"
-            grep -nE '^config KSU_SUSFS|^config KSU_SUSFS_' "$KSU_KCONFIG" || true
-            echo "::endgroup::"
-          fi
+          echo "::group::KernelSU/SukiSU Kconfig SUSFS symbols"
+          grep -nE '^menu "KernelSU - SUSFS"|^config KSU_SUSFS|^config KSU_SUSFS_' "$KSU_KCONFIG" || true
+          echo "::endgroup::"
           echo "::endgroup::"
 
           # --- Pre-adjustments (borrowed from WildKernel) to help the gki-android15-6.6 patch match ---
