@@ -666,6 +666,75 @@ jobs:
             die "KernelSU driver not present after SukiSU setup (drivers/kernelsu missing)."
           fi
 
+          echo "::group::Apply CCTV18 KernelSU-side SUSFS patch for pinned SukiSU"
+          if [[ "${SUSFS_IN}" == "On" && "${SUSFS_MODE}" == "external" ]]; then
+            KSU_PATCH="$GITHUB_WORKSPACE/susfs4oki/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+            if [[ ! -f "$KSU_PATCH" ]]; then
+              echo "::error::Missing KernelSU-side SUSFS patch: $KSU_PATCH"
+              echo "Available KernelSU patches:"
+              find "$GITHUB_WORKSPACE/susfs4oki/kernel_patches" -maxdepth 3 -type f | sort || true
+              exit 1
+            fi
+
+            KSU_REPO=""
+            for c in "$KERNEL_DIR/KernelSU" "$KERNEL_DIR/common/KernelSU"; do
+              if [[ -d "$c/.git" || -d "$c/kernel" ]]; then
+                KSU_REPO="$c"
+                break
+              fi
+            done
+
+            if [[ -z "$KSU_REPO" && -e "$KERNEL_DIR/drivers/kernelsu" ]]; then
+              real_ksu="$(readlink -f "$KERNEL_DIR/drivers/kernelsu" || true)"
+              if [[ -n "$real_ksu" && -d "$(dirname "$real_ksu")" ]]; then
+                parent="$(dirname "$real_ksu")"
+                if [[ "$(basename "$parent")" == "kernel" ]]; then
+                  parent="$(dirname "$parent")"
+                fi
+                if [[ -d "$parent/kernel" || -d "$parent/.git" ]]; then
+                  KSU_REPO="$parent"
+                fi
+              fi
+            fi
+
+            if [[ -z "$KSU_REPO" ]]; then
+              echo "::error::Could not locate SukiSU/KernelSU repo after setup."
+              find "$KERNEL_DIR" -maxdepth 4 -type d \( -name KernelSU -o -name kernelsu \) -print || true
+              exit 1
+            fi
+
+            echo "KernelSU repo: $KSU_REPO"
+            echo "Patch file: $KSU_PATCH"
+            cd "$KSU_REPO"
+
+            if grep -Rqs "ksu_handle_devpts" kernel 2>/dev/null && grep -Rqs "susfs_ksu_sid" kernel 2>/dev/null; then
+              echo "KernelSU-side SUSFS handlers already present; skipping patch."
+            elif patch -p1 --dry-run -R < "$KSU_PATCH" >/dev/null 2>&1; then
+              echo "KernelSU-side SUSFS patch already applied."
+            elif patch -p1 --dry-run --forward < "$KSU_PATCH" >/dev/null 2>&1; then
+              patch -p1 --forward < "$KSU_PATCH"
+            else
+              echo "Patch does not apply cleanly; retrying with fuzz=3."
+              patch -p1 --forward -F 3 < "$KSU_PATCH"
+            fi
+
+            # v4.1.1 does not provide susfs_try_umount(); if the external patch added it,
+            # remove only that unsupported call while preserving normal KernelSU umount handlers.
+            for f in "$KSU_REPO/kernel/setuid_hook.c" "$KSU_REPO/kernel/hook/setuid_hook.c" "$KERNEL_DIR/drivers/kernelsu/setuid_hook.c" "$KERNEL_DIR/drivers/kernelsu/hook/setuid_hook.c"; do
+              if [[ -f "$f" ]] && grep -q "susfs_try_umount" "$f"; then
+                echo "Removing unsupported susfs_try_umount() from $f"
+                perl -0pi -e 's/\n#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT\n\s*\/\/[^\n]*\n\s*susfs_try_umount\(new_uid\);\n#endif\n/\n/g; s/\n\s*susfs_try_umount\(new_uid\);\s*\n/\n/g' "$f"
+              fi
+            done
+
+            cd "$KERNEL_DIR"
+            echo "Handler symbol scan after KernelSU-side SUSFS patch:"
+            grep -Rns "ksu_handle_devpts\|ksu_handle_execveat\|ksu_handle_vfs_fstat\|ksu_handle_sys_read\|susfs_ksu_sid\|susfs_priv_app_sid" drivers/kernelsu KernelSU/kernel 2>/dev/null | head -n 120 || true
+          else
+            echo "Not using external SUSFS; skipping KernelSU-side SUSFS patch."
+          fi
+          echo "::endgroup::"
+
           echo "::group::Repair SukiSU supercalls mismatch (allow/deny list IOCTLs)"
           KSU_H="./drivers/kernelsu/supercalls.h"
           KSU_C="./drivers/kernelsu/supercalls.c"
