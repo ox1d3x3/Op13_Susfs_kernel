@@ -972,6 +972,100 @@ jobs:
           grep -RnsE 'ksu_(input_hook_key_false|init_rc_hook_key_false|is_input_hook_enabled|is_init_rc_hook_enabled)|__OP13_KSUN_EXTERNAL_SUSFS_STATIC_KEYS_COMPAT' drivers/kernelsu fs drivers/input 2>/dev/null | head -n 120 || true
           echo "::endgroup::"
 
+
+      - name: "Repair KernelSU-Next setuid_hook app UID helper after SUSFS patches"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event.inputs.SUSFS }}" != "On" ]]; then
+            echo "SUSFS Off → skipping KSUN setuid_hook helper repair."
+            exit 0
+          fi
+
+          cd "${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
+
+          SETUID_C=""
+          for f in \
+            "drivers/kernelsu/hook/setuid_hook.c" \
+            "drivers/kernelsu/setuid_hook.c" \
+            "KernelSU-Next/kernel/hook/setuid_hook.c" \
+            "KernelSU/kernel/hook/setuid_hook.c"; do
+            if [[ -f "$f" ]]; then
+              SETUID_C="$f"
+              break
+            fi
+          done
+
+          if [[ -z "$SETUID_C" ]]; then
+            SETUID_C="$(find . -maxdepth 7 \( -path '*/kernelsu/*setuid_hook.c' -o -path '*/KernelSU*/*setuid_hook.c' \) | head -n 1 || true)"
+          fi
+
+          if [[ -z "$SETUID_C" || ! -f "$SETUID_C" ]]; then
+            echo "::warning::Could not locate KernelSU-Next setuid_hook.c; skipping helper repair."
+            exit 0
+          fi
+
+          echo "→ Repairing KernelSU-Next setuid_hook.c: $SETUID_C"
+
+          python3 - "$SETUID_C" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          p = Path(sys.argv[1])
+          s = p.read_text(encoding='utf-8')
+          orig = s
+
+          need = 'is_zygote_normal_app_uid(' in s
+          has_def = re.search(r'\b(?:static\s+inline\s+)?bool\s+is_zygote_normal_app_uid\s*\(', s) is not None
+
+          if need and not has_def:
+              helper = """\
+
+          /* OP13 workflow compat: WildKernels KSUN SUSFS v2.1.0 setuid hook helper.
+           * Android app UIDs are appId 10000..19999, with user/profile offset 100000.
+           */
+          #ifndef __OP13_KSUN_SUSFS_APP_UID_HELPER
+          #define __OP13_KSUN_SUSFS_APP_UID_HELPER
+          #ifndef AID_APP_START
+          #define AID_APP_START 10000
+          #endif
+          #ifndef AID_APP_END
+          #define AID_APP_END 19999
+          #endif
+          #ifndef AID_USER_OFFSET
+          #define AID_USER_OFFSET 100000
+          #endif
+          static inline bool is_zygote_normal_app_uid(uid_t uid)
+          {
+              uid_t appid = uid % AID_USER_OFFSET;
+              return appid >= AID_APP_START && appid <= AID_APP_END;
+          }
+          #endif
+          """
+              m = re.search(r'(\nint\s+ksu_handle_setresuid\s*\()', s)
+              if m:
+                  s = s[:m.start()] + helper + s[m.start():]
+              else:
+                  matches = list(re.finditer(r'^#include[^\n]*\n', s, flags=re.M))
+                  if matches:
+                      pos = matches[-1].end()
+                      s = s[:pos] + helper + s[pos:]
+                  else:
+                      s = helper + s
+
+          if s != orig:
+              p.write_text(s, encoding='utf-8')
+              print('patched setuid_hook.c with is_zygote_normal_app_uid() helper')
+          else:
+              print('setuid_hook.c helper already present or not needed')
+          PY
+
+          echo "::group::KSUN setuid_hook helper scan"
+          grep -nE 'is_zygote_normal_app_uid|__OP13_KSUN_SUSFS_APP_UID_HELPER|ksu_uid_should_umount' "$SETUID_C" | head -n 80 || true
+          echo "::endgroup::"
+
       - name: "KernelSU-Next SUSFS kernel-r25 compat (TRY_UMOUNT)"
         shell: bash
         run: |
@@ -986,7 +1080,15 @@ jobs:
 
           # After SukiSU setup.sh, drivers/kernelsu is a symlink into $KDIR/KernelSU/kernel
           KSU_KCONFIG="$KDIR/drivers/kernelsu/Kconfig"
-          KSU_SETUID="$KDIR/drivers/kernelsu/setuid_hook.c"
+          KSU_SETUID=""
+          for f in \
+            "$KDIR/drivers/kernelsu/hook/setuid_hook.c" \
+            "$KDIR/drivers/kernelsu/setuid_hook.c"; do
+            if [[ -f "$f" ]]; then
+              KSU_SETUID="$f"
+              break
+            fi
+          done
 
           if [[ ! -f "$KSU_KCONFIG" ]]; then
             echo "::error::KernelSU Kconfig not found at: $KSU_KCONFIG"
