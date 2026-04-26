@@ -58,10 +58,17 @@ on:
         options: [external, sukisu]
 
       sukisu_ref:
-        description: "SukiSU ref (branch/tag/commit). Recommended stable pin: v4.1.2. Use main only when you intentionally want latest upstream."
+        description: "SukiSU core ref passed to setup.sh. LSPosed-compat default: v4.1.1. Use builtin only if you intentionally want latest builtin branch."
         type: string
         required: false
-        default: "v4.1.2"
+        default: "v4.1.1"
+
+      susfs_try_umount:
+        description: "Enable SUSFS TRY_UMOUNT/r25 hook. Off is safer for LSPosed modules such as HMA-OSS/EdgeX."
+        type: choice
+        required: true
+        default: "Off"
+        options: ["On", "Off"]
 
       ksunext_multimanager:
         description: "Apply multi-manager patch (best-effort)"
@@ -484,27 +491,33 @@ jobs:
           # while the real kernel source is kernel_platform/common.
           cd "$KERNEL_PLATFORM"
 
-          [[ -n "$SUKISU_REF" ]] || SUKISU_REF="main"
+          [[ -n "$SUKISU_REF" ]] || SUKISU_REF="v4.1.1"
 
-          # IMPORTANT:
-          # - external = SukiSU root only, then apply cctv18/susfs4oki to the kernel tree.
-          # - sukisu   = SukiSU's own susfs-main path.
-          # Daily-driver default is external so SUSFS comes from cctv18, not from SukiSU.
-          SETUP_ARG="builtin"
+          # IMPORTANT for LSPosed compatibility:
+          # - external = SukiSU root compiled builtin, then CCTV18/susfs4oki kernel-side SUSFS.
+          # - Fetch setup.sh from the builtin branch, but pass SUKISU_REF as the actual
+          #   SukiSU core checkout. This lets us pin v4.1.1 instead of floating on the
+          #   newer builtin branch that appears to regress LSPosed modules on this OP13 setup.
+          # - sukisu = SukiSU's own susfs-main path; do not use for this compat lane.
+          SETUP_SCRIPT_REF="builtin"
+          SETUP_ARG="$SUKISU_REF"
           if [[ "$SUSFS_IN" == "On" && "$SUSFS_MODE" == "sukisu" ]]; then
+            SETUP_SCRIPT_REF="main"
             SETUP_ARG="susfs-main"
           fi
 
           echo "ROOT_HAS_SUSFS=0" >> "$GITHUB_ENV"
           echo "SUSFS_SOURCE_EFFECTIVE=$SUSFS_MODE" >> "$GITHUB_ENV"
           echo "SUKISU_REF_EFFECTIVE=$SUKISU_REF" >> "$GITHUB_ENV"
+          echo "SUKISU_SETUP_SCRIPT_REF=$SETUP_SCRIPT_REF" >> "$GITHUB_ENV"
           echo "→ Kernel platform: $KERNEL_PLATFORM"
           echo "→ Kernel source:   $KERNEL_DIR"
-          echo "→ Requested setup arg: $SETUP_ARG"
+          echo "→ Setup script ref: $SETUP_SCRIPT_REF"
+          echo "→ SukiSU core checkout arg: $SETUP_ARG"
           echo "→ Requested SukiSU ref: $SUKISU_REF"
           echo "→ SUSFS source mode: $SUSFS_MODE"
 
-          SETUP_URL="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SUKISU_REF}/kernel/setup.sh"
+          SETUP_URL="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SETUP_SCRIPT_REF}/kernel/setup.sh"
           echo "→ Fetching SukiSU Ultra setup: $SETUP_URL"
           curl -fLSs "$SETUP_URL" | bash -s "$SETUP_ARG"
 
@@ -960,6 +973,10 @@ jobs:
             echo "SUSFS Off → skipping SUSFS r25 compat patch."
             exit 0
           fi
+          if [[ "${{ github.event.inputs.susfs_try_umount }}" != "On" ]]; then
+            echo "SUSFS TRY_UMOUNT disabled for LSPosed compatibility -> skipping setuid_hook wiring."
+            exit 0
+          fi
 
           KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
 
@@ -1108,7 +1125,11 @@ jobs:
             echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
-            echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$DEFCONFIG"
+            if [ "${{ github.event.inputs.susfs_try_umount }}" = "On" ]; then
+              echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$DEFCONFIG"
+            else
+              echo "# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set" >> "$DEFCONFIG"
+            fi
             echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$DEFCONFIG"
           else
@@ -1284,8 +1305,8 @@ jobs:
           chmod +x drivers/of/overwriter/overwrite_configs/*.sh 2>/dev/null || true
 
 
-      - name: "Repair SukiSU manual-hook static keys"
-        if: ${{ github.event.inputs.SUSFS == 'On' }}
+      - name: "Repair SukiSU manual-hook static keys (newer-builtin only)"
+        if: ${{ github.event.inputs.SUSFS == 'On' && (github.event.inputs.sukisu_ref == 'builtin' || github.event.inputs.sukisu_ref == 'v4.1.2') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1544,12 +1565,16 @@ jobs:
               echo "::endgroup::"
               exit 1
             fi
-            if ! grep -qE '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y$' "$CFG"; then
-              echo "::error::CONFIG_KSU_SUSFS_TRY_UMOUNT=y expected for SUSFS module compatibility (kernel-r25+) but was not enabled."
-              echo "::group::.config CONFIG_KSU_SUSFS_TRY_UMOUNT lines"
-              grep -n "KSU_SUSFS_TRY_UMOUNT" "$CFG" || true
-              echo "::endgroup::"
-              exit 1
+            if [[ "${{ github.event.inputs.susfs_try_umount }}" == "On" ]]; then
+              if ! grep -qE '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y$' "$CFG"; then
+                echo "::error::CONFIG_KSU_SUSFS_TRY_UMOUNT=y expected because susfs_try_umount input is On."
+                echo "::group::.config CONFIG_KSU_SUSFS_TRY_UMOUNT lines"
+                grep -n "KSU_SUSFS_TRY_UMOUNT" "$CFG" || true
+                echo "::endgroup::"
+                exit 1
+              fi
+            else
+              echo "SUSFS TRY_UMOUNT intentionally Off for LSPosed compatibility."
             fi
           fi
 
@@ -1848,7 +1873,7 @@ jobs:
           fi
           echo "| SUSFS | $(yn "${{ inputs.SUSFS }}") | $(cfgyn CONFIG_KSU_SUSFS) |" >> "$GITHUB_STEP_SUMMARY"
           echo "| SUSFS mode | \`${SUSFS_MODE_LABEL}\` | $(test -f "$SRC/include/linux/susfs.h" && echo 'susfs.h present' || echo '—') |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| SUSFS TRY_UMOUNT (r25) | — | $(cfgyn CONFIG_KSU_SUSFS_TRY_UMOUNT) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SUSFS TRY_UMOUNT (r25) | $(yn "${{ inputs.susfs_try_umount }}") | $(cfgyn CONFIG_KSU_SUSFS_TRY_UMOUNT) |" >> "$GITHUB_STEP_SUMMARY"
 
           # KernelSU Multi-manager patch (best-effort)
           echo "| Multi-manager patch (best-effort) | $(yn "${{ inputs.ksunext_multimanager }}") | $(test -d "$SRC/drivers/kernelsu" && echo 'drivers/kernelsu present' || echo '—') |" >> "$GITHUB_STEP_SUMMARY"
