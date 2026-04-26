@@ -666,16 +666,8 @@ jobs:
             die "KernelSU driver not present after SukiSU setup (drivers/kernelsu missing)."
           fi
 
-          echo "::group::Apply CCTV18 KernelSU-side SUSFS patch for pinned SukiSU"
+          echo "::group::SukiSU v4.1.1 external SUSFS compat bridge"
           if [[ "${SUSFS_IN}" == "On" && "${SUSFS_MODE}" == "external" ]]; then
-            KSU_PATCH="$GITHUB_WORKSPACE/susfs4oki/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-            if [[ ! -f "$KSU_PATCH" ]]; then
-              echo "::error::Missing KernelSU-side SUSFS patch: $KSU_PATCH"
-              echo "Available KernelSU patches:"
-              find "$GITHUB_WORKSPACE/susfs4oki/kernel_patches" -maxdepth 3 -type f | sort || true
-              exit 1
-            fi
-
             KSU_REPO=""
             for c in "$KERNEL_DIR/KernelSU" "$KERNEL_DIR/common/KernelSU"; do
               if [[ -d "$c/.git" || -d "$c/kernel" ]]; then
@@ -697,41 +689,162 @@ jobs:
               fi
             fi
 
-            if [[ -z "$KSU_REPO" ]]; then
+            if [[ -z "$KSU_REPO" || ! -d "$KSU_REPO/kernel" ]]; then
               echo "::error::Could not locate SukiSU/KernelSU repo after setup."
               find "$KERNEL_DIR" -maxdepth 4 -type d \( -name KernelSU -o -name kernelsu \) -print || true
               exit 1
             fi
 
             echo "KernelSU repo: $KSU_REPO"
-            echo "Patch file: $KSU_PATCH"
-            cd "$KSU_REPO"
-
-            if grep -Rqs "ksu_handle_devpts" kernel 2>/dev/null && grep -Rqs "susfs_ksu_sid" kernel 2>/dev/null; then
-              echo "KernelSU-side SUSFS handlers already present; skipping patch."
-            elif patch -p1 --dry-run -R < "$KSU_PATCH" >/dev/null 2>&1; then
-              echo "KernelSU-side SUSFS patch already applied."
-            elif patch -p1 --dry-run --forward < "$KSU_PATCH" >/dev/null 2>&1; then
-              patch -p1 --forward < "$KSU_PATCH"
-            else
-              echo "Patch does not apply cleanly; retrying with fuzz=3."
-              patch -p1 --forward -F 3 < "$KSU_PATCH"
+            KSU_KBUILD="$KSU_REPO/kernel/Kbuild"
+            if [[ ! -f "$KSU_KBUILD" ]]; then
+              echo "::error::Missing Kbuild: $KSU_KBUILD"
+              exit 1
             fi
 
-            # v4.1.1 does not provide susfs_try_umount(); if the external patch added it,
-            # remove only that unsupported call while preserving normal KernelSU umount handlers.
-            for f in "$KSU_REPO/kernel/setuid_hook.c" "$KSU_REPO/kernel/hook/setuid_hook.c" "$KERNEL_DIR/drivers/kernelsu/setuid_hook.c" "$KERNEL_DIR/drivers/kernelsu/hook/setuid_hook.c"; do
-              if [[ -f "$f" ]] && grep -q "susfs_try_umount" "$f"; then
-                echo "Removing unsupported susfs_try_umount() from $f"
-                perl -0pi -e 's/\n#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT\n\s*\/\/[^\n]*\n\s*susfs_try_umount\(new_uid\);\n#endif\n/\n/g; s/\n\s*susfs_try_umount\(new_uid\);\s*\n/\n/g' "$f"
-              fi
-            done
+            # Do NOT apply CCTV18's full KernelSU-side patch here. That patch targets the newer
+            # split SukiSU layout (kernel/core, kernel/feature, kernel/runtime, etc.).
+            # SukiSU v4.1.1 uses the older flat layout, so the full patch fails or half-applies.
+            # Instead, add a tiny compatibility bridge for the symbols introduced by the kernel-side
+            # CCTV18 SUSFS patch, while leaving the old working v4.1.1 runtime path alone.
+            if ! grep -q 'susfs_compat_bridge.o' "$KSU_KBUILD"; then
+              echo 'kernelsu-objs += susfs_compat_bridge.o' >> "$KSU_KBUILD"
+            fi
+
+            cat > "$KSU_REPO/kernel/susfs_compat_bridge.c" <<'EOF'
+          // OP13 SukiSU v4.1.1 + external CCTV18/susfs4oki compatibility bridge.
+          // Keep this intentionally small: satisfy the Android 15 / 6.6 SUSFS kernel-side hooks
+          // without applying the newer split-layout KernelSU patch on top of the older flat SukiSU tree.
+          
+          #include <linux/types.h>
+          #include <linux/fs.h>
+          #include <linux/cred.h>
+          #include <linux/uidgid.h>
+          #include <linux/uaccess.h>
+          #include <linux/static_key.h>
+          #include <linux/sched.h>
+          
+          #include "allowlist.h"
+          #include "selinux/selinux.h"
+          
+          u32 susfs_ksu_sid = 0;
+          u32 susfs_init_sid = 0;
+          u32 susfs_zygote_sid = 0;
+          u32 susfs_priv_app_sid = 0;
+          
+          bool susfs_is_current_ksu_domain(void)
+          {
+          	return is_ksu_domain();
+          }
+          
+          bool susfs_is_current_init_domain(void)
+          {
+          	return is_init(current_cred());
+          }
+          
+          bool susfs_is_current_zygote_domain(void)
+          {
+          	return is_zygote(current_cred());
+          }
+          
+          bool susfs_is_current_priv_app_domain(void)
+          {
+          	return false;
+          }
+          
+          bool susfs_is_sid_equal(const struct cred *cred, u32 sid2)
+          {
+          	return false;
+          }
+          
+          u32 susfs_get_sid_from_name(const char *secctx_name)
+          {
+          	return 0;
+          }
+          
+          u32 susfs_get_current_sid(void)
+          {
+          	return 0;
+          }
+          
+          void susfs_set_ksu_sid(void) { }
+          void susfs_set_init_sid(void) { }
+          void susfs_set_zygote_sid(void) { }
+          void susfs_set_priv_app_sid(void) { }
+          
+          bool __ksu_is_allow_uid_for_current(uid_t uid)
+          {
+          	return ksu_is_allow_uid_for_current(uid);
+          }
+          
+          int ksu_handle_devpts(struct inode *inode)
+          {
+          	return 0;
+          }
+          
+          void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)
+          {
+          }
+          
+          int ksu_handle_execveat(int *fd, void *filename_ptr, void *argv, void *envp, int *flags)
+          {
+          	return 0;
+          }
+          
+          int ksu_handle_execveat_sucompat(int *fd, void *filename_ptr, void *argv, void *envp, int *flags)
+          {
+          	return 0;
+          }
+          
+          int ksu_handle_sys_read(unsigned int fd, char __user *buf, size_t count)
+          {
+          	return 0;
+          }
+          
+          int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value)
+          {
+          	return 0;
+          }
+          EOF
+
+            # The Android 15/6.6 SUSFS patch declares ksu_handle_stat() with struct filename **.
+            # v4.1.1's old flat SukiSU tree has the same symbol name with a legacy userspace-pointer
+            # ABI. That can compile but is unsafe at runtime, so make the external SUSFS call a no-op
+            # and let the original SukiSU syscall hook path handle normal sucompat behaviour.
+            python3 - "$KSU_REPO/kernel/sucompat.c" <<'PYSUCOMPAT'
+          from pathlib import Path
+          import re
+          import sys
+          
+          p = Path(sys.argv[1])
+          s = p.read_text(encoding='utf-8')
+          
+          def replace_func(src: str, name: str, new_src: str) -> str:
+              m = re.search(r'int\s+' + re.escape(name) + r'\s*\([^)]*\)\s*\{', src)
+              if not m:
+                  return src
+              i = m.end()
+              depth = 1
+              j = i
+              while j < len(src) and depth:
+                  ch = src[j]
+                  if ch == '{':
+                      depth += 1
+                  elif ch == '}':
+                      depth -= 1
+                  j += 1
+              return src[:m.start()] + new_src + src[j:]
+          
+          new_stat = 'int ksu_handle_stat(int *dfd, void *filename_user, int *flags)\n{\n\treturn 0;\n}\n'
+          s = replace_func(s, 'ksu_handle_stat', new_stat)
+          p.write_text(s, encoding='utf-8')
+          PYSUCOMPAT
 
             cd "$KERNEL_DIR"
-            echo "Handler symbol scan after KernelSU-side SUSFS patch:"
-            grep -Rns "ksu_handle_devpts\|ksu_handle_execveat\|ksu_handle_vfs_fstat\|ksu_handle_sys_read\|susfs_ksu_sid\|susfs_priv_app_sid" drivers/kernelsu KernelSU/kernel 2>/dev/null | head -n 120 || true
+            echo "Bridge symbol scan:"
+            grep -Rns "ksu_handle_devpts\|ksu_handle_execveat\|ksu_handle_vfs_fstat\|ksu_handle_sys_read\|susfs_ksu_sid\|susfs_priv_app_sid\|susfs_compat_bridge" "$KSU_REPO/kernel" 2>/dev/null | head -n 160 || true
           else
-            echo "Not using external SUSFS; skipping KernelSU-side SUSFS patch."
+            echo "Not using external SUSFS; skipping compat bridge."
           fi
           echo "::endgroup::"
 
