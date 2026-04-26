@@ -565,105 +565,12 @@ jobs:
           echo "✅ SUSFS header: $KERNEL_DIR/include/linux/susfs.h"
           echo "✅ SUSFS source: $KERNEL_DIR/fs/susfs.c"
           echo "::endgroup::"
-          echo "::group::SukiSU builtin + CCTV18 SUSFS Kconfig only"
-          # IMPORTANT:
-          # SukiSU v4.1.2 @ builtin already contains the SukiSU/KernelSU-side SUSFS glue.
-          # Do NOT apply cctv18's full KernelSU/10_enable_susfs_for_ksu.patch here.
-          # That patch is for older/plain KernelSU-style trees and touches source files like:
-          #   policy/app_profile.c, supercall/dispatch.c, selinux/selinux.c, core/init.c
-          # On current SukiSU builtin, applying it causes duplicate functions and compile errors.
-          # For this lane, CCTV18 is used for kernel-side SUSFS files/patches only:
-          #   fs/susfs.c, include/linux/susfs.h, and 50_add_susfs_in_gki-*.patch.
-
-          KSU_KCONFIG=""
-          for p in \
-            "$KERNEL_DIR/drivers/kernelsu/Kconfig" \
-            "$KERNEL_PLATFORM/KernelSU/kernel/Kconfig" \
-            "$KERNEL_PLATFORM/KernelSU-Next/kernel/Kconfig" \
-            "$KERNEL_DIR/KernelSU/kernel/Kconfig" \
-            "$KERNEL_DIR/KernelSU-Next/kernel/Kconfig"
-          do
-            if [[ -f "$p" ]]; then
-              KSU_KCONFIG="$p"
-              break
-            fi
-          done
-
-          if [[ -z "$KSU_KCONFIG" ]]; then
-            echo "::error::KernelSU/SukiSU Kconfig not found. Cannot enable KSU_SUSFS safely."
-            find "$KERNEL_PLATFORM" "$KERNEL_DIR" -maxdepth 6 -type f -path '*/Kconfig' | head -n 80 || true
-            exit 1
-          fi
-
-          echo "→ KernelSU/SukiSU Kconfig: $KSU_KCONFIG"
-
-          if grep -q '^config KSU_SUSFS$' "$KSU_KCONFIG"; then
-            echo "✅ KSU_SUSFS already exists in SukiSU Kconfig. Skipping old cctv18 KernelSU source patch."
-          else
-            echo "→ KSU_SUSFS missing in Kconfig. Appending config symbols only, without patching SukiSU source files."
-            {
-              printf '%s\n' ''
-              printf '%s\n' 'menu "KernelSU - SUSFS"'
-              printf '%s\n' 'config KSU_SUSFS'
-              printf '%s\n' '    bool "KernelSU addon - SUSFS"'
-              printf '%s\n' '    depends on KSU'
-              printf '%s\n' '    depends on THREAD_INFO_IN_TASK'
-              printf '%s\n' '    default y'
-              printf '%s\n' '    help'
-              printf '%s\n' '      Enable SUSFS support for SukiSU builtin with external CCTV18 kernel-side SUSFS.'
-              printf '%s\n' ''
-              printf '%s\n' 'config KSU_SUSFS_SUS_PATH'
-              printf '%s\n' '    bool "Enable sus path"'
-              printf '%s\n' '    depends on KSU_SUSFS'
-              printf '%s\n' '    default y'
-              printf '%s\n' ''
-              printf '%s\n' 'config KSU_SUSFS_SUS_MOUNT'
-              printf '%s\n' '    bool "Enable sus mount"'
-              printf '%s\n' '    depends on KSU_SUSFS'
-              printf '%s\n' '    default y'
-              printf '%s\n' ''
-              printf '%s\n' 'config KSU_SUSFS_SUS_KSTAT'
-              printf '%s\n' '    bool "Enable sus kstat"'
-              printf '%s\n' '    depends on KSU_SUSFS'
-              printf '%s\n' '    default y'
-              printf '%s\n' ''
-              printf '%s\n' 'config KSU_SUSFS_SPOOF_UNAME'
-              printf '%s\n' '    bool "Enable spoof uname"'
-              printf '%s\n' '    depends on KSU_SUSFS'
-              printf '%s\n' '    default y'
-              printf '%s\n' ''
-              printf '%s\n' 'config KSU_SUSFS_ENABLE_LOG'
-              printf '%s\n' '    bool "Enable SUSFS logging"'
-              printf '%s\n' '    depends on KSU_SUSFS'
-              printf '%s\n' '    default y'
-              printf '%s\n' ''
-              printf '%s\n' 'config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS'
-              printf '%s\n' '    bool "Hide KSU/SUSFS symbols"'
-              printf '%s\n' '    depends on KSU_SUSFS'
-              printf '%s\n' '    default y'
-              printf '%s\n' ''
-              printf '%s\n' 'config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG'
-              printf '%s\n' '    bool "Spoof cmdline or bootconfig"'
-              printf '%s\n' '    depends on KSU_SUSFS'
-              printf '%s\n' '    default y'
-              printf '%s\n' ''
-              printf '%s\n' 'config KSU_SUSFS_OPEN_REDIRECT'
-              printf '%s\n' '    bool "Open redirect"'
-              printf '%s\n' '    depends on KSU_SUSFS'
-              printf '%s\n' '    default y'
-              printf '%s\n' ''
-              printf '%s\n' 'config KSU_SUSFS_SUS_MAP'
-              printf '%s\n' '    bool "Enable sus map"'
-              printf '%s\n' '    depends on KSU_SUSFS'
-              printf '%s\n' '    default y'
-              printf '%s\n' ''
-              printf '%s\n' 'endmenu'
-            } >> "$KSU_KCONFIG"
-          fi
-
-          echo "::group::KernelSU/SukiSU Kconfig SUSFS symbols"
-          grep -nE '^menu "KernelSU - SUSFS"|^config KSU_SUSFS|^config KSU_SUSFS_' "$KSU_KCONFIG" || true
-          echo "::endgroup::"
+          echo "::group::SukiSU builtin + CCTV18 SUSFS Kconfig defer"
+          # Old-good compatibility lane intentionally applies CCTV18 kernel-side SUSFS before
+          # SukiSU builtin setup. At this point drivers/kernelsu/Kconfig may not exist yet.
+          # Do not fail here; add/verify the KSU_SUSFS Kconfig symbols after SukiSU setup.
+          echo "CCTV18 SUSFS source/header copied. KSU_SUSFS Kconfig enablement is deferred until after SukiSU builtin setup."
+          echo "SUSFS_KCONFIG_DEFERRED=1" >> "$GITHUB_ENV"
           echo "::endgroup::"
 
           # --- Pre-adjustments (borrowed from WildKernel) to help the gki-android15-6.6 patch match ---
@@ -966,6 +873,112 @@ jobs:
             echo "drivers/kernelsu/supercalls.[ch] not found; skipping repair."
           fi
           echo "::endgroup::"
+      - name: "Enable SukiSU SUSFS Kconfig after builtin setup"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event.inputs.SUSFS }}" != "On" ]]; then
+            echo "SUSFS Off -> skipping SukiSU SUSFS Kconfig enablement."
+            exit 0
+          fi
+
+          KERNEL_PLATFORM="${KERNEL_PLATFORM:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform}"
+          KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
+
+          KSU_KCONFIG=""
+          for p in \
+            "$KDIR/drivers/kernelsu/Kconfig" \
+            "$KERNEL_PLATFORM/KernelSU/kernel/Kconfig" \
+            "$KDIR/KernelSU/kernel/Kconfig" \
+            "$KERNEL_PLATFORM/KernelSU-Next/kernel/Kconfig" \
+            "$KDIR/KernelSU-Next/kernel/Kconfig"
+          do
+            if [[ -f "$p" ]]; then
+              KSU_KCONFIG="$p"
+              break
+            fi
+          done
+
+          if [[ -z "$KSU_KCONFIG" ]]; then
+            echo "::error::KernelSU/SukiSU Kconfig still not found after SukiSU builtin setup."
+            echo "::group::Kconfig search debug"
+            find "$KERNEL_PLATFORM" "$KDIR" -maxdepth 8 -type f -path '*/Kconfig' | grep -Ei 'KernelSU|kernelsu|drivers/kernelsu' || true
+            find "$KERNEL_PLATFORM" "$KDIR" -maxdepth 8 -type d -iname '*kernelsu*' | head -n 80 || true
+            echo "::endgroup::"
+            exit 1
+          fi
+
+          echo "→ KernelSU/SukiSU Kconfig: $KSU_KCONFIG"
+
+          if grep -q '^config KSU_SUSFS$' "$KSU_KCONFIG"; then
+            echo "✅ KSU_SUSFS already exists in SukiSU Kconfig."
+          else
+            echo "→ KSU_SUSFS missing. Appending config symbols only, without applying cctv18 KernelSU source patch."
+            {
+              printf '%s\n' ''
+              printf '%s\n' 'menu "KernelSU - SUSFS"'
+              printf '%s\n' 'config KSU_SUSFS'
+              printf '%s\n' '    bool "KernelSU addon - SUSFS"'
+              printf '%s\n' '    depends on KSU'
+              printf '%s\n' '    depends on THREAD_INFO_IN_TASK'
+              printf '%s\n' '    default y'
+              printf '%s\n' '    help'
+              printf '%s\n' '      Enable SUSFS support for SukiSU builtin with external CCTV18 kernel-side SUSFS.'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_SUS_PATH'
+              printf '%s\n' '    bool "Enable sus path"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_SUS_MOUNT'
+              printf '%s\n' '    bool "Enable sus mount"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_SUS_KSTAT'
+              printf '%s\n' '    bool "Enable sus kstat"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_SPOOF_UNAME'
+              printf '%s\n' '    bool "Enable spoof uname"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_ENABLE_LOG'
+              printf '%s\n' '    bool "Enable SUSFS logging"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS'
+              printf '%s\n' '    bool "Hide KSU/SUSFS symbols"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG'
+              printf '%s\n' '    bool "Spoof cmdline or bootconfig"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_OPEN_REDIRECT'
+              printf '%s\n' '    bool "Open redirect"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'config KSU_SUSFS_SUS_MAP'
+              printf '%s\n' '    bool "Enable sus map"'
+              printf '%s\n' '    depends on KSU_SUSFS'
+              printf '%s\n' '    default y'
+              printf '%s\n' ''
+              printf '%s\n' 'endmenu'
+            } >> "$KSU_KCONFIG"
+          fi
+
+          echo "::group::KernelSU/SukiSU Kconfig SUSFS symbols after builtin setup"
+          grep -nE '^menu "KernelSU - SUSFS"|^config KSU_SUSFS|^config KSU_SUSFS_' "$KSU_KCONFIG" || true
+          echo "::endgroup::"
+
       - name: "KernelSU SUSFS kernel-r25 compat (TRY_UMOUNT)"
         shell: bash
         run: |
@@ -1624,70 +1637,69 @@ jobs:
           fi
           cp "$IMAGE_PATH" "AnyKernel3/Image"
 
-          # Patch anykernel.sh safely: keep properties() intact; update strings + inject our info block after ak3-core is sourced.
-          python3 - <<'PY'
+          # Patch anykernel.sh safely: keep properties() intact; update strings + inject a clean, minimal installer banner.
+          python3 - <<'PYINNER'
           from pathlib import Path
           import os, re
-          
+
           ak = Path("AnyKernel3/anykernel.sh")
           s = ak.read_text(encoding="utf-8", errors="replace")
-          
-          # Clean english kernel.string (include profile label)
+
           profile_label = os.environ.get("PROFILE_LABEL", "Balanced")
-          s = re.sub(r'^\s*kernel\.string=.*$', f'kernel.string=PJZ110 | SukiSU Ultra (builtin) [{profile_label}] (OP-OX)', s, flags=re.M)
-          
-          # Remove previous custom injection (idempotent)
+          susfs_mode = os.environ.get("SUSFS_MODE", "On")
+          feat = "SUSFS" if susfs_mode == "On" else "Manual Hook"
+
+          # Keep kernel.string simple and avoid upstream/fork credits in the installer UI.
+          s = re.sub(
+              r'^\s*kernel\.string=.*$',
+              f'kernel.string=OP13/PJZ110 | SukiSU Ultra (builtin) | {profile_label} | {feat}',
+              s,
+              flags=re.M,
+          )
+
+          # Remove any previous custom block, including old WildKernels/mrcxlinux credit lines.
           s = re.sub(r'\n# --- OX1D3X3 CUSTOM START ---.*?# --- OX1D3X3 CUSTOM END ---\n', '\n', s, flags=re.S)
-          
+
           m = re.search(r'\n\.\s+tools/ak3-core\.sh\s*\n', s)
           if not m:
-                  raise SystemExit("Cannot find '. tools/ak3-core.sh' marker in anykernel.sh")
-          
-          run_number = os.environ.get("GITHUB_RUN_NUMBER", "")
-          kernel_rel = os.environ.get("KERNEL_RELEASE", "")
-          suffix = os.environ.get("SUFFIX", "OP-OX")
-          susfs_mode = os.environ.get("SUSFS_MODE", "On")
-          feat = "SUSFS" if susfs_mode == "On" else "MANUAL_HOOK"
-          block = f"""
+              raise SystemExit("Cannot find '. tools/ak3-core.sh' marker in anykernel.sh")
+
+          # Minimal banner. Do not hardcode kernel release, build number, upstream names, or web links.
+          # Runtime device/Android values are read from getprop during flashing.
+          block = f'''
           # --- OX1D3X3 CUSTOM START ---
           ui_print " "
           ui_print "===================================================="
           ui_print "                   __   __  __ "
-          ui_print "                  \\ \\ / //_ |"
-          ui_print "                   \\ V /   | |"
+          ui_print "                  \ \ / //_ |"
+          ui_print "                   \ V /   | |"
           ui_print "                     > <    | |"
-          ui_print "                   / . \\   | |"
-          ui_print "                 /_/ \\_\\  |_|"
+          ui_print "                   / . \   | |"
+          ui_print "                 /_/ \_\  |_|"
           ui_print "===================================================="
+          ui_print "Ox1d3x3 OP13 Kernel"
+          ui_print "SukiSU : Ultra (builtin)"
+          ui_print "Profile: {profile_label}"
+          ui_print "Mode   : {feat}"
           ui_print " "
-          ui_print "PJZ110 | SukiSU Ultra (builtin) [{os.environ.get('PROFILE_LABEL','Balanced')}] + {feat}"
-          ui_print "Kernel : {kernel_rel}"
-          ui_print "Build  : #{run_number} ({suffix})"
-          ui_print "Builder: @Ox1d3x3"
-          ui_print "Credits: @mrcxlinux, WildKernels"
-          ui_print " "
-          
+
           device="$(getprop ro.product.device 2>/dev/null || true)"
           model="$(getprop ro.product.model 2>/dev/null || true)"
           android="$(getprop ro.build.version.release 2>/dev/null || true)"
           patch="$(getprop ro.build.version.security_patch 2>/dev/null || true)"
+
           if [ -n "$device" ]; then ui_print "Device : $device ($model)"; fi
           if [ -n "$android" ]; then ui_print "Android: $android"; fi
           if [ -n "$patch" ]; then ui_print "Patch  : $patch"; fi
           ui_print " "
-          
-          # Best-effort open project page (may be ignored in recovery)
-          if command -v cmd >/dev/null 2>&1; then
-          (cmd activity start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true
-          elif command -v am >/dev/null 2>&1; then
-          (am start --user 0 -a android.intent.action.VIEW -d "https://github.com/ox1d3x3/Op13_Susfs_kernel" >/dev/null 2>&1 &) || true
-          fi
+          ui_print "Flashing boot image..."
+          ui_print " "
           # --- OX1D3X3 CUSTOM END ---
-          """
-          
+          '''
+
           s = s[:m.end()] + block + s[m.end():]
           ak.write_text(s, encoding="utf-8")
-          PY
+          PYINNER
 
           # Plain-text banner shown early by update-binary (optional)
           SUSFS_MODE="${SUSFS_MODE:-On}"
@@ -1701,9 +1713,14 @@ jobs:
 
           cat > AnyKernel3/banner <<EOF
           ====================================================
-                         Ox1d3x3 Kernel
-          SukiSU Ultra (builtin) [${PROFILE_LABEL}] + ${MODE_BANNER}
+                             __   __  __
+                            \ \ / //_ |
+                             \ V /   | |
+                               > <    | |
+                             / . \   | |
+                           /_/ \_\  |_|
           ====================================================
+          Ox1d3x3 OP13 Kernel | SukiSU Ultra (builtin) | ${PROFILE_LABEL} | ${MODE_BANNER}
           EOF
 
           OUT="OP13_${{ env.ANDROID_VERSION }}_${{ env.KERNEL_VERSION }}_${{ env.SUFFIX }}_${{ env.PROFILE_TAG }}_${{ github.run_number }}_${MODE_TAG}_FLASH_THIS.zip"
