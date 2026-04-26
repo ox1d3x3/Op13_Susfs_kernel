@@ -130,7 +130,7 @@ on:
         description: "Custom build time string (Enter F to use current UTC)"
         type: string
         required: false
-        default: "Thu Dec 11 04:17:27 UTC 2025"
+        default: "F"
 
       BUILD_USER:
         description: "KBUILD_BUILD_USER"
@@ -722,6 +722,89 @@ jobs:
             echo "drivers/kernelsu/supercalls.[ch] not found; skipping repair."
           fi
           echo "::endgroup::"
+      - name: "Repair SukiSU manual-hook static keys"
+        if: ${{ github.event.inputs.SUSFS == 'On' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "::group::Repair SukiSU manual-hook static keys"
+
+          KP="${KERNEL_PLATFORM:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform}"
+          KD="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
+
+          # The old-stable flow is intentionally preserved:
+          #   1) external CCTV18/susfs4oki patch first
+          #   2) SukiSU builtin setup afterwards
+          # On current SukiSU builtin, that combination can leave the manual-hook
+          # static branches referenced but not defined. Repair only those symbols here.
+          mapfile -t KSU_DIRS < <(
+            {
+              printf '%s\n' \
+                "$KP/KernelSU/kernel" \
+                "$KD/KernelSU/kernel" \
+                "$KD/drivers/kernelsu" \
+                "$KP/common/drivers/kernelsu"
+              find "$KP" -maxdepth 7 -type f -path '*/drivers/kernelsu/ksu.c' -printf '%h\n' 2>/dev/null || true
+              find "$KP" -maxdepth 7 -type f -path '*/KernelSU/kernel/ksu.c' -printf '%h\n' 2>/dev/null || true
+            } | awk 'NF && !seen[$0]++'
+          )
+
+          patched=0
+          for KSU_DIR in "${KSU_DIRS[@]}"; do
+            [[ -d "$KSU_DIR" && -f "$KSU_DIR/ksu.c" ]] || continue
+            echo "→ Checking KSU_DIR=$KSU_DIR"
+            patched=1
+
+            # SukiSU runtime/ksud.c may still toggle old internal names:
+            #   ksu_input_hook_key_false / ksu_init_rc_hook_key_false
+            # while the patched kernel code references canonical static keys:
+            #   ksu_is_input_hook_enabled / ksu_is_init_rc_hook_enabled
+            # Use one canonical pair so both sides link against the same symbols.
+            if [[ -f "$KSU_DIR/runtime/ksud.c" ]]; then
+              sed -i \
+                -e 's/ksu_input_hook_key_false/ksu_is_input_hook_enabled/g' \
+                -e 's/ksu_init_rc_hook_key_false/ksu_is_init_rc_hook_enabled/g' \
+                "$KSU_DIR/runtime/ksud.c"
+            fi
+
+            # Do not treat extern declarations as real definitions.
+            if ! grep -RqsE '^[[:space:]]*DEFINE_STATIC_KEY_FALSE[[:space:]]*\([[:space:]]*ksu_is_input_hook_enabled[[:space:]]*\)' "$KSU_DIR" 2>/dev/null || \
+               ! grep -RqsE '^[[:space:]]*DEFINE_STATIC_KEY_FALSE[[:space:]]*\([[:space:]]*ksu_is_init_rc_hook_enabled[[:space:]]*\)' "$KSU_DIR" 2>/dev/null; then
+              {
+                echo '#include <linux/jump_label.h>'
+                echo ''
+                echo '/* OP13 SukiSU builtin + CCTV18/susfs4oki compat. */'
+                echo 'DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);'
+                echo 'DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);'
+              } > "$KSU_DIR/manual_hook_keys_compat.c"
+
+              if ! grep -q 'manual_hook_keys_compat.c' "$KSU_DIR/ksu.c"; then
+                {
+                  echo ''
+                  echo '/* OP13 SukiSU builtin + CCTV18 manual-hook static-key compatibility */'
+                  echo '#include "manual_hook_keys_compat.c"'
+                } >> "$KSU_DIR/ksu.c"
+              fi
+              echo "✅ Added canonical manual-hook static-key definitions"
+            else
+              echo "✅ Canonical manual-hook static keys already defined"
+            fi
+          done
+
+          if [[ "$patched" != "1" ]]; then
+            echo "::error::Could not find SukiSU/KernelSU source dir for manual-hook static-key repair."
+            find "$KP" -maxdepth 7 -type f -name ksu.c | head -n 50 || true
+            echo "::endgroup::"
+            exit 1
+          fi
+
+          echo "Manual-hook definition/reference scan:"
+          grep -RnsE 'ksu_(is_)?(input|init_rc)_hook(_key_false|_enabled)?|DEFINE_STATIC_KEY_FALSE|manual_hook_keys_compat' \
+            "$KP/KernelSU" "$KD/KernelSU" "$KD/drivers/kernelsu" 2>/dev/null | head -n 160 || true
+
+          echo "::endgroup::"
+
       - name: "SukiSU SUSFS kernel-r25 compat (TRY_UMOUNT)"
         shell: bash
         run: |
