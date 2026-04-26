@@ -823,6 +823,110 @@ jobs:
 
           echo "::endgroup::"
 
+
+      - name: "Add missing SukiSU v4.1.1 SUSFS Kconfig symbols"
+        if: ${{ github.event.inputs.SUSFS == 'On' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "::group::Add missing SukiSU v4.1.1 SUSFS Kconfig symbols"
+
+          KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
+          KSU_KCONFIG=""
+
+          for p in \
+            "$KDIR/drivers/kernelsu/Kconfig" \
+            "$KDIR/KernelSU/kernel/Kconfig" \
+            "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/drivers/kernelsu/Kconfig" \
+            "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/KernelSU/kernel/Kconfig"; do
+            if [[ -f "$p" ]]; then
+              KSU_KCONFIG="$p"
+              break
+            fi
+          done
+
+          if [[ -z "$KSU_KCONFIG" ]]; then
+            echo "::error::KernelSU/SukiSU Kconfig not found after SukiSU setup. Cannot add SUSFS config symbols."
+            find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 7 \( -path '*/kernelsu/Kconfig' -o -path '*/KernelSU/kernel/Kconfig' \) 2>/dev/null | head -n 80 || true
+            echo "::endgroup::"
+            exit 1
+          fi
+
+          echo "Using Kconfig: $KSU_KCONFIG"
+
+          if grep -q '^config KSU_SUSFS$' "$KSU_KCONFIG"; then
+            echo "✅ KSU_SUSFS already exists in Kconfig."
+          else
+            echo "→ v4.1.1 Kconfig does not expose KSU_SUSFS; adding the CCTV18/SUSFS option block."
+            cat >> "$KSU_KCONFIG" <<'EOF'
+          
+          # OP13 external CCTV18/SUSFS compatibility options.
+          # SukiSU v4.1.1 source can build with SUSFS, but its tagged Kconfig does not expose
+          # these symbols, so olddefconfig drops CONFIG_KSU_SUSFS from gki_defconfig without this block.
+          config KSU_SUSFS
+          	bool "Enable SUSFS"
+          	depends on KSU
+          	default y
+          	help
+          	  Enable SUSFS kernel-side support for KernelSU/SukiSU.
+          
+          config KSU_SUSFS_SUS_PATH
+          	bool "SUSFS sus_path"
+          	depends on KSU_SUSFS
+          	default y
+          
+          config KSU_SUSFS_SUS_MOUNT
+          	bool "SUSFS sus_mount"
+          	depends on KSU_SUSFS
+          	default y
+          
+          config KSU_SUSFS_SUS_KSTAT
+          	bool "SUSFS sus_kstat"
+          	depends on KSU_SUSFS
+          	default y
+          
+          config KSU_SUSFS_SPOOF_UNAME
+          	bool "SUSFS spoof uname"
+          	depends on KSU_SUSFS
+          	default y
+          
+          config KSU_SUSFS_ENABLE_LOG
+          	bool "SUSFS logging"
+          	depends on KSU_SUSFS
+          	default y
+          
+          config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+          	bool "Hide KSU/SUSFS symbols"
+          	depends on KSU_SUSFS
+          	default y
+          
+          config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          	bool "SUSFS spoof cmdline or bootconfig"
+          	depends on KSU_SUSFS
+          	default y
+          
+          config KSU_SUSFS_TRY_UMOUNT
+          	bool "SUSFS try_umount compatibility"
+          	depends on KSU_SUSFS
+          	default y
+          
+          config KSU_SUSFS_OPEN_REDIRECT
+          	bool "SUSFS open redirect"
+          	depends on KSU_SUSFS
+          	default y
+          
+          config KSU_SUSFS_SUS_MAP
+          	bool "SUSFS sus_map"
+          	depends on KSU_SUSFS
+          	default y
+          EOF
+          fi
+
+          echo "KSU/SUSFS Kconfig scan:"
+          grep -nE '^(config KSU|config KSU_SUSFS|config KSU_SUSFS_)' "$KSU_KCONFIG" | head -n 120 || true
+          echo "::endgroup::"
+
       - name: "SukiSU SUSFS kernel-r25 compat (TRY_UMOUNT)"
         shell: bash
         run: |
