@@ -58,16 +58,16 @@ on:
         options: [external, sukisu]
 
       sukisu_ref:
-        description: "SukiSU core ref passed to setup.sh. LSPosed-compat default: v4.1.1. Use builtin only if you intentionally want latest builtin branch."
+        description: "SukiSU setup arg. Old-good LSPosed-compatible default: builtin. Only change this for A/B testing."
         type: string
         required: false
-        default: "v4.1.1"
+        default: "builtin"
 
       susfs_try_umount:
-        description: "Enable SUSFS TRY_UMOUNT/r25 hook. Off is safer for LSPosed modules such as HMA-OSS/EdgeX."
+        description: "Enable SUSFS TRY_UMOUNT/r25 hook. Old-good kernel had umount path active, so default is On."
         type: choice
         required: true
-        default: "Off"
+        default: "On"
         options: ["On", "Off"]
 
       ksunext_multimanager:
@@ -477,159 +477,6 @@ jobs:
           clang --version || true
           ld.lld --version || true
 
-      - name: "Integrate SukiSU Ultra (official setup.sh)"
-        shell: bash
-        run: |
-          SUSFS_IN="${{ inputs.SUSFS }}"
-          SUSFS_MODE="${{ inputs.susfs_mode }}"
-          SUKISU_REF="${{ inputs.sukisu_ref }}"
-          set -euo pipefail
-          die() { echo "::error::$*"; exit 1; }
-
-          # For OnePlus/OKI trees, run SukiSU setup from kernel_platform root.
-          # This matches mrcx/cctv18 layout: KernelSU lives at kernel_platform/KernelSU,
-          # while the real kernel source is kernel_platform/common.
-          cd "$KERNEL_PLATFORM"
-
-          [[ -n "$SUKISU_REF" ]] || SUKISU_REF="v4.1.1"
-
-          # IMPORTANT for LSPosed compatibility:
-          # - external = SukiSU root compiled builtin, then CCTV18/susfs4oki kernel-side SUSFS.
-          # - Fetch setup.sh from the builtin branch, but pass SUKISU_REF as the actual
-          #   SukiSU core checkout. This lets us pin v4.1.1 instead of floating on the
-          #   newer builtin branch that appears to regress LSPosed modules on this OP13 setup.
-          # - sukisu = SukiSU's own susfs-main path; do not use for this compat lane.
-          SETUP_SCRIPT_REF="builtin"
-          SETUP_ARG="$SUKISU_REF"
-          if [[ "$SUSFS_IN" == "On" && "$SUSFS_MODE" == "sukisu" ]]; then
-            SETUP_SCRIPT_REF="main"
-            SETUP_ARG="susfs-main"
-          fi
-
-          echo "ROOT_HAS_SUSFS=0" >> "$GITHUB_ENV"
-          echo "SUSFS_SOURCE_EFFECTIVE=$SUSFS_MODE" >> "$GITHUB_ENV"
-          echo "SUKISU_REF_EFFECTIVE=$SUKISU_REF" >> "$GITHUB_ENV"
-          echo "SUKISU_SETUP_SCRIPT_REF=$SETUP_SCRIPT_REF" >> "$GITHUB_ENV"
-          echo "→ Kernel platform: $KERNEL_PLATFORM"
-          echo "→ Kernel source:   $KERNEL_DIR"
-          echo "→ Setup script ref: $SETUP_SCRIPT_REF"
-          echo "→ SukiSU core checkout arg: $SETUP_ARG"
-          echo "→ Requested SukiSU ref: $SUKISU_REF"
-          echo "→ SUSFS source mode: $SUSFS_MODE"
-
-          SETUP_URL="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SETUP_SCRIPT_REF}/kernel/setup.sh"
-          echo "→ Fetching SukiSU Ultra setup: $SETUP_URL"
-          curl -fLSs "$SETUP_URL" | bash -s "$SETUP_ARG"
-
-          if [[ "$SUSFS_IN" == "On" ]]; then
-            if [[ "$SUSFS_MODE" == "external" ]]; then
-              echo "✅ CCTV18 external SUSFS selected. Keeping SukiSU as builtin root only and forcing cctv18/susfs4oki patch step to run."
-              echo "ROOT_HAS_SUSFS=0" >> "$GITHUB_ENV"
-            elif grep -Rqs "KSU_SUSFS" ./drivers ./fs ./include 2>/dev/null; then
-              echo "✅ Detected KSU_SUSFS symbols after SukiSU setup."
-              echo "ROOT_HAS_SUSFS=1" >> "$GITHUB_ENV"
-            else
-              echo "::notice::KSU_SUSFS symbols not found after SukiSU setup; external SUSFS fallback will run."
-              echo "ROOT_HAS_SUSFS=0" >> "$GITHUB_ENV"
-            fi
-          fi
-
-          if [[ ! -d "KernelSU" ]]; then
-            found="$(find . -maxdepth 5 -type d -name KernelSU | head -n 1 || true)"
-            [[ -n "$found" ]] || die "KernelSU directory not found after SukiSU setup."
-            echo "Found KernelSU at: $found"
-          fi
-
-          if [[ ! -d "$KERNEL_DIR/drivers/kernelsu" && ! -L "$KERNEL_DIR/drivers/kernelsu" ]]; then
-            echo "::group::SukiSU integration debug"
-            echo "pwd: $(pwd)"
-            echo "KERNEL_PLATFORM=$KERNEL_PLATFORM"
-            echo "KERNEL_DIR=$KERNEL_DIR"
-            ls -la "$KERNEL_PLATFORM" || true
-            echo ""
-            ls -la "$KERNEL_DIR/drivers" || true
-            echo ""
-            find "$KERNEL_PLATFORM" -maxdepth 8 -type d -path '*/drivers/kernelsu' | head -n 50 || true
-            echo "::endgroup::"
-            die "KernelSU driver not present after SukiSU setup ($KERNEL_DIR/drivers/kernelsu missing)."
-          fi
-
-          # From this point onward, operate relative to the real kernel source.
-          cd "$KERNEL_DIR"
-          echo "::group::Repair SukiSU supercalls mismatch (allow/deny list IOCTLs)"
-          KSU_H="./drivers/kernelsu/supercalls.h"
-          KSU_C="./drivers/kernelsu/supercalls.c"
-          if [[ -f "$KSU_H" && -f "$KSU_C" ]]; then
-            need_fix=0
-            grep -q "KSU_IOCTL(KSU_IOCTL_NEW_GET_ALLOW_LIST" "$KSU_C" && need_fix=1 || true
-            grep -q "KSU_IOCTL(KSU_IOCTL_NEW_GET_DENY_LIST" "$KSU_C" && need_fix=1 || true
-            grep -q "#define KSU_IOCTL_GET_ALLOW_LIST" "$KSU_H" || need_fix=1
-            grep -q "#define KSU_IOCTL_GET_DENY_LIST" "$KSU_H" || need_fix=1
-            grep -q "struct ksu_new_get_allow_list_cmd" "$KSU_H" || need_fix=1
-            grep -q "#define KSU_IOCTL_NEW_GET_ALLOW_LIST" "$KSU_H" || need_fix=1
-            grep -q "#define KSU_IOCTL_NEW_GET_DENY_LIST" "$KSU_H" || need_fix=1
-
-            if [[ "$need_fix" == "1" ]]; then
-              echo "Applying compatibility repair to drivers/kernelsu/supercalls.[ch]"
-              python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          h = Path('./drivers/kernelsu/supercalls.h')
-          c = Path('./drivers/kernelsu/supercalls.c')
-          ht = h.read_text(encoding='utf-8')
-          ct = c.read_text(encoding='utf-8')
-
-          # Fix broken macro invocations seen on some builtin revisions.
-          ct = ct.replace(
-              'KSU_IOCTL(KSU_IOCTL_NEW_GET_ALLOW_LIST, "NEW_GET_ALLOW_LIST", do_new_get_allow_list,',
-              'KSU_IOCTL(NEW_GET_ALLOW_LIST, "NEW_GET_ALLOW_LIST", do_new_get_allow_list,',
-          )
-          ct = ct.replace(
-              'KSU_IOCTL(KSU_IOCTL_NEW_GET_DENY_LIST, "NEW_GET_DENY_LIST", do_new_get_deny_list,',
-              'KSU_IOCTL(NEW_GET_DENY_LIST, "NEW_GET_DENY_LIST", do_new_get_deny_list,',
-          )
-
-          def insert_before_endif(src: str, block: str) -> str:
-              if block in src:
-                  return src
-              m = re.search(r'\n#endif\s*$', src)
-              if m:
-                  return src[:m.start()] + '\n' + block.rstrip() + '\n' + src[m.start():]
-              return src.rstrip() + '\n\n' + block.rstrip() + '\n'
-
-          new_struct = """struct ksu_new_get_allow_list_cmd {
-            __u16 count; // Input / Output: number of UIDs in array
-            __u16 total_count; // Output: total number of UIDs in requested list
-            __u32 uids[0]; // Output: array of allowed/denied UIDs
-          };"""
-          legacy_defs = """#define KSU_IOCTL_GET_ALLOW_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 6, 0)
-          #define KSU_IOCTL_GET_DENY_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 7, 0)"""
-          new_defs = """#define KSU_IOCTL_NEW_GET_ALLOW_LIST \
-            _IOWR('K', 6, struct ksu_new_get_allow_list_cmd)
-          #define KSU_IOCTL_NEW_GET_DENY_LIST \
-            _IOWR('K', 7, struct ksu_new_get_allow_list_cmd)"""
-
-          if 'struct ksu_new_get_allow_list_cmd' not in ht:
-              ht = insert_before_endif(ht, new_struct)
-          if '#define KSU_IOCTL_GET_ALLOW_LIST' not in ht or '#define KSU_IOCTL_GET_DENY_LIST' not in ht:
-              ht = insert_before_endif(ht, legacy_defs)
-          if '#define KSU_IOCTL_NEW_GET_ALLOW_LIST' not in ht or '#define KSU_IOCTL_NEW_GET_DENY_LIST' not in ht:
-              ht = insert_before_endif(ht, new_defs)
-
-          h.write_text(ht, encoding='utf-8')
-          c.write_text(ct, encoding='utf-8')
-          print('Repaired supercalls compatibility for legacy/new allow-deny list ioctls.')
-          PY
-              echo "Post-repair symbol check:"
-              grep -nE 'KSU_IOCTL_(GET|NEW_GET)_(ALLOW|DENY)_LIST|ksu_new_get_allow_list_cmd' "$KSU_H" || true
-            else
-              echo "No supercalls repair needed."
-            fi
-          else
-            echo "drivers/kernelsu/supercalls.[ch] not found; skipping repair."
-          fi
-          echo "::endgroup::"
       - name: "Apply SUSFS"
         shell: bash
         run: |
@@ -964,6 +811,161 @@ jobs:
 
           echo "✅ SUSFS patching complete."
 
+      - name: "Integrate SukiSU Ultra (official setup.sh)"
+        shell: bash
+        run: |
+          SUSFS_IN="${{ inputs.SUSFS }}"
+          SUSFS_MODE="${{ inputs.susfs_mode }}"
+          SUKISU_REF="${{ inputs.sukisu_ref }}"
+          set -euo pipefail
+          die() { echo "::error::$*"; exit 1; }
+
+          # For OnePlus/OKI trees, run SukiSU setup from kernel_platform root.
+          # This matches mrcx/cctv18 layout: KernelSU lives at kernel_platform/KernelSU,
+          # while the real kernel source is kernel_platform/common.
+          cd "$KERNEL_PLATFORM"
+
+          [[ -n "$SUKISU_REF" ]] || SUKISU_REF="builtin"
+
+          # IMPORTANT for LSPosed compatibility:
+          # This path intentionally mimics the older working workflow:
+          #   1) CCTV18/susfs4oki external kernel-side SUSFS is applied first.
+          #   2) SukiSU setup is then run from the builtin setup path with SETUP_ARG=builtin.
+          # Avoid SukiSU susfs-main for this lane.
+          SETUP_SCRIPT_REF="builtin"
+          SETUP_ARG="builtin"
+          if [[ "$SUSFS_IN" == "On" && "$SUSFS_MODE" == "sukisu" ]]; then
+            SETUP_SCRIPT_REF="main"
+            SETUP_ARG="susfs-main"
+          elif [[ -n "$SUKISU_REF" && "$SUKISU_REF" != "builtin" ]]; then
+            # A/B testing only. Normal stable lane should leave this as builtin.
+            SETUP_ARG="$SUKISU_REF"
+          fi
+
+          echo "ROOT_HAS_SUSFS=0" >> "$GITHUB_ENV"
+          echo "SUSFS_SOURCE_EFFECTIVE=$SUSFS_MODE" >> "$GITHUB_ENV"
+          echo "SUKISU_REF_EFFECTIVE=$SUKISU_REF" >> "$GITHUB_ENV"
+          echo "SUKISU_SETUP_SCRIPT_REF=$SETUP_SCRIPT_REF" >> "$GITHUB_ENV"
+          echo "→ Kernel platform: $KERNEL_PLATFORM"
+          echo "→ Kernel source:   $KERNEL_DIR"
+          echo "→ Setup script ref: $SETUP_SCRIPT_REF"
+          echo "→ SukiSU core checkout arg: $SETUP_ARG"
+          echo "→ Requested SukiSU ref: $SUKISU_REF"
+          echo "→ SUSFS source mode: $SUSFS_MODE"
+
+          SETUP_URL="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SETUP_SCRIPT_REF}/kernel/setup.sh"
+          echo "→ Fetching SukiSU Ultra setup: $SETUP_URL"
+          curl -fLSs "$SETUP_URL" | bash -s "$SETUP_ARG"
+
+          if [[ "$SUSFS_IN" == "On" ]]; then
+            if [[ "$SUSFS_MODE" == "external" ]]; then
+              echo "✅ CCTV18 external SUSFS selected. Keeping SukiSU as builtin root only and forcing cctv18/susfs4oki patch step to run."
+              echo "ROOT_HAS_SUSFS=0" >> "$GITHUB_ENV"
+            elif grep -Rqs "KSU_SUSFS" ./drivers ./fs ./include 2>/dev/null; then
+              echo "✅ Detected KSU_SUSFS symbols after SukiSU setup."
+              echo "ROOT_HAS_SUSFS=1" >> "$GITHUB_ENV"
+            else
+              echo "::notice::KSU_SUSFS symbols not found after SukiSU setup; external SUSFS fallback will run."
+              echo "ROOT_HAS_SUSFS=0" >> "$GITHUB_ENV"
+            fi
+          fi
+
+          if [[ ! -d "KernelSU" ]]; then
+            found="$(find . -maxdepth 5 -type d -name KernelSU | head -n 1 || true)"
+            [[ -n "$found" ]] || die "KernelSU directory not found after SukiSU setup."
+            echo "Found KernelSU at: $found"
+          fi
+
+          if [[ ! -d "$KERNEL_DIR/drivers/kernelsu" && ! -L "$KERNEL_DIR/drivers/kernelsu" ]]; then
+            echo "::group::SukiSU integration debug"
+            echo "pwd: $(pwd)"
+            echo "KERNEL_PLATFORM=$KERNEL_PLATFORM"
+            echo "KERNEL_DIR=$KERNEL_DIR"
+            ls -la "$KERNEL_PLATFORM" || true
+            echo ""
+            ls -la "$KERNEL_DIR/drivers" || true
+            echo ""
+            find "$KERNEL_PLATFORM" -maxdepth 8 -type d -path '*/drivers/kernelsu' | head -n 50 || true
+            echo "::endgroup::"
+            die "KernelSU driver not present after SukiSU setup ($KERNEL_DIR/drivers/kernelsu missing)."
+          fi
+
+          # From this point onward, operate relative to the real kernel source.
+          cd "$KERNEL_DIR"
+          echo "::group::Repair SukiSU supercalls mismatch (allow/deny list IOCTLs)"
+          KSU_H="./drivers/kernelsu/supercalls.h"
+          KSU_C="./drivers/kernelsu/supercalls.c"
+          if [[ -f "$KSU_H" && -f "$KSU_C" ]]; then
+            need_fix=0
+            grep -q "KSU_IOCTL(KSU_IOCTL_NEW_GET_ALLOW_LIST" "$KSU_C" && need_fix=1 || true
+            grep -q "KSU_IOCTL(KSU_IOCTL_NEW_GET_DENY_LIST" "$KSU_C" && need_fix=1 || true
+            grep -q "#define KSU_IOCTL_GET_ALLOW_LIST" "$KSU_H" || need_fix=1
+            grep -q "#define KSU_IOCTL_GET_DENY_LIST" "$KSU_H" || need_fix=1
+            grep -q "struct ksu_new_get_allow_list_cmd" "$KSU_H" || need_fix=1
+            grep -q "#define KSU_IOCTL_NEW_GET_ALLOW_LIST" "$KSU_H" || need_fix=1
+            grep -q "#define KSU_IOCTL_NEW_GET_DENY_LIST" "$KSU_H" || need_fix=1
+
+            if [[ "$need_fix" == "1" ]]; then
+              echo "Applying compatibility repair to drivers/kernelsu/supercalls.[ch]"
+              python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          h = Path('./drivers/kernelsu/supercalls.h')
+          c = Path('./drivers/kernelsu/supercalls.c')
+          ht = h.read_text(encoding='utf-8')
+          ct = c.read_text(encoding='utf-8')
+
+          # Fix broken macro invocations seen on some builtin revisions.
+          ct = ct.replace(
+              'KSU_IOCTL(KSU_IOCTL_NEW_GET_ALLOW_LIST, "NEW_GET_ALLOW_LIST", do_new_get_allow_list,',
+              'KSU_IOCTL(NEW_GET_ALLOW_LIST, "NEW_GET_ALLOW_LIST", do_new_get_allow_list,',
+          )
+          ct = ct.replace(
+              'KSU_IOCTL(KSU_IOCTL_NEW_GET_DENY_LIST, "NEW_GET_DENY_LIST", do_new_get_deny_list,',
+              'KSU_IOCTL(NEW_GET_DENY_LIST, "NEW_GET_DENY_LIST", do_new_get_deny_list,',
+          )
+
+          def insert_before_endif(src: str, block: str) -> str:
+              if block in src:
+                  return src
+              m = re.search(r'\n#endif\s*$', src)
+              if m:
+                  return src[:m.start()] + '\n' + block.rstrip() + '\n' + src[m.start():]
+              return src.rstrip() + '\n\n' + block.rstrip() + '\n'
+
+          new_struct = """struct ksu_new_get_allow_list_cmd {
+            __u16 count; // Input / Output: number of UIDs in array
+            __u16 total_count; // Output: total number of UIDs in requested list
+            __u32 uids[0]; // Output: array of allowed/denied UIDs
+          };"""
+          legacy_defs = """#define KSU_IOCTL_GET_ALLOW_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 6, 0)
+          #define KSU_IOCTL_GET_DENY_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 7, 0)"""
+          new_defs = """#define KSU_IOCTL_NEW_GET_ALLOW_LIST \
+            _IOWR('K', 6, struct ksu_new_get_allow_list_cmd)
+          #define KSU_IOCTL_NEW_GET_DENY_LIST \
+            _IOWR('K', 7, struct ksu_new_get_allow_list_cmd)"""
+
+          if 'struct ksu_new_get_allow_list_cmd' not in ht:
+              ht = insert_before_endif(ht, new_struct)
+          if '#define KSU_IOCTL_GET_ALLOW_LIST' not in ht or '#define KSU_IOCTL_GET_DENY_LIST' not in ht:
+              ht = insert_before_endif(ht, legacy_defs)
+          if '#define KSU_IOCTL_NEW_GET_ALLOW_LIST' not in ht or '#define KSU_IOCTL_NEW_GET_DENY_LIST' not in ht:
+              ht = insert_before_endif(ht, new_defs)
+
+          h.write_text(ht, encoding='utf-8')
+          c.write_text(ct, encoding='utf-8')
+          print('Repaired supercalls compatibility for legacy/new allow-deny list ioctls.')
+          PY
+              echo "Post-repair symbol check:"
+              grep -nE 'KSU_IOCTL_(GET|NEW_GET)_(ALLOW|DENY)_LIST|ksu_new_get_allow_list_cmd' "$KSU_H" || true
+            else
+              echo "No supercalls repair needed."
+            fi
+          else
+            echo "drivers/kernelsu/supercalls.[ch] not found; skipping repair."
+          fi
+          echo "::endgroup::"
       - name: "KernelSU SUSFS kernel-r25 compat (TRY_UMOUNT)"
         shell: bash
         run: |
@@ -974,7 +976,7 @@ jobs:
             exit 0
           fi
           if [[ "${{ github.event.inputs.susfs_try_umount }}" != "On" ]]; then
-            echo "SUSFS TRY_UMOUNT disabled for LSPosed compatibility -> skipping setuid_hook wiring."
+            echo "SUSFS TRY_UMOUNT input is Off -> skipping setuid_hook wiring."
             exit 0
           fi
 
@@ -1306,7 +1308,7 @@ jobs:
 
 
       - name: "Repair SukiSU manual-hook static keys (newer-builtin only)"
-        if: ${{ github.event.inputs.SUSFS == 'On' && (github.event.inputs.sukisu_ref == 'builtin' || github.event.inputs.sukisu_ref == 'v4.1.2') }}
+        if: ${{ github.event.inputs.SUSFS == 'On' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1336,6 +1338,14 @@ jobs:
             [[ -d "$KSU_DIR" && -f "$KSU_DIR/ksu.c" ]] || continue
             echo "→ Patching KSU_DIR=$KSU_DIR"
             patched=1
+
+            # Only touch static-key compat if this source tree actually references the
+            # canonical OKI/CCTV18 symbols. This avoids changing old-good SukiSU builds
+            # that still use their own internal key names.
+            if ! grep -RqsE 'ksu_is_(input_hook|init_rc_hook)_enabled' "$KD" "$KSU_DIR" 2>/dev/null; then
+              echo "✅ No canonical manual-hook static-key references found; leaving SukiSU source untouched."
+              continue
+            fi
 
             # CCTV18/OKI manual-hook kernel patches reference these canonical keys:
             #   ksu_is_input_hook_enabled      -> drivers/input/input.c jump labels
