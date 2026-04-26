@@ -490,7 +490,8 @@ jobs:
           git clone --depth 1 --no-tags -b "$SUSFS_SRC_BRANCH" "$repo" "$SUSFS_FOLDER"
 
           echo "::group::Copy SUSFS source/header files (if present)"
-          # Some SUSFS branches ship extra files outside the main patch.
+          # CCTV18/susfs4oki ships the kernel-side files here. These must land in the
+          # real common kernel tree before KernelSU-Next compiles.
           if [[ -d "$SUSFS_FOLDER/kernel_patches/fs" ]]; then
             cp -a "$SUSFS_FOLDER/kernel_patches/fs/." "$KERNEL_DIR/fs/" || true
           fi
@@ -498,14 +499,28 @@ jobs:
             mkdir -p "$KERNEL_DIR/include/linux"
             cp -a "$SUSFS_FOLDER/kernel_patches/include/linux/." "$KERNEL_DIR/include/linux/" || true
           fi
+
+          SUSFS_VERSION_DETECTED="unknown"
+          if [[ -f "$KERNEL_DIR/include/linux/susfs.h" ]]; then
+            SUSFS_VERSION_DETECTED="$(grep -E '#define[[:space:]]+SUSFS_VERSION' "$KERNEL_DIR/include/linux/susfs.h" | awk -F'"' '{print $2}' | head -n 1 || true)"
+            [[ -n "$SUSFS_VERSION_DETECTED" ]] || SUSFS_VERSION_DETECTED="unknown"
+          fi
+          echo "Detected SUSFS version: $SUSFS_VERSION_DETECTED"
+          echo "SUSFS_VERSION_DETECTED=$SUSFS_VERSION_DETECTED" >> "$GITHUB_ENV"
           echo "::endgroup::"
-          echo "::group::Apply KernelSU-Next SUSFS enablement (external CCTV18, KSUN-safe)"
-          # Important:
-          # CCTV18's 10_enable_susfs_for_ksu.patch is written for older/plain KernelSU.
-          # Applying the full patch to current KernelSU-Next can break core/init.c,
-          # syscall hook manager, and ksu_late_loaded. For KSUN we deliberately
-          # do NOT apply the full code patch. We only ensure the required Kconfig
-          # symbols exist, then apply the CCTV18 kernel-side SUSFS patch below.
+
+          echo "::group::Clone WildKernels KernelSU-Next SUSFS fix patches"
+          # Current KernelSU-Next needs extra fix patches after CCTV18/simonpunk
+          # 10_enable_susfs_for_ksu.patch. Otherwise the common kernel patch adds
+          # calls like ksu_handle_execveat()/ksu_handle_vfs_fstat(), but KSUN does
+          # not provide matching symbols and final vmlinux linking fails.
+          WILD_PATCHES_DIR="$GITHUB_WORKSPACE/kernel_patches"
+          rm -rf "$WILD_PATCHES_DIR" || true
+          git clone --depth 1 --no-tags https://github.com/WildKernels/kernel_patches.git "$WILD_PATCHES_DIR"
+          echo "WILD_PATCHES_DIR=$WILD_PATCHES_DIR" >> "$GITHUB_ENV"
+          echo "::endgroup::"
+
+          echo "::group::Apply KernelSU-Next SUSFS enablement (external CCTV18 + WildKernels KSUN fixes)"
           KSU_KERNEL_DIR=""
           KSU_REPO=""
 
@@ -514,11 +529,7 @@ jobs:
           fi
 
           if [[ -z "$KSU_KERNEL_DIR" || ! -f "$KSU_KERNEL_DIR/Kconfig" ]]; then
-            for d in \
-              "$KERNEL_DIR/KernelSU-Next/kernel" \
-              "$KERNEL_DIR/KernelSU/kernel" \
-              "$KERNEL_PLATFORM/KernelSU-Next/kernel" \
-              "$KERNEL_PLATFORM/KernelSU/kernel"; do
+            for d in               "$KERNEL_DIR/KernelSU-Next/kernel"               "$KERNEL_DIR/KernelSU/kernel"               "$KERNEL_PLATFORM/KernelSU-Next/kernel"               "$KERNEL_PLATFORM/KernelSU/kernel"; do
               if [[ -f "$d/Kconfig" ]]; then
                 KSU_KERNEL_DIR="$d"
                 break
@@ -532,9 +543,63 @@ jobs:
             echo "→ KernelSU-Next repo dir:   $KSU_REPO"
           else
             echo "::error::Could not locate KernelSU-Next kernel directory/Kconfig."
-            find "$KERNEL_DIR" -maxdepth 5 -path '*kernelsu*' -o -path '*KernelSU*' | head -n 80 || true
+            find "$KERNEL_DIR" -maxdepth 5 \( -path '*kernelsu*' -o -path '*KernelSU*' \) | head -n 80 || true
             exit 1
           fi
+
+          apply_ksun_patch() {
+            local patch_file="$1"
+            local label="${2:-$(basename "$patch_file")}"
+            [[ -f "$patch_file" ]] || { echo "↪ missing patch: $patch_file"; return 0; }
+            echo "→ Applying $label"
+            if patch -p1 --dry-run -R < "$patch_file" >/dev/null 2>&1; then
+              echo "  already applied: $label"
+            elif patch -p1 --dry-run --forward -F 3 < "$patch_file" >/dev/null 2>&1; then
+              patch -p1 --forward -F 3 < "$patch_file"
+            else
+              echo "  patch did not apply cleanly; trying best-effort with fuzz=3: $label"
+              patch -p1 --forward -F 3 < "$patch_file" || true
+            fi
+          }
+
+          cd "$KSU_REPO"
+
+          # Apply the KernelSU-side SUSFS patch first. For KernelSU-Next it may create
+          # rejects; the WildKernels next/susfs_fix_patches set below resolves the
+          # KSUN-specific differences.
+          KSU_SUSFS_PATCH="$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+          if [[ -f "$KSU_SUSFS_PATCH" ]]; then
+            apply_ksun_patch "$KSU_SUSFS_PATCH" "CCTV18 KernelSU SUSFS enable patch"
+          else
+            echo "::warning::Missing KernelSU SUSFS enable patch: $KSU_SUSFS_PATCH"
+          fi
+
+          FIX_DIR="$WILD_PATCHES_DIR/next/susfs_fix_patches/$SUSFS_VERSION_DETECTED"
+          if [[ ! -d "$FIX_DIR" && "$SUSFS_VERSION_DETECTED" == "unknown" ]]; then
+            FIX_DIR="$WILD_PATCHES_DIR/next/susfs_fix_patches/v2.1.0"
+          fi
+
+          if [[ -d "$FIX_DIR" ]]; then
+            echo "→ Using KSUN fix dir: $FIX_DIR"
+
+            while IFS= read -r rej; do
+              base="$(basename "$rej" .rej)"
+              fix="$FIX_DIR/fix_${base}.patch"
+              if [[ -f "$fix" ]]; then
+                apply_ksun_patch "$fix" "fix_${base}.patch"
+              fi
+            done < <(find ./kernel -maxdepth 3 -name '*.rej' -print 2>/dev/null || true)
+
+            for p in               "$FIX_DIR/fix_Kbuild.patch"               "$FIX_DIR/fix_Makefile.patch"               "$FIX_DIR/fix_init.c.patch"               "$FIX_DIR/fix_kernel_umount.c.patch"               "$FIX_DIR/fix_setuid_hook.c.patch"               "$FIX_DIR/fix_sucompat.c.patch"               "$FIX_DIR/fix_sucompat.h.patch"               "$FIX_DIR/fix_supercall.c.patch"               "$FIX_DIR/overwrite_hook_mode.patch"               "$FIX_DIR/ksu_toolkit.patch"; do
+              apply_ksun_patch "$p" "$(basename "$p")"
+            done
+          else
+            echo "::warning::No WildKernels KSUN fix dir found for SUSFS version '$SUSFS_VERSION_DETECTED'."
+            echo "Available fix dirs:"
+            find "$WILD_PATCHES_DIR/next/susfs_fix_patches" -maxdepth 1 -type d -printf ' - %f\n' 2>/dev/null || true
+          fi
+
+          find ./kernel \( -name '*.rej' -o -name '*.orig' \) -print -delete 2>/dev/null || true
 
           KSU_KCONFIG="$KSU_KERNEL_DIR/Kconfig"
           if [[ ! -f "$KSU_KCONFIG" ]]; then
@@ -552,8 +617,6 @@ jobs:
               printf '%s\n' '    depends on KSU'
               printf '%s\n' '    depends on THREAD_INFO_IN_TASK'
               printf '%s\n' '    default y'
-              printf '%s\n' '    help'
-              printf '%s\n' '      Enable external CCTV18/susfs4oki SUSFS integration for KernelSU-Next.'
               printf '%s\n' ''
               printf '%s\n' 'config KSU_SUSFS_SUS_PATH'
               printf '%s\n' '    bool "sus_path"'
@@ -606,11 +669,13 @@ jobs:
             echo "KSU_SUSFS Kconfig already present."
           fi
 
-          echo "::group::KernelSU-Next Kconfig SUSFS symbols"
+          echo "::group::KernelSU-Next Kconfig / handler symbol scan"
           grep -nE '^config KSU_SUSFS|^config KSU_SUSFS_' "$KSU_KCONFIG" || true
+          grep -RnsE 'ksu_handle_(execveat|vfs_fstat|devpts|sys_reboot|sys_read)|susfs_(ksu_sid|priv_app_sid|is_current_ksu_domain)|ksu_is_(input_hook|init_rc_hook)_enabled' ./kernel 2>/dev/null | head -n 120 || true
           echo "::endgroup::"
+
           echo "ROOT_HAS_SUSFS=0" >> "$GITHUB_ENV"
-          echo "SUSFS_SOURCE=external-cctv18" >> "$GITHUB_ENV"
+          echo "SUSFS_SOURCE=external-cctv18-wildksunfix" >> "$GITHUB_ENV"
           echo "::endgroup::"
 
           # --- Pre-adjustments (borrowed from WildKernel) to help the gki-android15-6.6 patch match ---
