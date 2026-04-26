@@ -281,20 +281,90 @@ jobs:
           sudo mv /tmp/repo /usr/local/bin/repo
           repo --version
 
-      - name: "Sync kernel sources"
+      - name: "Sync kernel sources (robust CodeLinaro retry)"
         shell: bash
         run: |
           set -euo pipefail
+
+          # CodeLinaro sometimes returns 502/403/RPC reset during parallel repo sync.
+          # Keep the old manifest, but sync with lower network pressure and fast retries.
+          git config --global http.version HTTP/1.1 || true
+          git config --global http.postBuffer 1048576000 || true
+          git config --global http.lowSpeedLimit 1000 || true
+          git config --global http.lowSpeedTime 300 || true
+          git config --global core.compression 0 || true
+
+          export GIT_HTTP_LOW_SPEED_LIMIT=1000
+          export GIT_HTTP_LOW_SPEED_TIME=300
+          export GIT_CURL_VERBOSE=0
+
           mkdir -p kernel_workspace
           cd kernel_workspace
-          # Manifest repo: only zh branch contains manifest.xml
+
           MANIFEST_REPO="https://github.com/mrcxlinux/actions_oplus_sm8750.git"
           MANIFEST_BRANCH="zh"
           MANIFEST_FILE="manifest.xml"
           echo "Using manifest: $MANIFEST_REPO ($MANIFEST_BRANCH/$MANIFEST_FILE)"
-          curl -fsSL "https://raw.githubusercontent.com/mrcxlinux/actions_oplus_sm8750/${MANIFEST_BRANCH}/${MANIFEST_FILE}" >/dev/null
+          curl -fL --retry 5 --retry-delay 5 --retry-all-errors             "https://raw.githubusercontent.com/mrcxlinux/actions_oplus_sm8750/${MANIFEST_BRANCH}/${MANIFEST_FILE}" >/dev/null
+
           repo init -u "$MANIFEST_REPO" -b "$MANIFEST_BRANCH" -m "$MANIFEST_FILE" --depth=1
-          repo sync -c -j"$(nproc)" --no-tags --no-clone-bundle --force-sync
+
+          REPO_SYNC_HELP="$(repo sync -h 2>&1 || true)"
+          BASE_ARGS=(-c --no-tags --no-clone-bundle --force-sync)
+          echo "$REPO_SYNC_HELP" | grep -q -- '--optimized-fetch' && BASE_ARGS+=(--optimized-fetch)
+          echo "$REPO_SYNC_HELP" | grep -q -- '--retry-fetches' && BASE_ARGS+=(--retry-fetches=10)
+          echo "$REPO_SYNC_HELP" | grep -q -- '--fail-fast' && BASE_ARGS+=(--fail-fast)
+
+          supports_jobs_network=0
+          echo "$REPO_SYNC_HELP" | grep -q -- '--jobs-network' && supports_jobs_network=1
+
+          sync_once() {
+            local jobs="$1"
+            local netjobs="$2"
+            local label="$3"
+            local args=("${BASE_ARGS[@]}" -j"$jobs")
+            if [[ "$supports_jobs_network" == "1" ]]; then
+              args+=(--jobs-network="$netjobs")
+            fi
+
+            echo ""
+            echo "============================================================"
+            echo "repo sync attempt: $label"
+            echo "jobs=$jobs network_jobs=$netjobs"
+            echo "args: ${args[*]}"
+            echo "============================================================"
+            repo sync "${args[@]}"
+          }
+
+          ok=0
+          if sync_once 6 2 "normal low-pressure"; then
+            ok=1
+          else
+            echo "::warning::First repo sync attempt failed. Cleaning partial checkouts and retrying slower."
+            repo sync --force-sync -l >/dev/null 2>&1 || true
+            sleep 30
+          fi
+
+          if [[ "$ok" != "1" ]]; then
+            if sync_once 3 1 "slow retry"; then
+              ok=1
+            else
+              echo "::warning::Second repo sync attempt failed. Final serial retry will show the first failing repo."
+              repo sync --force-sync -l >/dev/null 2>&1 || true
+              sleep 45
+            fi
+          fi
+
+          if [[ "$ok" != "1" ]]; then
+            if sync_once 1 1 "final serial retry"; then
+              ok=1
+            else
+              echo "::error::repo sync failed after retries. This is usually CodeLinaro/network-side 403/502/RPC reset, not a kernel compile failure."
+              echo "Top remote URLs involved:"
+              find .repo -path '*/config' -type f -print0 2>/dev/null | xargs -0 grep -h '^\s*url =' 2>/dev/null | sort -u | head -40 || true
+              exit 1
+            fi
+          fi
 
           rm -f kernel_platform/common/android/abi_gki_protected_exports_* || true
           rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || true
