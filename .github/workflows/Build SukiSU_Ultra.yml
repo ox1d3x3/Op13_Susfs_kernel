@@ -601,26 +601,31 @@ jobs:
           SUSFS_IN="${{ github.event.inputs.SUSFS }}"
           SUSFS_MODE="${{ github.event.inputs.susfs_mode }}"
 
-          # Use builtin for current SukiSU integration.
-          # main currently lacks the KSU_SUSFS Kconfig menu/symbols, so olddefconfig drops CONFIG_KSU_SUSFS even if
-          # the external susfs patch landed correctly. builtin still carries the KSU_SUSFS config block.
-          # We keep the local supercalls repair step below to fix the current builtin allow/deny-list ioctl mismatch.
-          SETUP_ARG="builtin"
-          echo "SUKISU_HAS_SUSFS=0" >> "$GITHUB_ENV"
-
-          # IMPORTANT: do not use the floating builtin branch for the LSPosed-stable lane.
-          # The old working build used whatever builtin pointed to at that time; today builtin resolves
-          # to newer v4.1.2 code, which is the build family showing LSPosed/HMA/EdgeX issues.
-          # Pin the SukiSU source ref but still use builtin integration mode.
+          # IMPORTANT:
+          # setup.sh argument is the actual SukiSU source checkout ref.
+          # Passing "builtin" checks out the floating builtin branch, which now resolves to newer
+          # v4.1.2-era code and is what the logs show breaking LSPosed sepolicy injection.
+          # For this LSPosed-stable lane, keep the integration builtin-style, but checkout
+          # the pinned SukiSU source ref.
           SUKISU_REF="${{ github.event.inputs.sukisu_ref }}"
           [ -n "$SUKISU_REF" ] || SUKISU_REF="v4.1.1"
+          SETUP_ARG="$SUKISU_REF"
+
+          echo "SUKISU_HAS_SUSFS=0" >> "$GITHUB_ENV"
           echo "SUKISU_REF=$SUKISU_REF" >> "$GITHUB_ENV"
+          echo "SUKISU_SETUP_ARG=$SETUP_ARG" >> "$GITHUB_ENV"
 
           SETUP_URL_PRIMARY="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SUKISU_REF}/kernel/setup.sh"
+          SETUP_URL_FALLBACK="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh"
+
           echo "→ Fetching SukiSU Ultra setup from ref: $SUKISU_REF"
           echo "→ Setup URL: $SETUP_URL_PRIMARY"
-          echo "→ Setup arg: $SETUP_ARG"
-          curl -fLSs "$SETUP_URL_PRIMARY" | bash -s "$SETUP_ARG"
+          echo "→ SukiSU checkout arg: $SETUP_ARG"
+          if ! curl -fLSs "$SETUP_URL_PRIMARY" | bash -s "$SETUP_ARG"; then
+            echo "::warning::Pinned setup.sh URL failed; retrying builtin setup.sh while still checking out $SETUP_ARG."
+            curl -fLSs "$SETUP_URL_FALLBACK" | bash -s "$SETUP_ARG"
+          fi
+
           # Detect whether this kernel tree actually contains SUSFS config symbols after SukiSU setup.
           # If not, we'll allow the external SUSFS patch step to run (avoids false "susfs-main" assumption).
           if [[ "$SUSFS_IN" == "On" ]]; then
