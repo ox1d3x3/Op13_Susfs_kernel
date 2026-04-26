@@ -905,7 +905,7 @@ jobs:
                   j += 1
               return src[:m.start()] + new_src + src[j:]
           
-          new_stat = 'int ksu_handle_stat(int *dfd, void *filename_user, int *flags)\n{\n\treturn 0;\n}\n'
+          new_stat = 'int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags)\n{\n\treturn 0;\n}\n'
           s = replace_func(s, 'ksu_handle_stat', new_stat)
           p.write_text(s, encoding='utf-8')
           PYSUCOMPAT
