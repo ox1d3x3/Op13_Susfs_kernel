@@ -5,6 +5,7 @@ env:
   # Label only (major.minor). Actual release (e.g. 6.6.89) is detected at build time.
   KERNEL_VERSION: "6.6"
   KERNEL_NAME: android15-8-g7e1f3c083cc6-abogki467167594-4k
+  # Stock-alike OP13/PJZ110 LOCALVERSION. Do not make it look overly custom.
   CCACHE_COMPRESS: "true"
   CCACHE_COMPRESSLEVEL: "6"
   CCACHE_MAXSIZE: "8G"
@@ -30,14 +31,14 @@ on:
 
 
       lz4_zram_patch:
-        description: "EXPERIMENTAL: Apply ZRAM LZ4 perf patch (best-effort). Keep Off for first advanced-stable boot"
+        description: "EXPERIMENTAL: Apply ZRAM LZ4 perf patch (best-effort). Keep Off for daily stable"
         type: choice
         required: true
         default: "Off"
         options: ["On", "Off"]
 
       zram_module:
-        description: "EXPERIMENTAL: Build flashable zram-module.zip. Keep Off unless kernel already boots cleanly"
+        description: "EXPERIMENTAL: Build flashable zram-module.zip. Keep Off for daily stable"
         type: choice
         required: true
         default: "Off"
@@ -71,7 +72,7 @@ on:
         options: ["On", "Off"]
 
       bbg:
-        description: "Enable Baseband-Guard (BBG) - advanced-stable default"
+        description: "Enable Baseband-Guard (BBG) - Advanced Stable default"
         type: choice
         required: true
         default: "On"
@@ -85,7 +86,7 @@ on:
         options: ["On", "Off"]
 
       adios:
-        description: "Enable ADIOS I/O scheduler - advanced-stable default"
+        description: "Enable ADIOS I/O scheduler - Advanced Stable default"
         type: choice
         required: true
         default: "On"
@@ -99,21 +100,21 @@ on:
         options: ["On", "Off"]
 
       proxy:
-        description: "Enable proxy/network tweaks (best-effort) - advanced-stable default"
+        description: "Enable proxy/network tweaks (best-effort) - Advanced Stable default"
         type: choice
         required: true
         default: "On"
         options: ["On", "Off"]
 
       TTL:
-        description: "Enable TTL target/match (netfilter) - advanced-stable default"
+        description: "Enable TTL target/match (netfilter) - Advanced Stable default"
         type: choice
         required: true
         default: "On"
         options: ["On", "Off"]
 
       IP_SET:
-        description: "Enable IP_SET (netfilter ipset) - advanced-stable default"
+        description: "Enable IP_SET (netfilter ipset) - Advanced Stable default"
         type: choice
         required: true
         default: "On"
@@ -1143,6 +1144,10 @@ jobs:
           echo "CONFIG_KSU_THRONE_TRACKER_ALWAYS_THREADED=y" >> "$DEFCONFIG" || true
 
 
+          # Advanced Stable defaults:
+          # - Enable kernel-side mature features only.
+          # - Do NOT touch /data/adb or init_boot from this workflow.
+          # - Keep ZRAM module replacement, HMBIRD, KPM, KSUNext multi-manager off for daily stability.
           # Optional features (already in your workflow)
           if [ "${{ github.event.inputs.bbg }}" = "On" ]; then echo "CONFIG_BBG=y" >> "$DEFCONFIG" || true; fi
           if [ "${{ github.event.inputs.bbr }}" = "On" ]; then echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"; fi
