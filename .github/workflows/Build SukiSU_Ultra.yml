@@ -4,7 +4,6 @@ env:
   ANDROID_VERSION: android15
   # Label only (major.minor). Actual release (e.g. 6.6.89) is detected at build time.
   KERNEL_VERSION: "6.6"
-  # Stock-like OP13/PJZ110 localversion. Keep this close to stock so uname -r/vermagic stays vendor-module friendly.
   KERNEL_NAME: android15-8-g7e1f3c083cc6-abogki467167594-4k
   CCACHE_COMPRESS: "true"
   CCACHE_COMPRESSLEVEL: "6"
@@ -34,14 +33,14 @@ on:
         description: "Apply ZRAM LZ4 perf patch (best-effort, may not apply on all trees)"
         type: choice
         required: true
-        default: "On"
+        default: "Off"
         options: ["On", "Off"]
 
       zram_module:
         description: "Build flashable zram-module.zip (replace zram.ko)"
         type: choice
         required: true
-        default: "On"
+        default: "Off"
         options: ["On", "Off"]
 
       SUSFS:
@@ -72,10 +71,10 @@ on:
         options: ["On", "Off"]
 
       bbg:
-        description: "Enable Baseband-Guard (BBG)"
+        description: "Enable Baseband-Guard (BBG) - test only after safe boot"
         type: choice
         required: true
-        default: "On"
+        default: "Off"
         options: ["On", "Off"]
 
       bbr:
@@ -86,10 +85,10 @@ on:
         options: ["On", "Off"]
 
       adios:
-        description: "Enable ADIOS I/O scheduler"
+        description: "Enable ADIOS I/O scheduler - test only after safe boot"
         type: choice
         required: true
-        default: "On"
+        default: "Off"
         options: ["On", "Off"]
 
       rekernel:
@@ -100,24 +99,24 @@ on:
         options: ["On", "Off"]
 
       proxy:
-        description: "Enable proxy/network tweaks (best-effort)"
+        description: "Enable proxy/network tweaks (best-effort) - test only after safe boot"
         type: choice
         required: true
-        default: "On"
+        default: "Off"
         options: ["On", "Off"]
 
       TTL:
-        description: "Enable TTL target/match (netfilter)"
+        description: "Enable TTL target/match (netfilter) - test only after safe boot"
         type: choice
         required: true
-        default: "On"
+        default: "Off"
         options: ["On", "Off"]
 
       IP_SET:
-        description: "Enable IP_SET (netfilter ipset)"
+        description: "Enable IP_SET (netfilter ipset) - test only after safe boot"
         type: choice
         required: true
-        default: "On"
+        default: "Off"
         options: ["On", "Off"]
 
       hmbird:
@@ -137,7 +136,7 @@ on:
         description: "Custom build time string (Enter F to use current UTC)"
         type: string
         required: false
-        default: "F"
+        default: "Thu Dec 11 04:17:27 UTC 2025"
 
       BUILD_USER:
         description: "KBUILD_BUILD_USER"
@@ -902,27 +901,21 @@ jobs:
           p = Path(sys.argv[1])
           t = p.read_text()
 
-          # Build this as a normal object, not ksu_obj-y.
-          # On the SukiSU 2aba6b8 flat/builtin Kbuild used here, ksu_obj-y may not be linked
-          # into final vmlinux. This was the root cause of:
-          #   undefined symbol: ksu_is_input_hook_enabled
-          #   undefined symbol: ksu_is_init_rc_hook_enabled
-          # at LD .tmp_vmlinux.btf.
+          # Critical OP13/SukiSU+CCTV18 fix:
+          # this object must be linked into final vmlinux directly.
+          # ksu_obj-y can be ignored by this older flat SukiSU Kbuild path.
           t = t.replace('ksu_obj-y += manual_hook_keys_compat.o\n', '')
           line = 'obj-$(CONFIG_KSU) += manual_hook_keys_compat.o\n'
-
           if 'manual_hook_keys_compat.o' not in t:
-              # Prefer adding near other obj-* lines but fall back to appending.
               marker = 'obj-$(CONFIG_KSU) += kernelsu.o\n'
               if marker in t:
                   t = t.replace(marker, marker + line, 1)
               else:
                   t = t.rstrip() + '\n\n# OP13 SukiSU + CCTV18 SUSFS final-link compatibility\n' + line
-
           p.write_text(t)
           KBUILDPY
             fi
-            echo "✅ Added manual_hook_keys_compat.o via obj-$(CONFIG_KSU) final-link path"
+            echo "✅ Added manual_hook_keys_compat.o via final-link obj-$(CONFIG_KSU) path"
           else
             echo "✅ Manual-hook static key definitions already present"
           fi
@@ -1003,10 +996,8 @@ jobs:
 
           if [[ -f "$KSU_DIR/Kbuild" ]]; then
             if ! grep -qE '^obj-\$\(CONFIG_KSU\)[[:space:]]\+=[[:space:]]manual_hook_keys_compat\.o' "$KSU_DIR/Kbuild"; then
-              echo "::error::manual_hook_keys_compat.o exists but is not wired through obj-$(CONFIG_KSU). Final link will still fail."
-              echo "::group::drivers/kernelsu/Kbuild"
+              echo "::error::manual_hook_keys_compat.o is not wired through obj-$(CONFIG_KSU). Final link may fail."
               sed -n '1,220p' "$KSU_DIR/Kbuild" || true
-              echo "::endgroup::"
               exit 1
             fi
             echo "✅ manual_hook_keys_compat.o is wired into final link path."
@@ -1077,7 +1068,7 @@ jobs:
             echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "$DEFCONFIG"
-            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=n" >> "$DEFCONFIG" # keep quiet for daily-driver / LSPosed stability
+            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$DEFCONFIG"
@@ -1461,7 +1452,7 @@ jobs:
           
           # Clean english kernel.string (include profile label)
           profile_label = os.environ.get("PROFILE_LABEL", "Balanced")
-          s = re.sub(r'^\s*kernel\.string=.*$', f'kernel.string=PJZ110 | OPlus GKI 6.6 Stock-Like + SukiSU Ultra [{profile_label}]', s, flags=re.M)
+          s = re.sub(r'^\s*kernel\.string=.*$', f'kernel.string=PJZ110 | SukiSU Ultra (builtin) [{profile_label}] (OP-OX)', s, flags=re.M)
           
           # Remove previous custom injection (idempotent)
           s = re.sub(r'\n# --- OX1D3X3 CUSTOM START ---.*?# --- OX1D3X3 CUSTOM END ---\n', '\n', s, flags=re.S)
@@ -1500,16 +1491,6 @@ jobs:
           if [ -n "$android" ]; then ui_print "Android: $android"; fi
           if [ -n "$patch" ]; then ui_print "Patch  : $patch"; fi
           ui_print " "
-          # LSPosed/SukiSU rescue:
-          # Your failing debug showed /data/adb/modules and /data/adb/lspd labelled as system_file,
-          # causing "SELinux: Could not set context ... Permission denied" and broken LSPosed modules.
-          # This is non-fatal and only runs when /data is visible to the flasher.
-          if [ -d /data/adb ]; then
-            ui_print "Repairing /data/adb SELinux contexts..."
-            restorecon -RF /data/adb 2>/dev/null || true
-            chcon -R u:object_r:adb_data_file:s0 /data/adb/modules /data/adb/modules_update /data/adb/lspd /data/adb/zygisk_lsposed /data/adb/zygisksu /data/adb/susfs4ksu 2>/dev/null || true
-          fi
-
           ui_print "Flashing boot image..."
           ui_print " "
           # --- OX1D3X3 CUSTOM END ---
@@ -1536,7 +1517,7 @@ jobs:
           ====================================================
           EOF
 
-          OUT="OP13_PJZ110_${{ env.ANDROID_VERSION }}_${{ env.KERNEL_VERSION }}_${{ env.SUFFIX }}_${{ env.PROFILE_TAG }}_${{ github.run_number }}_${MODE_TAG}_FLASH_THIS.zip"
+          OUT="OP13_PJZ110_SAFE_${{ env.ANDROID_VERSION }}_${{ env.KERNEL_VERSION }}_${{ env.SUFFIX }}_${{ env.PROFILE_TAG }}_${{ github.run_number }}_${MODE_TAG}_FLASH_THIS.zip"
           rm -f "$OUT" || true
           (cd AnyKernel3 && zip -r9 "../$OUT" . -x "*.git*" -x "*README*" -x "*.md" >/dev/null)
           echo "OUT_ZIP=$OUT" >> "$GITHUB_ENV"
