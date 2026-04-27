@@ -51,17 +51,17 @@ on:
         options: ["On", "Off"]
 
       susfs_mode:
-        description: "SUSFS source (recommended: sukisu; external applies susfs4oki patch)"
+        description: "SUSFS source (external = CCTV18/susfs4oki, old-good LSPosed lane)"
         type: choice
         required: true
         default: external
         options: [sukisu, external]
 
       sukisu_ref:
-        description: "SukiSU Ultra ref (pinned for LSPosed compatibility; use builtin/main only for testing)"
+        description: "SukiSU checkout ref. Default pins the old-good builtin branch state from before the LSPosed regression."
         type: string
         required: false
-        default: "v4.1.1"
+        default: "2aba6b8"
 
       ksunext_multimanager:
         description: "Apply multi-manager patch (best-effort)"
@@ -136,7 +136,7 @@ on:
         description: "Custom build time string (Enter F to use current UTC)"
         type: string
         required: false
-        default: "F"
+        default: "Thu Dec 11 04:17:27 UTC 2025"
 
       BUILD_USER:
         description: "KBUILD_BUILD_USER"
@@ -293,8 +293,44 @@ jobs:
           MANIFEST_FILE="manifest.xml"
           echo "Using manifest: $MANIFEST_REPO ($MANIFEST_BRANCH/$MANIFEST_FILE)"
           curl -fsSL "https://raw.githubusercontent.com/mrcxlinux/actions_oplus_sm8750/${MANIFEST_BRANCH}/${MANIFEST_FILE}" >/dev/null
+          git config --global http.version HTTP/1.1
+          git config --global http.lowSpeedLimit 1000
+          git config --global http.lowSpeedTime 600
+          git config --global fetch.parallel 2
           repo init -u "$MANIFEST_REPO" -b "$MANIFEST_BRANCH" -m "$MANIFEST_FILE" --depth=1
-          repo sync -c -j"$(nproc)" --no-tags --no-clone-bundle --force-sync
+
+          repo_sync_try() {
+            local jobs="$1"
+            local net_jobs="$2"
+            local label="$3"
+            shift 3 || true
+            local sync_args=( -c --no-tags --no-clone-bundle --force-sync --optimized-fetch --prune -j"$jobs" )
+            if repo sync -h 2>&1 | grep -q -- '--retry-fetches'; then sync_args+=(--retry-fetches=8); fi
+            if repo sync -h 2>&1 | grep -q -- '--jobs-network'; then sync_args+=(--jobs-network="$net_jobs"); fi
+            if [[ "${1:-}" == "failfast" ]]; then sync_args+=(--fail-fast); fi
+            echo "::group::repo sync attempt: $label"
+            echo "repo sync ${sync_args[*]}"
+            set +e
+            repo sync "${sync_args[@]}"
+            local rc=$?
+            set -e
+            echo "::endgroup::"
+            return "$rc"
+          }
+
+          if repo_sync_try 8 4 "balanced"; then
+            echo "✅ repo sync completed."
+          else
+            echo "::warning::repo sync failed; retrying with lower network parallelism."
+            sleep 30
+            if repo_sync_try 4 2 "reduced"; then
+              echo "✅ repo sync completed on reduced retry."
+            else
+              echo "::warning::repo sync failed again; retrying serial fail-fast."
+              sleep 45
+              repo_sync_try 1 1 "serial" failfast
+            fi
+          fi
 
           rm -f kernel_platform/common/android/abi_gki_protected_exports_* || true
           rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || true
@@ -518,7 +554,7 @@ jobs:
             echo "KernelSU references legacy uname helpers → adding SUSFS v2 compat stubs"
             if [[ -f "./fs/susfs.c" ]] && ! grep -q "susfs_uname_is_active" "./fs/susfs.c"; then
           python3 - <<'PY'
-                    from pathlib import Path
+          from pathlib import Path
           p = Path('./fs/susfs.c')
           code = r'''
           
@@ -601,31 +637,20 @@ jobs:
           SUSFS_IN="${{ github.event.inputs.SUSFS }}"
           SUSFS_MODE="${{ github.event.inputs.susfs_mode }}"
 
-          # IMPORTANT:
-          # setup.sh argument is the actual SukiSU source checkout ref.
-          # Passing "builtin" checks out the floating builtin branch, which now resolves to newer
-          # v4.1.2-era code and is what the logs show breaking LSPosed sepolicy injection.
-          # For this LSPosed-stable lane, keep the integration builtin-style, but checkout
-          # the pinned SukiSU source ref.
-          SUKISU_REF="${{ github.event.inputs.sukisu_ref }}"
-          [ -n "$SUKISU_REF" ] || SUKISU_REF="v4.1.1"
-          SETUP_ARG="$SUKISU_REF"
-
+          # Old-good LSPosed compatibility lane:
+          # Do NOT float on current builtin. Your known-good run was before the later SukiSU builtin
+          # changes that caused LSPosed sepolicy/system-service injection issues.
+          SETUP_ARG="${{ github.event.inputs.sukisu_ref }}"
+          if [[ -z "$SETUP_ARG" ]]; then SETUP_ARG="2aba6b8"; fi
           echo "SUKISU_HAS_SUSFS=0" >> "$GITHUB_ENV"
-          echo "SUKISU_REF=$SUKISU_REF" >> "$GITHUB_ENV"
-          echo "SUKISU_SETUP_ARG=$SETUP_ARG" >> "$GITHUB_ENV"
+          echo "SUKISU_EFFECTIVE_REF=$SETUP_ARG" >> "$GITHUB_ENV"
 
-          SETUP_URL_PRIMARY="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SUKISU_REF}/kernel/setup.sh"
-          SETUP_URL_FALLBACK="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh"
-
-          echo "→ Fetching SukiSU Ultra setup from ref: $SUKISU_REF"
-          echo "→ Setup URL: $SETUP_URL_PRIMARY"
+          SETUP_URL_PRIMARY="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh"
+          SETUP_URL_FALLBACK="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/2aba6b8/kernel/setup.sh"
+          echo "→ Fetching SukiSU Ultra builtin setup.sh"
           echo "→ SukiSU checkout arg: $SETUP_ARG"
-          if ! curl -fLSs "$SETUP_URL_PRIMARY" | bash -s "$SETUP_ARG"; then
-            echo "::warning::Pinned setup.sh URL failed; retrying builtin setup.sh while still checking out $SETUP_ARG."
-            curl -fLSs "$SETUP_URL_FALLBACK" | bash -s "$SETUP_ARG"
-          fi
-
+          echo "Running SukiSU setup with checkout arg: $SETUP_ARG"
+          (curl -fLSs "$SETUP_URL_PRIMARY" | bash -s "$SETUP_ARG") || (curl -fLSs "$SETUP_URL_FALLBACK" | bash -s "$SETUP_ARG")
           # Detect whether this kernel tree actually contains SUSFS config symbols after SukiSU setup.
           # If not, we'll allow the external SUSFS patch step to run (avoids false "susfs-main" assumption).
           if [[ "$SUSFS_IN" == "On" ]]; then
@@ -666,188 +691,6 @@ jobs:
             die "KernelSU driver not present after SukiSU setup (drivers/kernelsu missing)."
           fi
 
-          echo "::group::SukiSU v4.1.1 external SUSFS compat bridge"
-          if [[ "${SUSFS_IN}" == "On" && "${SUSFS_MODE}" == "external" ]]; then
-            KSU_REPO=""
-            for c in "$KERNEL_DIR/KernelSU" "$KERNEL_DIR/common/KernelSU"; do
-              if [[ -d "$c/.git" || -d "$c/kernel" ]]; then
-                KSU_REPO="$c"
-                break
-              fi
-            done
-
-            if [[ -z "$KSU_REPO" && -e "$KERNEL_DIR/drivers/kernelsu" ]]; then
-              real_ksu="$(readlink -f "$KERNEL_DIR/drivers/kernelsu" || true)"
-              if [[ -n "$real_ksu" && -d "$(dirname "$real_ksu")" ]]; then
-                parent="$(dirname "$real_ksu")"
-                if [[ "$(basename "$parent")" == "kernel" ]]; then
-                  parent="$(dirname "$parent")"
-                fi
-                if [[ -d "$parent/kernel" || -d "$parent/.git" ]]; then
-                  KSU_REPO="$parent"
-                fi
-              fi
-            fi
-
-            if [[ -z "$KSU_REPO" || ! -d "$KSU_REPO/kernel" ]]; then
-              echo "::error::Could not locate SukiSU/KernelSU repo after setup."
-              find "$KERNEL_DIR" -maxdepth 4 -type d \( -name KernelSU -o -name kernelsu \) -print || true
-              exit 1
-            fi
-
-            echo "KernelSU repo: $KSU_REPO"
-            KSU_KBUILD="$KSU_REPO/kernel/Kbuild"
-            if [[ ! -f "$KSU_KBUILD" ]]; then
-              echo "::error::Missing Kbuild: $KSU_KBUILD"
-              exit 1
-            fi
-
-            # Do NOT apply CCTV18's full KernelSU-side patch here. That patch targets the newer
-            # split SukiSU layout (kernel/core, kernel/feature, kernel/runtime, etc.).
-            # SukiSU v4.1.1 uses the older flat layout, so the full patch fails or half-applies.
-            # Instead, add a tiny compatibility bridge for the symbols introduced by the kernel-side
-            # CCTV18 SUSFS patch, while leaving the old working v4.1.1 runtime path alone.
-            if ! grep -q 'susfs_compat_bridge.o' "$KSU_KBUILD"; then
-              echo 'kernelsu-objs += susfs_compat_bridge.o' >> "$KSU_KBUILD"
-            fi
-
-            cat > "$KSU_REPO/kernel/susfs_compat_bridge.c" <<'EOF'
-          // OP13 SukiSU v4.1.1 + external CCTV18/susfs4oki compatibility bridge.
-          // Keep this intentionally small: satisfy the Android 15 / 6.6 SUSFS kernel-side hooks
-          // without applying the newer split-layout KernelSU patch on top of the older flat SukiSU tree.
-          
-          #include <linux/types.h>
-          #include <linux/fs.h>
-          #include <linux/cred.h>
-          #include <linux/uidgid.h>
-          #include <linux/uaccess.h>
-          #include <linux/static_key.h>
-          #include <linux/sched.h>
-          
-          #include "allowlist.h"
-          #include "selinux/selinux.h"
-          
-          u32 susfs_ksu_sid = 0;
-          u32 susfs_init_sid = 0;
-          u32 susfs_zygote_sid = 0;
-          u32 susfs_priv_app_sid = 0;
-          
-          bool susfs_is_current_ksu_domain(void)
-          {
-          	return is_ksu_domain();
-          }
-          
-          bool susfs_is_current_init_domain(void)
-          {
-          	return is_init(current_cred());
-          }
-          
-          bool susfs_is_current_zygote_domain(void)
-          {
-          	return is_zygote(current_cred());
-          }
-          
-          bool susfs_is_current_priv_app_domain(void)
-          {
-          	return false;
-          }
-          
-          bool susfs_is_sid_equal(const struct cred *cred, u32 sid2)
-          {
-          	return false;
-          }
-          
-          u32 susfs_get_sid_from_name(const char *secctx_name)
-          {
-          	return 0;
-          }
-          
-          u32 susfs_get_current_sid(void)
-          {
-          	return 0;
-          }
-          
-          void susfs_set_ksu_sid(void) { }
-          void susfs_set_init_sid(void) { }
-          void susfs_set_zygote_sid(void) { }
-          void susfs_set_priv_app_sid(void) { }
-          
-          bool __ksu_is_allow_uid_for_current(uid_t uid)
-          {
-          	return ksu_is_allow_uid_for_current(uid);
-          }
-          
-          int ksu_handle_devpts(struct inode *inode)
-          {
-          	return 0;
-          }
-          
-          void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)
-          {
-          }
-          
-          int ksu_handle_execveat(int *fd, void *filename_ptr, void *argv, void *envp, int *flags)
-          {
-          	return 0;
-          }
-          
-          int ksu_handle_execveat_sucompat(int *fd, void *filename_ptr, void *argv, void *envp, int *flags)
-          {
-          	return 0;
-          }
-          
-          int ksu_handle_sys_read(unsigned int fd, char __user *buf, size_t count)
-          {
-          	return 0;
-          }
-          
-          int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value)
-          {
-          	return 0;
-          }
-          EOF
-
-            # The Android 15/6.6 SUSFS patch declares ksu_handle_stat() with struct filename **.
-            # v4.1.1's old flat SukiSU tree has the same symbol name with a legacy userspace-pointer
-            # ABI. That can compile but is unsafe at runtime, so make the external SUSFS call a no-op
-            # and let the original SukiSU syscall hook path handle normal sucompat behaviour.
-            python3 - "$KSU_REPO/kernel/sucompat.c" <<'PYSUCOMPAT'
-          from pathlib import Path
-          import re
-          import sys
-          
-          p = Path(sys.argv[1])
-          s = p.read_text(encoding='utf-8')
-          
-          def replace_func(src: str, name: str, new_src: str) -> str:
-              m = re.search(r'int\s+' + re.escape(name) + r'\s*\([^)]*\)\s*\{', src)
-              if not m:
-                  return src
-              i = m.end()
-              depth = 1
-              j = i
-              while j < len(src) and depth:
-                  ch = src[j]
-                  if ch == '{':
-                      depth += 1
-                  elif ch == '}':
-                      depth -= 1
-                  j += 1
-              return src[:m.start()] + new_src + src[j:]
-          
-          new_stat = 'int ksu_handle_stat(int *dfd, void *filename_user, int *flags)\n{\n\treturn 0;\n}\n'
-          s = replace_func(s, 'ksu_handle_stat', new_stat)
-          p.write_text(s, encoding='utf-8')
-          PYSUCOMPAT
-
-            cd "$KERNEL_DIR"
-            echo "Bridge symbol scan:"
-            grep -Rns "ksu_handle_devpts\|ksu_handle_execveat\|ksu_handle_vfs_fstat\|ksu_handle_sys_read\|susfs_ksu_sid\|susfs_priv_app_sid\|susfs_compat_bridge" "$KSU_REPO/kernel" 2>/dev/null | head -n 160 || true
-          else
-            echo "Not using external SUSFS; skipping compat bridge."
-          fi
-          echo "::endgroup::"
-
           echo "::group::Repair SukiSU supercalls mismatch (allow/deny list IOCTLs)"
           KSU_H="./drivers/kernelsu/supercalls.h"
           KSU_C="./drivers/kernelsu/supercalls.c"
@@ -882,8 +725,8 @@ jobs:
               'KSU_IOCTL(NEW_GET_DENY_LIST, "NEW_GET_DENY_LIST", do_new_get_deny_list,',
           )
 
-          def insert_before_endif(src: str, marker: str, block: str) -> str:
-              if marker in src:
+          def insert_before_endif(src: str, block: str) -> str:
+              if block in src:
                   return src
               m = re.search(r'\n#endif\s*$', src)
               if m:
@@ -891,22 +734,23 @@ jobs:
               return src.rstrip() + '\n\n' + block.rstrip() + '\n'
 
           new_struct = """struct ksu_new_get_allow_list_cmd {
-              __u16 count; // Input / Output: number of UIDs in array
-              __u16 total_count; // Output: total number of UIDs in requested list
-              __u32 uids[0]; // Output: array of allowed/denied UIDs
+            __u16 count; // Input / Output: number of UIDs in array
+            __u16 total_count; // Output: total number of UIDs in requested list
+            __u32 uids[0]; // Output: array of allowed/denied UIDs
           };"""
           legacy_defs = """#define KSU_IOCTL_GET_ALLOW_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 6, 0)
           #define KSU_IOCTL_GET_DENY_LIST _IOC(_IOC_READ | _IOC_WRITE, 'K', 7, 0)"""
-          new_defs = """#define KSU_IOCTL_NEW_GET_ALLOW_LIST \\
-              _IOWR('K', 6, struct ksu_new_get_allow_list_cmd)
-          #define KSU_IOCTL_NEW_GET_DENY_LIST \\
-              _IOWR('K', 7, struct ksu_new_get_allow_list_cmd)"""
+          new_defs = """#define KSU_IOCTL_NEW_GET_ALLOW_LIST \
+            _IOWR('K', 6, struct ksu_new_get_allow_list_cmd)
+          #define KSU_IOCTL_NEW_GET_DENY_LIST \
+            _IOWR('K', 7, struct ksu_new_get_allow_list_cmd)"""
 
-          ht = insert_before_endif(ht, 'struct ksu_new_get_allow_list_cmd', new_struct)
+          if 'struct ksu_new_get_allow_list_cmd' not in ht:
+              ht = insert_before_endif(ht, new_struct)
           if '#define KSU_IOCTL_GET_ALLOW_LIST' not in ht or '#define KSU_IOCTL_GET_DENY_LIST' not in ht:
-              ht = insert_before_endif(ht, '#define KSU_IOCTL_GET_ALLOW_LIST', legacy_defs)
+              ht = insert_before_endif(ht, legacy_defs)
           if '#define KSU_IOCTL_NEW_GET_ALLOW_LIST' not in ht or '#define KSU_IOCTL_NEW_GET_DENY_LIST' not in ht:
-              ht = insert_before_endif(ht, '#define KSU_IOCTL_NEW_GET_ALLOW_LIST', new_defs)
+              ht = insert_before_endif(ht, new_defs)
 
           h.write_text(ht, encoding='utf-8')
           c.write_text(ct, encoding='utf-8')
@@ -921,230 +765,96 @@ jobs:
             echo "drivers/kernelsu/supercalls.[ch] not found; skipping repair."
           fi
           echo "::endgroup::"
-      - name: "Repair SukiSU manual-hook static keys"
-        if: ${{ github.event.inputs.SUSFS == 'On' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "::group::Repair SukiSU manual-hook static keys"
-
-          KP="${KERNEL_PLATFORM:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform}"
-          KD="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
-
-          # The old-stable flow is intentionally preserved:
-          #   1) external CCTV18/susfs4oki patch first
-          #   2) SukiSU builtin setup afterwards
-          # On current SukiSU builtin, that combination can leave the manual-hook
-          # static branches referenced but not defined. Repair only those symbols here.
-          mapfile -t KSU_DIRS < <(
-            {
-              printf '%s\n' \
-                "$KP/KernelSU/kernel" \
-                "$KD/KernelSU/kernel" \
-                "$KD/drivers/kernelsu" \
-                "$KP/common/drivers/kernelsu"
-              find "$KP" -maxdepth 7 -type f -path '*/drivers/kernelsu/ksu.c' -printf '%h\n' 2>/dev/null || true
-              find "$KP" -maxdepth 7 -type f -path '*/KernelSU/kernel/ksu.c' -printf '%h\n' 2>/dev/null || true
-            } | awk 'NF && !seen[$0]++'
-          )
-
-          patched=0
-          for KSU_DIR in "${KSU_DIRS[@]}"; do
-            [[ -d "$KSU_DIR" && -f "$KSU_DIR/ksu.c" ]] || continue
-            echo "→ Checking KSU_DIR=$KSU_DIR"
-            patched=1
-
-            # SukiSU runtime/ksud.c may still toggle old internal names:
-            #   ksu_input_hook_key_false / ksu_init_rc_hook_key_false
-            # while the patched kernel code references canonical static keys:
-            #   ksu_is_input_hook_enabled / ksu_is_init_rc_hook_enabled
-            # Use one canonical pair so both sides link against the same symbols.
-            if [[ -f "$KSU_DIR/runtime/ksud.c" ]]; then
-              sed -i \
-                -e 's/ksu_input_hook_key_false/ksu_is_input_hook_enabled/g' \
-                -e 's/ksu_init_rc_hook_key_false/ksu_is_init_rc_hook_enabled/g' \
-                "$KSU_DIR/runtime/ksud.c"
-            fi
-
-            # Do not treat extern declarations as real definitions.
-            if ! grep -RqsE '^[[:space:]]*DEFINE_STATIC_KEY_FALSE[[:space:]]*\([[:space:]]*ksu_is_input_hook_enabled[[:space:]]*\)' "$KSU_DIR" 2>/dev/null || \
-               ! grep -RqsE '^[[:space:]]*DEFINE_STATIC_KEY_FALSE[[:space:]]*\([[:space:]]*ksu_is_init_rc_hook_enabled[[:space:]]*\)' "$KSU_DIR" 2>/dev/null; then
-              {
-                echo '#include <linux/jump_label.h>'
-                echo ''
-                echo '/* OP13 SukiSU builtin + CCTV18/susfs4oki compat. */'
-                echo 'DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);'
-                echo 'DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);'
-              } > "$KSU_DIR/manual_hook_keys_compat.c"
-
-              if ! grep -q 'manual_hook_keys_compat.c' "$KSU_DIR/ksu.c"; then
-                {
-                  echo ''
-                  echo '/* OP13 SukiSU builtin + CCTV18 manual-hook static-key compatibility */'
-                  echo '#include "manual_hook_keys_compat.c"'
-                } >> "$KSU_DIR/ksu.c"
-              fi
-              echo "✅ Added canonical manual-hook static-key definitions"
-            else
-              echo "✅ Canonical manual-hook static keys already defined"
-            fi
-          done
-
-          if [[ "$patched" != "1" ]]; then
-            echo "::error::Could not find SukiSU/KernelSU source dir for manual-hook static-key repair."
-            find "$KP" -maxdepth 7 -type f -name ksu.c | head -n 50 || true
-            echo "::endgroup::"
-            exit 1
-          fi
-
-          echo "Manual-hook definition/reference scan:"
-          grep -RnsE 'ksu_(is_)?(input|init_rc)_hook(_key_false|_enabled)?|DEFINE_STATIC_KEY_FALSE|manual_hook_keys_compat' \
-            "$KP/KernelSU" "$KD/KernelSU" "$KD/drivers/kernelsu" 2>/dev/null | head -n 160 || true
-
-          echo "::endgroup::"
-
-
-      - name: "Add missing SukiSU v4.1.1 SUSFS Kconfig symbols"
-        if: ${{ github.event.inputs.SUSFS == 'On' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "::group::Add missing SukiSU v4.1.1 SUSFS Kconfig symbols"
-
-          KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
-          KSU_KCONFIG=""
-
-          for p in \
-            "$KDIR/drivers/kernelsu/Kconfig" \
-            "$KDIR/KernelSU/kernel/Kconfig" \
-            "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/drivers/kernelsu/Kconfig" \
-            "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/KernelSU/kernel/Kconfig"; do
-            if [[ -f "$p" ]]; then
-              KSU_KCONFIG="$p"
-              break
-            fi
-          done
-
-          if [[ -z "$KSU_KCONFIG" ]]; then
-            echo "::error::KernelSU/SukiSU Kconfig not found after SukiSU setup. Cannot add SUSFS config symbols."
-            find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 7 \( -path '*/kernelsu/Kconfig' -o -path '*/KernelSU/kernel/Kconfig' \) 2>/dev/null | head -n 80 || true
-            echo "::endgroup::"
-            exit 1
-          fi
-
-          echo "Using Kconfig: $KSU_KCONFIG"
-
-          if grep -q '^config KSU_SUSFS$' "$KSU_KCONFIG"; then
-            echo "✅ KSU_SUSFS already exists in Kconfig."
-          else
-            echo "→ v4.1.1 Kconfig does not expose KSU_SUSFS; adding the CCTV18/SUSFS option block."
-            cat >> "$KSU_KCONFIG" <<'EOF'
-          
-          # OP13 external CCTV18/SUSFS compatibility options.
-          # SukiSU v4.1.1 source can build with SUSFS, but its tagged Kconfig does not expose
-          # these symbols, so olddefconfig drops CONFIG_KSU_SUSFS from gki_defconfig without this block.
-          config KSU_SUSFS
-          	bool "Enable SUSFS"
-          	depends on KSU
-          	default y
-          	help
-          	  Enable SUSFS kernel-side support for KernelSU/SukiSU.
-          
-          config KSU_SUSFS_SUS_PATH
-          	bool "SUSFS sus_path"
-          	depends on KSU_SUSFS
-          	default y
-          
-          config KSU_SUSFS_SUS_MOUNT
-          	bool "SUSFS sus_mount"
-          	depends on KSU_SUSFS
-          	default y
-          
-          config KSU_SUSFS_SUS_KSTAT
-          	bool "SUSFS sus_kstat"
-          	depends on KSU_SUSFS
-          	default y
-          
-          config KSU_SUSFS_SPOOF_UNAME
-          	bool "SUSFS spoof uname"
-          	depends on KSU_SUSFS
-          	default y
-          
-          config KSU_SUSFS_ENABLE_LOG
-          	bool "SUSFS logging"
-          	depends on KSU_SUSFS
-          	default y
-          
-          config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-          	bool "Hide KSU/SUSFS symbols"
-          	depends on KSU_SUSFS
-          	default y
-          
-          config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-          	bool "SUSFS spoof cmdline or bootconfig"
-          	depends on KSU_SUSFS
-          	default y
-          
-          config KSU_SUSFS_TRY_UMOUNT
-          	bool "SUSFS try_umount compatibility"
-          	depends on KSU_SUSFS
-          	default n
-          
-          config KSU_SUSFS_OPEN_REDIRECT
-          	bool "SUSFS open redirect"
-          	depends on KSU_SUSFS
-          	default y
-          
-          config KSU_SUSFS_SUS_MAP
-          	bool "SUSFS sus_map"
-          	depends on KSU_SUSFS
-          	default y
-          EOF
-          fi
-
-          echo "KSU/SUSFS Kconfig scan:"
-          grep -nE '^(config KSU|config KSU_SUSFS|config KSU_SUSFS_)' "$KSU_KCONFIG" | head -n 120 || true
-          echo "::endgroup::"
-
-      - name: "SukiSU LSPosed compat: disable unsupported TRY_UMOUNT for pinned v4.1.1"
+      - name: "SukiSU SUSFS kernel-r25 compat (TRY_UMOUNT)"
         shell: bash
         run: |
           set -euo pipefail
 
           if [[ "${{ github.event.inputs.SUSFS }}" != "On" ]]; then
-            echo "SUSFS Off -> skipping TRY_UMOUNT cleanup."
+            echo "SUSFS Off → skipping SUSFS r25 compat patch."
             exit 0
           fi
 
-          KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
+          KDIR="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+
+          # After SukiSU setup.sh, drivers/kernelsu is a symlink into $KDIR/KernelSU/kernel
           KSU_KCONFIG="$KDIR/drivers/kernelsu/Kconfig"
           KSU_SETUID="$KDIR/drivers/kernelsu/setuid_hook.c"
 
-          echo "Pinned SukiSU v4.1.1 does not provide susfs_try_umount()."
-          echo "Keeping normal KernelSU umount handling; disabling only the extra r25 susfs_try_umount hook."
-
-          if [[ -f "$KSU_KCONFIG" ]] && grep -q "config KSU_SUSFS_TRY_UMOUNT" "$KSU_KCONFIG"; then
-            perl -0pi -e 's/(config KSU_SUSFS_TRY_UMOUNT\n(?:\t[^\n]*\n|\s*[^\n]*\n)*?\tdefault )y/${1}n/s' "$KSU_KCONFIG" || true
+          if [[ ! -f "$KSU_KCONFIG" ]]; then
+            echo "::error::KernelSU Kconfig not found at: $KSU_KCONFIG"
+            exit 1
           fi
 
-          if [[ -f "$KSU_SETUID" ]] && grep -q "susfs_try_umount" "$KSU_SETUID"; then
-            python3 - "$KSU_SETUID" <<'INNERPY'
-          import re, sys
+          if ! grep -q "config KSU_SUSFS_TRY_UMOUNT" "$KSU_KCONFIG"; then
+            echo "→ Adding CONFIG_KSU_SUSFS_TRY_UMOUNT to KernelSU Kconfig (required by SUSFS module r25+)."
+            python3 - "$KSU_KCONFIG" <<'PY'
+          import sys
           from pathlib import Path
+
           p = Path(sys.argv[1])
           t = p.read_text()
-          t = re.sub(r'\n#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT\n\t// SUSFS module \(kernel-r25\+\) compatibility hook\n\tsusfs_try_umount\(new_uid\);\n#endif\n', '\n', t)
-          t = re.sub(r'\n\s*susfs_try_umount\(new_uid\);\s*\n', '\n', t)
-          p.write_text(t)
-          print('Removed unsupported susfs_try_umount references from setuid_hook.c.')
-          INNERPY
+
+          sym = 'config KSU_SUSFS_TRY_UMOUNT'
+          if sym not in t:
+              insert = (
+                  'config KSU_SUSFS_TRY_UMOUNT\n'
+                  '\tbool "Try umount at post-fs-data"\n'
+                  '\tdepends on KSU_SUSFS\n'
+                  '\tdefault y\n'
+                  '\thelp\n'
+                  '\t  SUSFS module (kernel-r25+) compatibility: enables try_umount support.\n'
+                  '\n'
+              )
+              key = 'config KSU_SUSFS_SPOOF_UNAME'
+              if key in t:
+                  t = t.replace(key, insert + key, 1)
+              else:
+                  t = t.rstrip() + '\n\n' + insert + '\n'
+              p.write_text(t)
+              print('Inserted KSU_SUSFS_TRY_UMOUNT into Kconfig.')
+          else:
+              print('KSU_SUSFS_TRY_UMOUNT already present.')
+          PY
+          else
+            echo "CONFIG_KSU_SUSFS_TRY_UMOUNT already present."
           fi
 
-          echo "setuid_hook scan:"
-          grep -n "susfs_try_umount\|ksu_handle_umount" "$KSU_SETUID" 2>/dev/null || true
-          echo "TRY_UMOUNT cleanup complete."
+          if [[ -f "$KSU_SETUID" ]] && ! grep -q "susfs_try_umount(" "$KSU_SETUID"; then
+            echo "→ Wiring susfs_try_umount() call after kernel umount."
+            python3 - "$KSU_SETUID" <<'PY'
+          import sys
+          from pathlib import Path
+
+          p = Path(sys.argv[1])
+          t = p.read_text()
+
+          if 'susfs_try_umount(' in t:
+              print('susfs_try_umount already present.')
+              raise SystemExit(0)
+
+          marker = 'ksu_handle_umount(old_uid, new_uid);'
+          if marker not in t:
+              print('Marker not found; skipping setuid_hook patch.')
+              raise SystemExit(0)
+
+          hook = (
+              marker + '\n\n'
+              + '#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT\n'
+              + '\t// SUSFS module (kernel-r25+) compatibility hook\n'
+              + '\tsusfs_try_umount(new_uid);\n'
+              + '#endif\n'
+          )
+
+          t = t.replace(marker, hook, 1)
+          p.write_text(t)
+          print('Patched setuid_hook.c with susfs_try_umount().')
+          PY
+          else
+            echo "setuid_hook.c already contains susfs_try_umount() (or missing) — skipping."
+          fi
+
+          echo "✅ SukiSU SUSFS r25 compat patch applied."
 
 
 
@@ -1211,7 +921,7 @@ jobs:
             echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
-            echo "# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$DEFCONFIG"
           else
@@ -1537,11 +1247,12 @@ jobs:
               echo "::endgroup::"
               exit 1
             fi
-            if grep -qE '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y$' "$CFG"; then
-              echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y"
-            else
-              echo "::notice::CONFIG_KSU_SUSFS_TRY_UMOUNT is disabled intentionally for pinned SukiSU v4.1.1 LSPosed compatibility."
+            if ! grep -qE '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y$' "$CFG"; then
+              echo "::error::CONFIG_KSU_SUSFS_TRY_UMOUNT=y expected for SUSFS module compatibility (kernel-r25+) but was not enabled."
+              echo "::group::.config CONFIG_KSU_SUSFS_TRY_UMOUNT lines"
               grep -n "KSU_SUSFS_TRY_UMOUNT" "$CFG" || true
+              echo "::endgroup::"
+              exit 1
             fi
           fi
 
@@ -1583,7 +1294,7 @@ jobs:
 
           # Patch anykernel.sh safely: keep properties() intact; update strings + inject our info block after ak3-core is sourced.
           python3 - <<'PY'
-                    from pathlib import Path
+          from pathlib import Path
           import os, re
           
           ak = Path("AnyKernel3/anykernel.sh")
@@ -1600,27 +1311,28 @@ jobs:
           if not m:
                   raise SystemExit("Cannot find '. tools/ak3-core.sh' marker in anykernel.sh")
           
+          run_number = os.environ.get("GITHUB_RUN_NUMBER", "")
+          kernel_rel = os.environ.get("KERNEL_RELEASE", "")
+          suffix = os.environ.get("SUFFIX", "OP-OX")
           susfs_mode = os.environ.get("SUSFS_MODE", "On")
           feat = "SUSFS" if susfs_mode == "On" else "MANUAL_HOOK"
-          profile = os.environ.get("PROFILE_LABEL", "Balanced")
           block = f"""
           # --- OX1D3X3 CUSTOM START ---
           ui_print " "
           ui_print "===================================================="
           ui_print "                   __   __  __ "
-          ui_print "                  \\ \\ / //_ |"
-          ui_print "                   \\ V /   | |"
+          ui_print "                  \ \ / //_ |"
+          ui_print "                   \ V /   | |"
           ui_print "                     > <    | |"
-          ui_print "                   / . \\   | |"
-          ui_print "                 /_/ \\_\\  |_|"
+          ui_print "                   / . \   | |"
+          ui_print "                 /_/ \_\  |_|"
           ui_print "===================================================="
-          ui_print " "
           ui_print "Ox1d3x3 OP13 Kernel"
           ui_print "SukiSU : Ultra (builtin)"
-          ui_print "Profile: {profile}"
+          ui_print "Profile: {profile_label}"
           ui_print "Mode   : {feat}"
           ui_print " "
-
+          
           device="$(getprop ro.product.device 2>/dev/null || true)"
           model="$(getprop ro.product.model 2>/dev/null || true)"
           android="$(getprop ro.build.version.release 2>/dev/null || true)"
@@ -1628,6 +1340,8 @@ jobs:
           if [ -n "$device" ]; then ui_print "Device : $device ($model)"; fi
           if [ -n "$android" ]; then ui_print "Android: $android"; fi
           if [ -n "$patch" ]; then ui_print "Patch  : $patch"; fi
+          ui_print " "
+          ui_print "Flashing boot image..."
           ui_print " "
           # --- OX1D3X3 CUSTOM END ---
           """
