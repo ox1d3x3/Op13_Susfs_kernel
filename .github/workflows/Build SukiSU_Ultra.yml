@@ -1,4 +1,4 @@
-name: OP13 PJZ110 SukiSU Ultra
+name: OP13 SukiSU Ultra
 env:
   TZ: Asia/Shanghai
   ANDROID_VERSION: android15
