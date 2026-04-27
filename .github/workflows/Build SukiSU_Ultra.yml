@@ -858,6 +858,142 @@ jobs:
 
 
 
+      - name: "Repair SukiSU 2aba6b8 + CCTV18 SUSFS symbol compatibility"
+        if: ${{ github.event.inputs.SUSFS == 'On' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "::group::Repair SukiSU 2aba6b8 + CCTV18 SUSFS symbol compatibility"
+
+          KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
+          KSU_DIR="$KDIR/drivers/kernelsu"
+          SUSFS_C="$KDIR/fs/susfs.c"
+          SUSFS_H="$KDIR/include/linux/susfs.h"
+
+          if [[ ! -d "$KSU_DIR" ]]; then
+            echo "::error::KernelSU/SukiSU source dir not found: $KSU_DIR"
+            find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 6 -type f -path '*/drivers/kernelsu/Kbuild' -print | head -n 20 || true
+            exit 1
+          fi
+
+          if [[ ! -f "$KSU_DIR/Kbuild" ]]; then
+            echo "::error::KernelSU/SukiSU Kbuild not found: $KSU_DIR/Kbuild"
+            ls -la "$KSU_DIR" || true
+            exit 1
+          fi
+
+          echo "Kernel dir : $KDIR"
+          echo "SukiSU dir : $KSU_DIR"
+
+          if ! grep -RqsE '^[[:space:]]*DEFINE_STATIC_KEY_FALSE[[:space:]]*\([[:space:]]*ksu_is_input_hook_enabled[[:space:]]*\)' "$KSU_DIR" 2>/dev/null; then
+            cat > "$KSU_DIR/manual_hook_keys_compat.c" <<'MANUALKEYS'
+          #include <linux/jump_label.h>
+
+          /* OP13 SukiSU 2aba6b8 + CCTV18/susfs4oki compatibility. */
+          DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);
+          DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);
+          MANUALKEYS
+            if ! grep -q 'manual_hook_keys_compat.o' "$KSU_DIR/Kbuild"; then
+              python3 - "$KSU_DIR/Kbuild" <<'KBUILDPY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          t = p.read_text()
+          line = 'ksu_obj-y += manual_hook_keys_compat.o\n'
+          if 'manual_hook_keys_compat.o' not in t:
+              marker = 'ksu_obj-y += ksuinit.o\n'
+              if marker in t:
+                  t = t.replace(marker, marker + line, 1)
+              else:
+                  t = line + t
+              p.write_text(t)
+          KBUILDPY
+            fi
+            echo "✅ Added manual_hook_keys_compat.o"
+          else
+            echo "✅ Manual-hook static key definitions already present"
+          fi
+
+          if [[ -f "$SUSFS_C" ]] && ! grep -q 'susfs_set_i_state_on_external_dir' "$SUSFS_C"; then
+            cat >> "$SUSFS_C" <<'SUSFSCOMPAT'
+          /* OP13 compatibility for older SukiSU inline-hook supercalls. */
+          #ifdef CONFIG_KSU_SUSFS_SUS_PATH
+          void susfs_set_i_state_on_external_dir(void __user **user_info)
+          {
+          	struct st_susfs_sus_path info = {0};
+          	struct path path;
+          	struct inode *inode = NULL;
+          	int err = 0;
+
+          	if (!user_info || !*user_info) {
+          		return;
+          	}
+
+          	if (copy_from_user(&info, (struct st_susfs_sus_path __user *)*user_info, sizeof(info))) {
+          		info.err = -EFAULT;
+          		goto out_copy_to_user;
+          	}
+
+          	if (info.target_pathname[0] == '\0') {
+          		info.err = -EINVAL;
+          		goto out_copy_to_user;
+          	}
+
+          	err = kern_path(info.target_pathname, LOOKUP_FOLLOW, &path);
+          	if (err) {
+          		info.err = err;
+          		goto out_copy_to_user;
+          	}
+
+          	inode = d_backing_inode(path.dentry);
+          	if (!inode || !inode->i_mapping) {
+          		info.err = -ENOENT;
+          		goto out_path_put;
+          	}
+
+          	set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
+          	info.err = 0;
+
+          out_path_put:
+          	path_put(&path);
+          out_copy_to_user:
+          	(void)copy_to_user(&((struct st_susfs_sus_path __user *)*user_info)->err,
+          			   &info.err, sizeof(info.err));
+          }
+          #endif /* CONFIG_KSU_SUSFS_SUS_PATH */
+          SUSFSCOMPAT
+            echo "✅ Added susfs_set_i_state_on_external_dir() compatibility wrapper"
+          else
+            echo "✅ susfs_set_i_state_on_external_dir() already present or fs/susfs.c missing"
+          fi
+
+          if [[ -f "$SUSFS_H" ]] && ! grep -q 'susfs_set_i_state_on_external_dir' "$SUSFS_H"; then
+            python3 - "$SUSFS_H" <<'SUSFSHPY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          t = p.read_text()
+          proto = 'void susfs_set_i_state_on_external_dir(void __user **user_info);\n'
+          if 'susfs_set_i_state_on_external_dir' not in t:
+              needle = 'void susfs_add_sus_path_loop(void __user **user_info);\n'
+              if needle in t:
+                  t = t.replace(needle, needle + proto, 1)
+              else:
+                  t = t.replace('#endif', proto + '#endif', 1)
+              p.write_text(t)
+          SUSFSHPY
+            echo "✅ Added susfs_set_i_state_on_external_dir() prototype"
+          fi
+
+          echo "SukiSU/KSU symbol scan:"
+          grep -RnsE 'manual_hook_keys_compat|ksu_is_input_hook_enabled|ksu_is_init_rc_hook_enabled' "$KSU_DIR" 2>/dev/null | head -n 80 || true
+          echo "SUSFS external-dir helper scan:"
+          grep -Rns 'susfs_set_i_state_on_external_dir' "$SUSFS_C" "$SUSFS_H" 2>/dev/null || true
+
+          echo "::endgroup::"
+
+
       - name: "Apply optional Multi-Manager patch"
 
         if: ${{ github.event.inputs.ksunext_multimanager == 'On' }}
