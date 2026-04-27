@@ -1,4 +1,4 @@
-name: OP13 SukiSU Ultra
+name: OP13 PJZ110 SukiSU Ultra
 env:
   TZ: Asia/Shanghai
   ANDROID_VERSION: android15
@@ -30,14 +30,14 @@ on:
 
 
       lz4_zram_patch:
-        description: "Apply ZRAM LZ4 perf patch (best-effort, may not apply on all trees)"
+        description: "EXPERIMENTAL: Apply ZRAM LZ4 perf patch (best-effort). Keep Off for first advanced-stable boot"
         type: choice
         required: true
         default: "Off"
         options: ["On", "Off"]
 
       zram_module:
-        description: "Build flashable zram-module.zip (replace zram.ko)"
+        description: "EXPERIMENTAL: Build flashable zram-module.zip. Keep Off unless kernel already boots cleanly"
         type: choice
         required: true
         default: "Off"
@@ -71,10 +71,10 @@ on:
         options: ["On", "Off"]
 
       bbg:
-        description: "Enable Baseband-Guard (BBG) - test only after safe boot"
+        description: "Enable Baseband-Guard (BBG) - advanced-stable default"
         type: choice
         required: true
-        default: "Off"
+        default: "On"
         options: ["On", "Off"]
 
       bbr:
@@ -85,10 +85,10 @@ on:
         options: ["On", "Off"]
 
       adios:
-        description: "Enable ADIOS I/O scheduler - test only after safe boot"
+        description: "Enable ADIOS I/O scheduler - advanced-stable default"
         type: choice
         required: true
-        default: "Off"
+        default: "On"
         options: ["On", "Off"]
 
       rekernel:
@@ -99,24 +99,24 @@ on:
         options: ["On", "Off"]
 
       proxy:
-        description: "Enable proxy/network tweaks (best-effort) - test only after safe boot"
+        description: "Enable proxy/network tweaks (best-effort) - advanced-stable default"
         type: choice
         required: true
-        default: "Off"
+        default: "On"
         options: ["On", "Off"]
 
       TTL:
-        description: "Enable TTL target/match (netfilter) - test only after safe boot"
+        description: "Enable TTL target/match (netfilter) - advanced-stable default"
         type: choice
         required: true
-        default: "Off"
+        default: "On"
         options: ["On", "Off"]
 
       IP_SET:
-        description: "Enable IP_SET (netfilter ipset) - test only after safe boot"
+        description: "Enable IP_SET (netfilter ipset) - advanced-stable default"
         type: choice
         required: true
-        default: "Off"
+        default: "On"
         options: ["On", "Off"]
 
       hmbird:
@@ -136,7 +136,7 @@ on:
         description: "Custom build time string (Enter F to use current UTC)"
         type: string
         required: false
-        default: "Thu Dec 11 04:17:27 UTC 2025"
+        default: "F"
 
       BUILD_USER:
         description: "KBUILD_BUILD_USER"
@@ -645,12 +645,17 @@ jobs:
           echo "SUKISU_HAS_SUSFS=0" >> "$GITHUB_ENV"
           echo "SUKISU_EFFECTIVE_REF=$SETUP_ARG" >> "$GITHUB_ENV"
 
+          # Pin both the setup argument and, where possible, the setup.sh source.
+          # This avoids future builtin-branch setup changes silently altering the old-good LSPosed lane.
+          SETUP_URL_PINNED="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SETUP_ARG}/kernel/setup.sh"
           SETUP_URL_PRIMARY="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh"
           SETUP_URL_FALLBACK="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/2aba6b8/kernel/setup.sh"
-          echo "→ Fetching SukiSU Ultra builtin setup.sh"
+          echo "→ Fetching SukiSU Ultra setup.sh"
           echo "→ SukiSU checkout arg: $SETUP_ARG"
           echo "Running SukiSU setup with checkout arg: $SETUP_ARG"
-          (curl -fLSs "$SETUP_URL_PRIMARY" | bash -s "$SETUP_ARG") || (curl -fLSs "$SETUP_URL_FALLBACK" | bash -s "$SETUP_ARG")
+          (curl -fLSs "$SETUP_URL_PINNED" | bash -s "$SETUP_ARG") || \
+            (curl -fLSs "$SETUP_URL_PRIMARY" | bash -s "$SETUP_ARG") || \
+            (curl -fLSs "$SETUP_URL_FALLBACK" | bash -s "$SETUP_ARG")
           # Detect whether this kernel tree actually contains SUSFS config symbols after SukiSU setup.
           # If not, we'll allow the external SUSFS patch step to run (avoids false "susfs-main" assumption).
           if [[ "$SUSFS_IN" == "On" ]]; then
@@ -867,59 +872,93 @@ jobs:
           echo "::group::Repair SukiSU 2aba6b8 + CCTV18 SUSFS symbol compatibility"
 
           KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
-          KSU_DIR="$KDIR/drivers/kernelsu"
+
+          # Resolve real KernelSU/SukiSU source directory. drivers/kernelsu is often a symlink.
+          CANDIDATES=(
+            "$KDIR/drivers/kernelsu"
+            "$KDIR/KernelSU/kernel"
+            "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/drivers/kernelsu"
+            "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/KernelSU/kernel"
+          )
+
+          KSU_DIR=""
+          for c in "${CANDIDATES[@]}"; do
+            if [[ -e "$c" ]]; then
+              real="$(readlink -f "$c" || true)"
+              if [[ -n "$real" && -f "$real/Kbuild" ]]; then
+                KSU_DIR="$real"
+                break
+              fi
+            fi
+          done
+
+          if [[ -z "$KSU_DIR" ]]; then
+            KSU_DIR="$(find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 8 -type f -path '*/drivers/kernelsu/Kbuild' -printf '%h\n' 2>/dev/null | head -n 1 || true)"
+          fi
+
+          if [[ -z "$KSU_DIR" || ! -f "$KSU_DIR/Kbuild" ]]; then
+            echo "::error::KernelSU/SukiSU Kbuild not found."
+            find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 8 -type f -path '*/drivers/kernelsu/Kbuild' -print | head -n 50 || true
+            exit 1
+          fi
+
           SUSFS_C="$KDIR/fs/susfs.c"
           SUSFS_H="$KDIR/include/linux/susfs.h"
 
-          if [[ ! -d "$KSU_DIR" ]]; then
-            echo "::error::KernelSU/SukiSU source dir not found: $KSU_DIR"
-            find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 6 -type f -path '*/drivers/kernelsu/Kbuild' -print | head -n 20 || true
-            exit 1
-          fi
-
-          if [[ ! -f "$KSU_DIR/Kbuild" ]]; then
-            echo "::error::KernelSU/SukiSU Kbuild not found: $KSU_DIR/Kbuild"
-            ls -la "$KSU_DIR" || true
-            exit 1
-          fi
-
           echo "Kernel dir : $KDIR"
           echo "SukiSU dir : $KSU_DIR"
+          echo "Kbuild    : $KSU_DIR/Kbuild"
 
+          # CCTV18 android15-6.6 SUSFS patch references these static keys from input.c/stat.c.
+          # Some older SukiSU builtin revisions do not define them. Define them once and force
+          # the object into the final vmlinux link path via obj-$(CONFIG_KSU), not ksu_obj-y.
           if ! grep -RqsE '^[[:space:]]*DEFINE_STATIC_KEY_FALSE[[:space:]]*\([[:space:]]*ksu_is_input_hook_enabled[[:space:]]*\)' "$KSU_DIR" 2>/dev/null; then
             cat > "$KSU_DIR/manual_hook_keys_compat.c" <<'MANUALKEYS'
           #include <linux/jump_label.h>
 
-          /* OP13 SukiSU 2aba6b8 + CCTV18/susfs4oki compatibility. */
+          /* OP13 SukiSU 2aba6b8 + CCTV18/susfs4oki android15-6.6 compatibility. */
           DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);
           DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);
           MANUALKEYS
-            if ! grep -q 'manual_hook_keys_compat.o' "$KSU_DIR/Kbuild"; then
-              python3 - "$KSU_DIR/Kbuild" <<'KBUILDPY'
-          from pathlib import Path
-          import sys
-          p = Path(sys.argv[1])
-          t = p.read_text()
-
-          # Critical OP13/SukiSU+CCTV18 fix:
-          # this object must be linked into final vmlinux directly.
-          # ksu_obj-y can be ignored by this older flat SukiSU Kbuild path.
-          t = t.replace('ksu_obj-y += manual_hook_keys_compat.o\n', '')
-          line = 'obj-$(CONFIG_KSU) += manual_hook_keys_compat.o\n'
-          if 'manual_hook_keys_compat.o' not in t:
-              marker = 'obj-$(CONFIG_KSU) += kernelsu.o\n'
-              if marker in t:
-                  t = t.replace(marker, marker + line, 1)
-              else:
-                  t = t.rstrip() + '\n\n# OP13 SukiSU + CCTV18 SUSFS final-link compatibility\n' + line
-          p.write_text(t)
-          KBUILDPY
-            fi
-            echo "✅ Added manual_hook_keys_compat.o via final-link obj-$(CONFIG_KSU) path"
+            echo "✅ Added manual_hook_keys_compat.c"
           else
             echo "✅ Manual-hook static key definitions already present"
           fi
 
+          python3 - "$KSU_DIR/Kbuild" <<'KBUILDPY'
+          from pathlib import Path
+          import sys
+
+          p = Path(sys.argv[1])
+          t = p.read_text()
+
+          # Remove the old wrong wiring if it exists. ksu_obj-y is not guaranteed to enter
+          # final vmlinux linkage on the old SukiSU flat/builtin layout.
+          t = t.replace('ksu_obj-y += manual_hook_keys_compat.o\n', '')
+          t = t.replace('ksu_obj-y += manual_hook_keys_compat.o\r\n', '')
+
+          line = 'obj-$(CONFIG_KSU) += manual_hook_keys_compat.o\n'
+          if 'manual_hook_keys_compat.o' not in t:
+              if not t.endswith('\n'):
+                  t += '\n'
+              t += '\n# OP13 SukiSU + CCTV18 SUSFS final-link compatibility\n' + line
+          elif line not in t:
+              # If the object was mentioned in another form, still add the final-link-safe form.
+              if not t.endswith('\n'):
+                  t += '\n'
+              t += '\n# OP13 SukiSU + CCTV18 SUSFS final-link compatibility\n' + line
+
+          p.write_text(t)
+          KBUILDPY
+
+          if ! grep -qE '^obj-\$\(CONFIG_KSU\)[[:space:]]*\+=[[:space:]]*manual_hook_keys_compat\.o' "$KSU_DIR/Kbuild"; then
+            echo "::error::manual_hook_keys_compat.o is not wired through obj-\$(CONFIG_KSU); final link may fail."
+            grep -n 'manual_hook_keys_compat.o' "$KSU_DIR/Kbuild" || true
+            exit 1
+          fi
+          echo "✅ manual_hook_keys_compat.o wired through obj-\$(CONFIG_KSU)"
+
+          # Compatibility wrapper for older SukiSU inline-hook supercalls against newer SUSFS v2 trees.
           if [[ -f "$SUSFS_C" ]] && ! grep -q 'susfs_set_i_state_on_external_dir' "$SUSFS_C"; then
             cat >> "$SUSFS_C" <<'SUSFSCOMPAT'
           /* OP13 compatibility for older SukiSU inline-hook supercalls. */
@@ -977,6 +1016,7 @@ jobs:
             python3 - "$SUSFS_H" <<'SUSFSHPY'
           from pathlib import Path
           import sys
+
           p = Path(sys.argv[1])
           t = p.read_text()
           proto = 'void susfs_set_i_state_on_external_dir(void __user **user_info);\n'
@@ -985,7 +1025,11 @@ jobs:
               if needle in t:
                   t = t.replace(needle, needle + proto, 1)
               else:
-                  t = t.replace('#endif', proto + '#endif', 1)
+                  idx = t.rfind('#endif')
+                  if idx != -1:
+                      t = t[:idx] + proto + t[idx:]
+                  else:
+                      t = t.rstrip() + '\n' + proto
               p.write_text(t)
           SUSFSHPY
             echo "✅ Added susfs_set_i_state_on_external_dir() prototype"
@@ -993,20 +1037,10 @@ jobs:
 
           echo "SukiSU/KSU symbol scan:"
           grep -RnsE 'manual_hook_keys_compat|ksu_is_input_hook_enabled|ksu_is_init_rc_hook_enabled' "$KSU_DIR" 2>/dev/null | head -n 80 || true
-
-          if [[ -f "$KSU_DIR/Kbuild" ]]; then
-            if ! grep -qE '^obj-\$\(CONFIG_KSU\)[[:space:]]\+=[[:space:]]manual_hook_keys_compat\.o' "$KSU_DIR/Kbuild"; then
-              echo "::error::manual_hook_keys_compat.o is not wired through obj-$(CONFIG_KSU). Final link may fail."
-              sed -n '1,220p' "$KSU_DIR/Kbuild" || true
-              exit 1
-            fi
-            echo "✅ manual_hook_keys_compat.o is wired into final link path."
-          fi
           echo "SUSFS external-dir helper scan:"
           grep -Rns 'susfs_set_i_state_on_external_dir' "$SUSFS_C" "$SUSFS_H" 2>/dev/null || true
 
           echo "::endgroup::"
-
 
       - name: "Apply optional Multi-Manager patch"
 
@@ -1452,7 +1486,7 @@ jobs:
           
           # Clean english kernel.string (include profile label)
           profile_label = os.environ.get("PROFILE_LABEL", "Balanced")
-          s = re.sub(r'^\s*kernel\.string=.*$', f'kernel.string=PJZ110 | SukiSU Ultra (builtin) [{profile_label}] (OP-OX)', s, flags=re.M)
+          s = re.sub(r'^\s*kernel\.string=.*$', f'kernel.string=OnePlus PJZ110 | SukiSU Ultra SUSFS [{profile_label}] Stock-Like', s, flags=re.M)
           
           # Remove previous custom injection (idempotent)
           s = re.sub(r'\n# --- OX1D3X3 CUSTOM START ---.*?# --- OX1D3X3 CUSTOM END ---\n', '\n', s, flags=re.S)
@@ -1477,7 +1511,7 @@ jobs:
           ui_print "                   / . \   | |"
           ui_print "                 /_/ \_\  |_|"
           ui_print "===================================================="
-          ui_print "Ox1d3x3 OP13 Kernel"
+          ui_print "Ox1d3x3 OP13 PJZ110 Kernel"
           ui_print "SukiSU : Ultra (builtin)"
           ui_print "Profile: {profile_label}"
           ui_print "Mode   : {feat}"
@@ -1512,12 +1546,12 @@ jobs:
 
           cat > AnyKernel3/banner <<EOF
           ====================================================
-                         Ox1d3x3 OP13 Kernel
+                         Ox1d3x3 OP13 PJZ110 Kernel
           SukiSU Ultra (builtin) [${PROFILE_LABEL}] + ${MODE_BANNER}
           ====================================================
           EOF
 
-          OUT="OP13_PJZ110_SAFE_${{ env.ANDROID_VERSION }}_${{ env.KERNEL_VERSION }}_${{ env.SUFFIX }}_${{ env.PROFILE_TAG }}_${{ github.run_number }}_${MODE_TAG}_FLASH_THIS.zip"
+          OUT="OP13_PJZ110_${{ env.ANDROID_VERSION }}_${{ env.KERNEL_VERSION }}_StockLike_${{ env.PROFILE_TAG }}_${{ github.run_number }}_${MODE_TAG}_FLASH_THIS.zip"
           rm -f "$OUT" || true
           (cd AnyKernel3 && zip -r9 "../$OUT" . -x "*.git*" -x "*README*" -x "*.md" >/dev/null)
           echo "OUT_ZIP=$OUT" >> "$GITHUB_ENV"
