@@ -64,6 +64,13 @@ on:
         required: false
         default: "2aba6b8"
 
+      susfs_try_umount:
+        description: "EXPERIMENTAL: SUSFS try_umount mount hiding. Keep Off for daily storage stability"
+        type: choice
+        required: true
+        default: "Off"
+        options: ["On", "Off"]
+
       ksunext_multimanager:
         description: "Apply multi-manager patch (best-effort)"
         type: choice
@@ -781,6 +788,11 @@ jobs:
             exit 0
           fi
 
+          if [[ "${{ github.event.inputs.susfs_try_umount }}" != "On" ]]; then
+            echo "SUSFS try_umount is Off → skipping setuid_hook susfs_try_umount wiring for storage stability."
+            exit 0
+          fi
+
           KDIR="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
 
           # After SukiSU setup.sh, drivers/kernelsu is a symlink into $KDIR/KernelSU/kernel
@@ -1106,7 +1118,11 @@ jobs:
             echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
-            echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$DEFCONFIG"
+            if [ "${{ github.event.inputs.susfs_try_umount }}" = "On" ]; then
+              echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$DEFCONFIG"
+            else
+              echo "# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set" >> "$DEFCONFIG"
+            fi
             echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$DEFCONFIG"
           else
@@ -1144,7 +1160,7 @@ jobs:
           echo "CONFIG_KSU_THRONE_TRACKER_ALWAYS_THREADED=y" >> "$DEFCONFIG" || true
 
 
-          # Advanced Stable defaults:
+          # Advanced Stable storage-safe defaults:
           # - Enable kernel-side mature features only.
           # - Do NOT touch /data/adb or init_boot from this workflow.
           # - Keep ZRAM module replacement, HMBIRD, KPM, KSUNext multi-manager off for daily stability.
@@ -1377,8 +1393,13 @@ jobs:
               -e KSU_SUSFS_SUS_MOUNT \
               -e KSU_SUSFS_SUS_KSTAT \
               -e KSU_SUSFS_SPOOF_UNAME \
-              -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-              -e KSU_SUSFS_TRY_UMOUNT || true
+              -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG || true
+
+            if [[ "${{ github.event.inputs.susfs_try_umount }}" == "On" ]]; then
+              ./scripts/config --file "$CFG" -e KSU_SUSFS_TRY_UMOUNT || true
+            else
+              ./scripts/config --file "$CFG" -d KSU_SUSFS_TRY_UMOUNT || true
+            fi
           fi
 
           # Re-resolve dependencies once
@@ -1426,23 +1447,13 @@ jobs:
               exit 1
             fi
 
-          # kernel-r25 SUSFS module compatibility (required by recent susfs module)
+          # SUSFS try_umount is intentionally optional. On some OP13/ColorOS builds it can
+          # break app-visible shared storage (/sdcard/FUSE), causing Camera/Photos/Play Store
+          # to report storage access or no-space errors. Daily stable default is Off.
           if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
-            if ! grep -qE '^(CONFIG_KSU_SUSFS_TRY_UMOUNT=|# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set)' "$CFG"; then
-              echo "::error::CONFIG_KSU_SUSFS_TRY_UMOUNT symbol missing in final .config."
-              echo "::error::KernelSU SUSFS patchset (kernel-r25 options) likely did not apply to your SukiSU builtin revision."
-              echo "::group::KernelSU Kconfig scan (drivers/kernelsu)"
-              (cd "${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}" && grep -Rns "KSU_SUSFS_TRY_UMOUNT" drivers/kernelsu 2>/dev/null | head -n 80) || true
-              echo "::endgroup::"
-              exit 1
-            fi
-            if ! grep -qE '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y$' "$CFG"; then
-              echo "::error::CONFIG_KSU_SUSFS_TRY_UMOUNT=y expected for SUSFS module compatibility (kernel-r25+) but was not enabled."
-              echo "::group::.config CONFIG_KSU_SUSFS_TRY_UMOUNT lines"
-              grep -n "KSU_SUSFS_TRY_UMOUNT" "$CFG" || true
-              echo "::endgroup::"
-              exit 1
-            fi
+            echo "::group::.config CONFIG_KSU_SUSFS_TRY_UMOUNT lines"
+            grep -n "KSU_SUSFS_TRY_UMOUNT" "$CFG" || true
+            echo "::endgroup::"
           fi
 
           fi
@@ -1720,6 +1731,7 @@ jobs:
           # SUSFS
           echo "| SUSFS | $(yn "${{ inputs.SUSFS }}") | $(cfgyn CONFIG_KSU_SUSFS) |" >> "$GITHUB_STEP_SUMMARY"
           echo "| SUSFS mode | \`${{ inputs.susfs_mode }}\` | $(test -f "$SRC/include/linux/susfs.h" && echo 'susfs.h present' || echo '—') |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SUSFS try_umount | \`${{ inputs.susfs_try_umount }}\` | $(cfgyn CONFIG_KSU_SUSFS_TRY_UMOUNT) |" >> "$GITHUB_STEP_SUMMARY"
           echo "| SUSFS TRY_UMOUNT (r25) | — | $(cfgyn CONFIG_KSU_SUSFS_TRY_UMOUNT) |" >> "$GITHUB_STEP_SUMMARY"
 
           # KernelSU Multi-manager patch (best-effort)
