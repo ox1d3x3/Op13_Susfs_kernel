@@ -1066,104 +1066,143 @@ jobs:
           grep -nE 'is_zygote_normal_app_uid|__OP13_KSUN_SUSFS_APP_UID_HELPER|ksu_uid_should_umount' "$SETUID_C" | head -n 80 || true
           echo "::endgroup::"
 
-      - name: "KernelSU-Next SUSFS kernel-r25 compat (TRY_UMOUNT)"
+      - name: "KernelSU-Next SUSFS r25 compat guard (no Suki try_umount shim)"
         shell: bash
         run: |
           set -euo pipefail
 
           if [[ "${{ github.event.inputs.SUSFS }}" != "On" ]]; then
-            echo "SUSFS Off → skipping SUSFS r25 compat patch."
+            echo "SUSFS Off → skipping KSUN r25 compat guard."
             exit 0
           fi
 
           KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
+          cd "$KDIR"
 
-          # After SukiSU setup.sh, drivers/kernelsu is a symlink into $KDIR/KernelSU/kernel
-          KSU_KCONFIG="$KDIR/drivers/kernelsu/Kconfig"
-          KSU_SETUID=""
+          KSU_KCONFIG=""
           for f in \
-            "$KDIR/drivers/kernelsu/hook/setuid_hook.c" \
-            "$KDIR/drivers/kernelsu/setuid_hook.c"; do
+            "drivers/kernelsu/Kconfig" \
+            "KernelSU-Next/kernel/Kconfig" \
+            "KernelSU/kernel/Kconfig"; do
             if [[ -f "$f" ]]; then
-              KSU_SETUID="$f"
+              KSU_KCONFIG="$f"
               break
             fi
           done
 
-          if [[ ! -f "$KSU_KCONFIG" ]]; then
-            echo "::error::KernelSU Kconfig not found at: $KSU_KCONFIG"
+          if [[ -z "$KSU_KCONFIG" ]]; then
+            echo "::error::KernelSU-Next Kconfig not found."
+            find . -maxdepth 7 -path '*kernelsu*Kconfig' -o -path '*KernelSU*Kconfig' 2>/dev/null | head -n 80 || true
             exit 1
           fi
 
-          if ! grep -q "config KSU_SUSFS_TRY_UMOUNT" "$KSU_KCONFIG"; then
-            echo "→ Adding CONFIG_KSU_SUSFS_TRY_UMOUNT to KernelSU Kconfig (required by SUSFS module r25+)."
-            python3 - "$KSU_KCONFIG" <<'PY'
+          echo "→ KSUN Kconfig: $KSU_KCONFIG"
+
+          # Keep the r25 config symbol available for susfs4ksu-module compatibility.
+          # Do NOT wire SukiSU's susfs_try_umount() into KernelSU-Next setuid_hook.c.
+          # KSUN + WildKernels v2.1.0 fix_setuid_hook.c.patch uses ksu_handle_extra_susfs_work()
+          # and susfs_set_current_proc_umounted() instead. Adding susfs_try_umount() here causes:
+          #   call to undeclared function 'susfs_try_umount'
+          if ! grep -q '^config KSU_SUSFS_TRY_UMOUNT$' "$KSU_KCONFIG"; then
+            echo "→ Adding KSU_SUSFS_TRY_UMOUNT Kconfig symbol only; no source hook insertion."
+            /usr/bin/python3 - "$KSU_KCONFIG" <<'PY'
           import sys
           from pathlib import Path
 
           p = Path(sys.argv[1])
           t = p.read_text()
-
-          sym = 'config KSU_SUSFS_TRY_UMOUNT'
-          if sym not in t:
-              insert = (
-                  'config KSU_SUSFS_TRY_UMOUNT\n'
-                  '\tbool "Try umount at post-fs-data"\n'
-                  '\tdepends on KSU_SUSFS\n'
-                  '\tdefault y\n'
-                  '\thelp\n'
-                  '\t  SUSFS module (kernel-r25+) compatibility: enables try_umount support.\n'
-                  '\n'
-              )
-              key = 'config KSU_SUSFS_SPOOF_UNAME'
-              if key in t:
-                  t = t.replace(key, insert + key, 1)
-              else:
-                  t = t.rstrip() + '\n\n' + insert + '\n'
-              p.write_text(t)
-              print('Inserted KSU_SUSFS_TRY_UMOUNT into Kconfig.')
-          else:
-              print('KSU_SUSFS_TRY_UMOUNT already present.')
-          PY
-          else
-            echo "CONFIG_KSU_SUSFS_TRY_UMOUNT already present."
-          fi
-
-          if [[ -f "$KSU_SETUID" ]] && ! grep -q "susfs_try_umount(" "$KSU_SETUID"; then
-            echo "→ Wiring susfs_try_umount() call after kernel umount."
-            python3 - "$KSU_SETUID" <<'PY'
-          import sys
-          from pathlib import Path
-
-          p = Path(sys.argv[1])
-          t = p.read_text()
-
-          if 'susfs_try_umount(' in t:
-              print('susfs_try_umount already present.')
-              raise SystemExit(0)
-
-          marker = 'ksu_handle_umount(old_uid, new_uid);'
-          if marker not in t:
-              print('Marker not found; skipping setuid_hook patch.')
-              raise SystemExit(0)
-
-          hook = (
-              marker + '\n\n'
-              + '#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT\n'
-              + '\t// SUSFS module (kernel-r25+) compatibility hook\n'
-              + '\tsusfs_try_umount(new_uid);\n'
-              + '#endif\n'
+          insert = (
+              'config KSU_SUSFS_TRY_UMOUNT\n'
+              '\tbool "Try umount compatibility for SUSFS userspace modules"\n'
+              '\tdepends on KSU_SUSFS\n'
+              '\tdefault y\n'
+              '\thelp\n'
+              '\t  Exposes the r25 compatibility config expected by recent SUSFS userspace modules.\n'
+              '\t  KernelSU-Next performs the actual work through its own ksu_handle_extra_susfs_work() path.\n'
+              '\n'
           )
-
-          t = t.replace(marker, hook, 1)
+          anchors = [
+              'config KSU_SUSFS_OPEN_REDIRECT',
+              'config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG',
+              'config KSU_SUSFS_SPOOF_UNAME',
+          ]
+          for a in anchors:
+              if a in t:
+                  t = t.replace(a, insert + a, 1)
+                  break
+          else:
+              t = t.rstrip() + '\n\n' + insert
           p.write_text(t)
-          print('Patched setuid_hook.c with susfs_try_umount().')
+          print('Inserted KSU_SUSFS_TRY_UMOUNT Kconfig symbol.')
           PY
           else
-            echo "setuid_hook.c already contains susfs_try_umount() (or missing) — skipping."
+            echo "KSU_SUSFS_TRY_UMOUNT Kconfig symbol already present."
           fi
 
-          echo "✅ SukiSU SUSFS r25 compat patch applied."
+          echo "::group::Remove invalid SukiSU-only susfs_try_umount shim if present"
+          SETUID_FILES=()
+          while IFS= read -r f; do
+            SETUID_FILES+=("$f")
+          done < <(find . -maxdepth 8 -type f -path '*/kernelsu/*setuid_hook.c' -o -path '*/KernelSU*/*setuid_hook.c' 2>/dev/null | sort -u)
+
+          if [[ "${#SETUID_FILES[@]}" -eq 0 ]]; then
+            echo "No setuid_hook.c found."
+          fi
+
+          for f in "${SETUID_FILES[@]}"; do
+            echo "Checking $f"
+            if grep -q 'susfs_try_umount[[:space:]]*(' "$f"; then
+              echo "→ Removing invalid susfs_try_umount() call from $f"
+              /usr/bin/python3 - "$f" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          orig = s
+
+          # Remove the exact block inserted by earlier OP13/Suki-style workflows.
+          s = re.sub(
+              r'\n\s*#ifdef\s+CONFIG_KSU_SUSFS_TRY_UMOUNT\s*\n'
+              r'\s*//[^\n]*SUSFS[^\n]*\n'
+              r'\s*susfs_try_umount\s*\([^;]*\);\s*\n'
+              r'\s*#endif\s*\n',
+              '\n',
+              s,
+              flags=re.M,
+          )
+          s = re.sub(
+              r'\n\s*#ifdef\s+CONFIG_KSU_SUSFS_TRY_UMOUNT\s*\n'
+              r'\s*susfs_try_umount\s*\([^;]*\);\s*\n'
+              r'\s*#endif\s*\n',
+              '\n',
+              s,
+              flags=re.M,
+          )
+          # Remove any remaining standalone call, but leave other KSUN SUSFS helpers intact.
+          s = re.sub(r'\n\s*susfs_try_umount\s*\([^;]*\);\s*\n', '\n', s)
+
+          if s != orig:
+              p.write_text(s)
+              print('removed susfs_try_umount shim')
+          else:
+              print('no susfs_try_umount shim found')
+          PY
+            fi
+          done
+          echo "::endgroup::"
+
+          if grep -Rns 'susfs_try_umount[[:space:]]*(' drivers/kernelsu KernelSU-Next KernelSU 2>/dev/null | grep -v Binary; then
+            echo "::error::susfs_try_umount() still appears in KernelSU-Next sources. This is invalid for KSUN v3.2.0 + WildKernels v2.1.0 fixes."
+            exit 1
+          fi
+
+          echo "::group::KSUN SUSFS r25 compat scan"
+          grep -RnsE 'KSU_SUSFS_TRY_UMOUNT|ksu_handle_extra_susfs_work|susfs_set_current_proc_umounted|susfs_try_umount' drivers/kernelsu KernelSU-Next KernelSU 2>/dev/null | head -n 140 || true
+          echo "::endgroup::"
+
+          echo "✅ KSUN SUSFS r25 compat guard complete."
 
 
 
