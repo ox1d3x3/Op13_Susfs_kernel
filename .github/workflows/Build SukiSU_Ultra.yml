@@ -58,10 +58,10 @@ on:
         options: [sukisu, external]
 
       sukisu_ref:
-        description: "SukiSU setup argument/ref. Default builtin = latest stable SukiSU builtin lane, matching known-good #90 behaviour."
+        description: "SukiSU setup argument/ref. Default main = latest SukiSU branch with proper Kbuild. External SUSFS Kconfig is injected locally."
         type: string
         required: false
-        default: "builtin"
+        default: "main"
 
       ksunext_multimanager:
         description: "Apply multi-manager patch (best-effort)"
@@ -637,21 +637,107 @@ jobs:
           SUSFS_IN="${{ github.event.inputs.SUSFS }}"
           SUSFS_MODE="${{ github.event.inputs.susfs_mode }}"
 
-          # Known-good #90 behaviour, but on the latest zh workflow/source:
-          # use SukiSU's builtin lane instead of forcing the old 2aba6b8 checkout.
-          # Pinning 2aba6b8 on the newer kernel/SUSFS tree caused the Android shared-storage/FUSE
-          # regression where Camera/Photos/Play Store could not see internal storage.
+          # Latest-branch stable lane:
+          # Use SukiSU main by default because current builtin has Kconfig but no kernel/Kbuild.
+          # The external SUSFS Kconfig menu is injected below for CCTV18/susfs4oki.
           SETUP_ARG="${{ github.event.inputs.sukisu_ref }}"
-          if [[ -z "$SETUP_ARG" || "$SETUP_ARG" == "2aba6b8" ]]; then SETUP_ARG="builtin"; fi
+          if [[ -z "$SETUP_ARG" || "$SETUP_ARG" == "2aba6b8" || "$SETUP_ARG" == "builtin" ]]; then SETUP_ARG="main"; fi
           echo "SUKISU_HAS_SUSFS=0" >> "$GITHUB_ENV"
           echo "SUKISU_EFFECTIVE_REF=$SETUP_ARG" >> "$GITHUB_ENV"
 
-          SETUP_URL_PRIMARY="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh"
-          SETUP_URL_FALLBACK="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh"
-          echo "→ Fetching SukiSU Ultra setup.sh from builtin lane"
+          SETUP_URL_PRIMARY="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh"
+          SETUP_URL_FALLBACK="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh"
+          echo "→ Fetching SukiSU Ultra setup.sh from latest main lane"
           echo "→ SukiSU setup arg: $SETUP_ARG"
           echo "Running SukiSU setup with checkout arg: $SETUP_ARG"
           (curl -fLSs "$SETUP_URL_PRIMARY" | bash -s "$SETUP_ARG") || (curl -fLSs "$SETUP_URL_FALLBACK" | bash -s "$SETUP_ARG")
+
+          # SukiSU main has the correct Kbuild, but may not expose the external SUSFS Kconfig menu.
+          # Inject only Kconfig symbols. The actual SUSFS code still comes from CCTV18/susfs4oki.
+          if [[ "$SUSFS_IN" == "On" ]]; then
+            KSU_KCONFIG_REAL="$(readlink -f ./drivers/kernelsu/Kconfig 2>/dev/null || true)"
+            if [[ -z "$KSU_KCONFIG_REAL" || ! -f "$KSU_KCONFIG_REAL" ]]; then
+              echo "::error::KernelSU Kconfig not found after SukiSU setup."
+              echo "drivers/kernelsu -> $(readlink ./drivers/kernelsu 2>/dev/null || echo missing)"
+              find . -maxdepth 6 -path '*KernelSU*kernel*Kconfig' -o -path '*drivers*kernelsu*Kconfig' | head -n 50 || true
+              exit 1
+            fi
+            if ! grep -q 'config KSU_SUSFS' "$KSU_KCONFIG_REAL"; then
+              echo "→ Injecting external SUSFS Kconfig menu into: $KSU_KCONFIG_REAL"
+              python3 - "$KSU_KCONFIG_REAL" <<'SUSFSKCONFIG'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          t = p.read_text(encoding='utf-8')
+          block = r'''
+
+          menu "KernelSU - SUSFS"
+
+          config KSU_SUSFS
+          	bool "KernelSU addon - SUSFS"
+          	depends on KSU
+          	depends on THREAD_INFO_IN_TASK
+          	default y
+
+          config KSU_SUSFS_SUS_PATH
+          	bool "Enable to hide suspicious path"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_SUS_MOUNT
+          	bool "Enable to hide suspicious mounts"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_SUS_KSTAT
+          	bool "Enable to spoof suspicious kstat"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_SPOOF_UNAME
+          	bool "Enable to spoof uname"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_ENABLE_LOG
+          	bool "Enable logging susfs log to kernel"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+          	bool "Hide ksu/susfs symbols from kallsyms"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          	bool "Spoof /proc/cmdline or /proc/bootconfig"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_OPEN_REDIRECT
+          	bool "Enable open redirect"
+          	depends on KSU_SUSFS
+          	default y
+
+          config KSU_SUSFS_SUS_MAP
+          	bool "Enable suspicious map hiding"
+          	depends on KSU_SUSFS
+          	default y
+
+          endmenu
+          '''
+          if 'config KSU_SUSFS' not in t:
+              idx = t.rfind('endmenu')
+              if idx != -1:
+                  t = t[:idx] + block + '\n' + t[idx:]
+              else:
+                  t = t.rstrip() + block + '\n'
+              p.write_text(t, encoding='utf-8')
+          SUSFSKCONFIG
+            else
+              echo "✅ KernelSU Kconfig already exposes KSU_SUSFS."
+            fi
+          fi
           # Detect whether this kernel tree actually contains SUSFS config symbols after SukiSU setup.
           # If not, we'll allow the external SUSFS patch step to run (avoids false "susfs-main" assumption).
           if [[ "$SUSFS_IN" == "On" ]]; then
@@ -859,70 +945,85 @@ jobs:
 
 
 
-      - name: "Repair SukiSU 2aba6b8 + CCTV18 SUSFS symbol compatibility"
+      - name: "Repair SukiSU latest-main + CCTV18 SUSFS symbol compatibility"
         if: ${{ github.event.inputs.SUSFS == 'On' }}
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "::group::Repair SukiSU 2aba6b8 + CCTV18 SUSFS symbol compatibility"
+          echo "::group::Repair SukiSU latest-main + CCTV18 SUSFS symbol compatibility"
 
           KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
-          KSU_DIR="$KDIR/drivers/kernelsu"
           SUSFS_C="$KDIR/fs/susfs.c"
           SUSFS_H="$KDIR/include/linux/susfs.h"
 
-          if [[ ! -d "$KSU_DIR" ]]; then
-            echo "::error::KernelSU/SukiSU source dir not found: $KSU_DIR"
-            find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 6 -type f -path '*/drivers/kernelsu/Kbuild' -print | head -n 20 || true
+          # Resolve drivers/kernelsu correctly even when it is a symlink into KernelSU/kernel.
+          KSU_LINK="$KDIR/drivers/kernelsu"
+          KSU_DIR="$(readlink -f "$KSU_LINK" 2>/dev/null || true)"
+          if [[ -z "$KSU_DIR" || ! -d "$KSU_DIR" ]]; then
+            KSU_DIR="$(find "$KDIR" "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 8 -type d \( -path '*/KernelSU/kernel' -o -path '*/drivers/kernelsu' \) 2>/dev/null | head -n 1 || true)"
+          fi
+          if [[ -z "$KSU_DIR" || ! -d "$KSU_DIR" ]]; then
+            echo "::error::KernelSU/SukiSU source dir not found. drivers/kernelsu link: $(readlink "$KSU_LINK" 2>/dev/null || echo missing)"
+            find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 8 -type d -iname '*kernelsu*' -print | head -n 80 || true
             exit 1
           fi
 
-          if [[ ! -f "$KSU_DIR/Kbuild" ]]; then
-            echo "::error::KernelSU/SukiSU Kbuild not found: $KSU_DIR/Kbuild"
+          KSU_BUILD_FILE=""
+          if [[ -f "$KSU_DIR/Kbuild" ]]; then
+            KSU_BUILD_FILE="$KSU_DIR/Kbuild"
+          elif [[ -f "$KSU_DIR/Makefile" ]]; then
+            KSU_BUILD_FILE="$KSU_DIR/Makefile"
+          fi
+          if [[ -z "$KSU_BUILD_FILE" ]]; then
+            echo "::error::No KernelSU/SukiSU Kbuild or Makefile found in: $KSU_DIR"
             ls -la "$KSU_DIR" || true
             exit 1
           fi
 
-          echo "Kernel dir : $KDIR"
-          echo "SukiSU dir : $KSU_DIR"
+          echo "Kernel dir       : $KDIR"
+          echo "SukiSU link      : $KSU_LINK -> $(readlink "$KSU_LINK" 2>/dev/null || echo not-a-link)"
+          echo "SukiSU real dir  : $KSU_DIR"
+          echo "SukiSU build file: $KSU_BUILD_FILE"
 
           if ! grep -RqsE '^[[:space:]]*DEFINE_STATIC_KEY_FALSE[[:space:]]*\([[:space:]]*ksu_is_input_hook_enabled[[:space:]]*\)' "$KSU_DIR" 2>/dev/null; then
             cat > "$KSU_DIR/manual_hook_keys_compat.c" <<'MANUALKEYS'
           #include <linux/jump_label.h>
 
-          /* OP13 SukiSU 2aba6b8 + CCTV18/susfs4oki compatibility. */
+          /* OP13 SukiSU latest-main + CCTV18/susfs4oki compatibility. */
           DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);
           DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);
           MANUALKEYS
-            if ! grep -q 'manual_hook_keys_compat.o' "$KSU_DIR/Kbuild"; then
-              python3 - "$KSU_DIR/Kbuild" <<'KBUILDPY'
+            if ! grep -q 'manual_hook_keys_compat.o' "$KSU_BUILD_FILE"; then
+              python3 - "$KSU_BUILD_FILE" <<'KBUILDPY'
           from pathlib import Path
           import sys
           p = Path(sys.argv[1])
-          t = p.read_text()
-          # Do NOT wire this through ksu_obj-y on the newer SukiSU layout.
-          # The known-good #90 build used final-link obj-$(CONFIG_KSU), which guarantees
-          # the static-key definitions are present in vmlinux without changing SukiSU logic.
-          t = t.replace('ksu_obj-y += manual_hook_keys_compat.o\n', '')
-          line = 'obj-$(CONFIG_KSU) += manual_hook_keys_compat.o\n'
+          t = p.read_text(encoding='utf-8')
           if 'manual_hook_keys_compat.o' not in t:
-              marker = 'obj-$(CONFIG_KSU) += kernelsu.o\n'
-              if marker in t:
-                  t = t.replace(marker, marker + line, 1)
+              if 'kernelsu-objs' in t:
+                  if 'kernelsu-objs += allowlist.o' in t:
+                      t = t.replace('kernelsu-objs += allowlist.o', 'kernelsu-objs += allowlist.o\nkernelsu-objs += manual_hook_keys_compat.o', 1)
+                  else:
+                      t = t.rstrip() + '\nkernelsu-objs += manual_hook_keys_compat.o\n'
+              elif 'kernelsu-y' in t:
+                  t = t.rstrip() + '\nkernelsu-y += manual_hook_keys_compat.o\n'
+              elif 'ksu_obj-y' in t:
+                  t = t.rstrip() + '\nksu_obj-y += manual_hook_keys_compat.o\n'
               else:
-                  t = t.rstrip() + '\n\n# OP13 SukiSU + CCTV18 SUSFS final-link compatibility\n' + line
-              p.write_text(t)
+                  # Last resort: standalone final-link object.
+                  t = t.rstrip() + '\n\n# OP13 SukiSU + CCTV18 SUSFS final-link compatibility\nobj-$(CONFIG_KSU) += manual_hook_keys_compat.o\n'
+              p.write_text(t, encoding='utf-8')
           KBUILDPY
             fi
-            echo "✅ Added manual_hook_keys_compat.o via final-link obj-$(CONFIG_KSU) path"
+            echo "✅ Added manual_hook_keys_compat.o to SukiSU build file"
           else
             echo "✅ Manual-hook static key definitions already present"
           fi
 
           if [[ -f "$SUSFS_C" ]] && ! grep -q 'susfs_set_i_state_on_external_dir' "$SUSFS_C"; then
             cat >> "$SUSFS_C" <<'SUSFSCOMPAT'
-          /* OP13 compatibility for older SukiSU inline-hook supercalls. */
+          /* OP13 compatibility for SukiSU inline-hook supercalls. */
           #ifdef CONFIG_KSU_SUSFS_SUS_PATH
           void susfs_set_i_state_on_external_dir(void __user **user_info)
           {
@@ -978,28 +1079,24 @@ jobs:
           from pathlib import Path
           import sys
           p = Path(sys.argv[1])
-          t = p.read_text()
+          t = p.read_text(encoding='utf-8')
           proto = 'void susfs_set_i_state_on_external_dir(void __user **user_info);\n'
           if 'susfs_set_i_state_on_external_dir' not in t:
               needle = 'void susfs_add_sus_path_loop(void __user **user_info);\n'
               if needle in t:
                   t = t.replace(needle, needle + proto, 1)
               else:
-                  t = t.replace('#endif', proto + '#endif', 1)
-              p.write_text(t)
+                  idx = t.rfind('#endif')
+                  t = t[:idx] + proto + t[idx:] if idx != -1 else t.rstrip() + '\n' + proto
+              p.write_text(t, encoding='utf-8')
           SUSFSHPY
             echo "✅ Added susfs_set_i_state_on_external_dir() prototype"
           fi
 
+          echo "SukiSU/KSU build wiring scan:"
+          grep -n 'manual_hook_keys_compat.o' "$KSU_BUILD_FILE" || true
           echo "SukiSU/KSU symbol scan:"
           grep -RnsE 'manual_hook_keys_compat|ksu_is_input_hook_enabled|ksu_is_init_rc_hook_enabled' "$KSU_DIR" 2>/dev/null | head -n 80 || true
-          if [[ -f "$KSU_DIR/Kbuild" ]]; then
-            if ! grep -qE '^obj-\$\(CONFIG_KSU\)[[:space:]]\+=[[:space:]]manual_hook_keys_compat\.o' "$KSU_DIR/Kbuild"; then
-              echo "::error::manual_hook_keys_compat.o is not wired through obj-$(CONFIG_KSU). Refusing to build a kernel that may fail final link or behave differently from #90."
-              grep -n 'manual_hook_keys_compat.o' "$KSU_DIR/Kbuild" || true
-              exit 1
-            fi
-          fi
           echo "SUSFS external-dir helper scan:"
           grep -Rns 'susfs_set_i_state_on_external_dir' "$SUSFS_C" "$SUSFS_H" 2>/dev/null || true
 
