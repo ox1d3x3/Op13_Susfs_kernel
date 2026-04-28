@@ -58,10 +58,10 @@ on:
         options: [sukisu, external]
 
       sukisu_ref:
-        description: "SukiSU checkout ref. Default pins the old-good builtin branch state from before the LSPosed regression."
+        description: "SukiSU setup argument/ref. Default builtin = latest stable SukiSU builtin lane, matching known-good #90 behaviour."
         type: string
         required: false
-        default: "2aba6b8"
+        default: "builtin"
 
       ksunext_multimanager:
         description: "Apply multi-manager patch (best-effort)"
@@ -637,18 +637,19 @@ jobs:
           SUSFS_IN="${{ github.event.inputs.SUSFS }}"
           SUSFS_MODE="${{ github.event.inputs.susfs_mode }}"
 
-          # Old-good LSPosed compatibility lane:
-          # Do NOT float on current builtin. Your known-good run was before the later SukiSU builtin
-          # changes that caused LSPosed sepolicy/system-service injection issues.
+          # Known-good #90 behaviour, but on the latest zh workflow/source:
+          # use SukiSU's builtin lane instead of forcing the old 2aba6b8 checkout.
+          # Pinning 2aba6b8 on the newer kernel/SUSFS tree caused the Android shared-storage/FUSE
+          # regression where Camera/Photos/Play Store could not see internal storage.
           SETUP_ARG="${{ github.event.inputs.sukisu_ref }}"
-          if [[ -z "$SETUP_ARG" ]]; then SETUP_ARG="2aba6b8"; fi
+          if [[ -z "$SETUP_ARG" || "$SETUP_ARG" == "2aba6b8" ]]; then SETUP_ARG="builtin"; fi
           echo "SUKISU_HAS_SUSFS=0" >> "$GITHUB_ENV"
           echo "SUKISU_EFFECTIVE_REF=$SETUP_ARG" >> "$GITHUB_ENV"
 
           SETUP_URL_PRIMARY="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh"
-          SETUP_URL_FALLBACK="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/2aba6b8/kernel/setup.sh"
-          echo "→ Fetching SukiSU Ultra builtin setup.sh"
-          echo "→ SukiSU checkout arg: $SETUP_ARG"
+          SETUP_URL_FALLBACK="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh"
+          echo "→ Fetching SukiSU Ultra setup.sh from builtin lane"
+          echo "→ SukiSU setup arg: $SETUP_ARG"
           echo "Running SukiSU setup with checkout arg: $SETUP_ARG"
           (curl -fLSs "$SETUP_URL_PRIMARY" | bash -s "$SETUP_ARG") || (curl -fLSs "$SETUP_URL_FALLBACK" | bash -s "$SETUP_ARG")
           # Detect whether this kernel tree actually contains SUSFS config symbols after SukiSU setup.
@@ -890,66 +891,34 @@ jobs:
             cat > "$KSU_DIR/manual_hook_keys_compat.c" <<'MANUALKEYS'
           #include <linux/jump_label.h>
 
-          /* OP13 SukiSU 2aba6b8 + CCTV18/susfs4oki compatibility.
-           * Defines static keys referenced by CCTV18 Android 15/6.6 SUSFS hooks.
-           * Keep this inside kernelsu.o when possible, matching the old-good #90 lane.
-           */
+          /* OP13 SukiSU 2aba6b8 + CCTV18/susfs4oki compatibility. */
           DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);
           DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);
           MANUALKEYS
-            echo "✅ Added manual_hook_keys_compat.c"
+            if ! grep -q 'manual_hook_keys_compat.o' "$KSU_DIR/Kbuild"; then
+              python3 - "$KSU_DIR/Kbuild" <<'KBUILDPY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          t = p.read_text()
+          # Do NOT wire this through ksu_obj-y on the newer SukiSU layout.
+          # The known-good #90 build used final-link obj-$(CONFIG_KSU), which guarantees
+          # the static-key definitions are present in vmlinux without changing SukiSU logic.
+          t = t.replace('ksu_obj-y += manual_hook_keys_compat.o\n', '')
+          line = 'obj-$(CONFIG_KSU) += manual_hook_keys_compat.o\n'
+          if 'manual_hook_keys_compat.o' not in t:
+              marker = 'obj-$(CONFIG_KSU) += kernelsu.o\n'
+              if marker in t:
+                  t = t.replace(marker, marker + line, 1)
+              else:
+                  t = t.rstrip() + '\n\n# OP13 SukiSU + CCTV18 SUSFS final-link compatibility\n' + line
+              p.write_text(t)
+          KBUILDPY
+            fi
+            echo "✅ Added manual_hook_keys_compat.o via final-link obj-$(CONFIG_KSU) path"
           else
             echo "✅ Manual-hook static key definitions already present"
           fi
-
-          # Link manual_hook_keys_compat.o in the least invasive way:
-          # 1) Prefer kernelsu-objs / kernelsu-y so it is folded into kernelsu.o.
-          # 2) Fall back to ksu_obj-y only if Kbuild still uses that live variable.
-          # 3) Final fallback: obj-$(CONFIG_KSU), only when no aggregate target exists.
-          # This avoids the old ignored ksu_obj-y append while staying closer to the #90 working layout.
-          python3 - "$KSU_DIR/Kbuild" <<'KBUILDPY'
-          from pathlib import Path
-          import re, sys
-          p = Path(sys.argv[1])
-          t = p.read_text()
-
-          # Remove prior bad/duplicate wiring. Keep one clean wiring line only.
-          t = re.sub(r'^\s*ksu_obj-y\s*\+=\s*manual_hook_keys_compat\.o\s*\n', '', t, flags=re.M)
-          t = re.sub(r'^\s*kernelsu-objs\s*\+=\s*manual_hook_keys_compat\.o\s*\n', '', t, flags=re.M)
-          t = re.sub(r'^\s*kernelsu-y\s*\+=\s*manual_hook_keys_compat\.o\s*\n', '', t, flags=re.M)
-          t = re.sub(r'^\s*obj-\$\(CONFIG_KSU\)\s*\+=\s*manual_hook_keys_compat\.o\s*\n', '', t, flags=re.M)
-
-          def append_after(pattern: str, line: str) -> bool:
-              global t
-              m = re.search(pattern, t, flags=re.M)
-              if not m:
-                  return False
-              t = t[:m.end()] + line + t[m.end():]
-              return True
-
-          if re.search(r'^\s*kernelsu-objs\s*[:+]?=', t, flags=re.M):
-              append_after(r'^\s*kernelsu-objs\s*[:+]?=.*\n', 'kernelsu-objs += manual_hook_keys_compat.o\n')
-              mode = 'kernelsu-objs'
-          elif re.search(r'^\s*kernelsu-y\s*[:+]?=', t, flags=re.M):
-              append_after(r'^\s*kernelsu-y\s*[:+]?=.*\n', 'kernelsu-y += manual_hook_keys_compat.o\n')
-              mode = 'kernelsu-y'
-          elif re.search(r'\$\(ksu_obj-y\)', t):
-              if not append_after(r'^\s*ksu_obj-y\s*\+=\s*ksuinit\.o\s*\n', 'ksu_obj-y += manual_hook_keys_compat.o\n'):
-                  append_after(r'^\s*ksu_obj-y\s*[:+]?=.*\n', 'ksu_obj-y += manual_hook_keys_compat.o\n')
-              mode = 'ksu_obj-y'
-          else:
-              if not t.endswith('\n'):
-                  t += '\n'
-              t += '\n# OP13 SukiSU + CCTV18 SUSFS manual-hook static-key compatibility\n'
-              t += 'obj-$(CONFIG_KSU) += manual_hook_keys_compat.o\n'
-              mode = 'obj-CONFIG_KSU-fallback'
-
-          p.write_text(t)
-          print(f'Wired manual_hook_keys_compat.o via {mode}')
-          KBUILDPY
-
-          echo "manual_hook_keys_compat Kbuild wiring:"
-          grep -n 'manual_hook_keys_compat.o' "$KSU_DIR/Kbuild" || true
 
           if [[ -f "$SUSFS_C" ]] && ! grep -q 'susfs_set_i_state_on_external_dir' "$SUSFS_C"; then
             cat >> "$SUSFS_C" <<'SUSFSCOMPAT'
@@ -1024,6 +993,13 @@ jobs:
 
           echo "SukiSU/KSU symbol scan:"
           grep -RnsE 'manual_hook_keys_compat|ksu_is_input_hook_enabled|ksu_is_init_rc_hook_enabled' "$KSU_DIR" 2>/dev/null | head -n 80 || true
+          if [[ -f "$KSU_DIR/Kbuild" ]]; then
+            if ! grep -qE '^obj-\$\(CONFIG_KSU\)[[:space:]]\+=[[:space:]]manual_hook_keys_compat\.o' "$KSU_DIR/Kbuild"; then
+              echo "::error::manual_hook_keys_compat.o is not wired through obj-$(CONFIG_KSU). Refusing to build a kernel that may fail final link or behave differently from #90."
+              grep -n 'manual_hook_keys_compat.o' "$KSU_DIR/Kbuild" || true
+              exit 1
+            fi
+          fi
           echo "SUSFS external-dir helper scan:"
           grep -Rns 'susfs_set_i_state_on_external_dir' "$SUSFS_C" "$SUSFS_H" 2>/dev/null || true
 
