@@ -58,10 +58,10 @@ on:
         options: [sukisu, external]
 
       sukisu_ref:
-        description: "SukiSU setup argument/ref. Default main = latest SukiSU branch with proper Kbuild. External SUSFS Kconfig is injected locally."
+        description: "SukiSU checkout ref. Default pins the old-good builtin branch state from before the LSPosed regression."
         type: string
         required: false
-        default: "main"
+        default: "2aba6b8"
 
       ksunext_multimanager:
         description: "Apply multi-manager patch (best-effort)"
@@ -637,107 +637,20 @@ jobs:
           SUSFS_IN="${{ github.event.inputs.SUSFS }}"
           SUSFS_MODE="${{ github.event.inputs.susfs_mode }}"
 
-          # Latest-branch stable lane:
-          # Use SukiSU main by default because current builtin has Kconfig but no kernel/Kbuild.
-          # The external SUSFS Kconfig menu is injected below for CCTV18/susfs4oki.
+          # Old-good LSPosed compatibility lane:
+          # Do NOT float on current builtin. Your known-good run was before the later SukiSU builtin
+          # changes that caused LSPosed sepolicy/system-service injection issues.
           SETUP_ARG="${{ github.event.inputs.sukisu_ref }}"
-          if [[ -z "$SETUP_ARG" || "$SETUP_ARG" == "2aba6b8" || "$SETUP_ARG" == "builtin" ]]; then SETUP_ARG="main"; fi
+          if [[ -z "$SETUP_ARG" ]]; then SETUP_ARG="2aba6b8"; fi
           echo "SUKISU_HAS_SUSFS=0" >> "$GITHUB_ENV"
           echo "SUKISU_EFFECTIVE_REF=$SETUP_ARG" >> "$GITHUB_ENV"
 
-          SETUP_URL_PRIMARY="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh"
-          SETUP_URL_FALLBACK="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh"
-          echo "→ Fetching SukiSU Ultra setup.sh from latest main lane"
-          echo "→ SukiSU setup arg: $SETUP_ARG"
+          SETUP_URL_PRIMARY="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/setup.sh"
+          SETUP_URL_FALLBACK="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/2aba6b8/kernel/setup.sh"
+          echo "→ Fetching SukiSU Ultra builtin setup.sh"
+          echo "→ SukiSU checkout arg: $SETUP_ARG"
           echo "Running SukiSU setup with checkout arg: $SETUP_ARG"
           (curl -fLSs "$SETUP_URL_PRIMARY" | bash -s "$SETUP_ARG") || (curl -fLSs "$SETUP_URL_FALLBACK" | bash -s "$SETUP_ARG")
-
-          # SukiSU main has the correct Kbuild, but may not expose the external SUSFS Kconfig menu.
-          # Inject only Kconfig symbols. The actual SUSFS code still comes from CCTV18/susfs4oki.
-          if [[ "$SUSFS_IN" == "On" ]]; then
-            KSU_KCONFIG_REAL="$(readlink -f ./drivers/kernelsu/Kconfig 2>/dev/null || true)"
-            if [[ -z "$KSU_KCONFIG_REAL" || ! -f "$KSU_KCONFIG_REAL" ]]; then
-              echo "::error::KernelSU Kconfig not found after SukiSU setup."
-              echo "drivers/kernelsu -> $(readlink ./drivers/kernelsu 2>/dev/null || echo missing)"
-              find . -maxdepth 6 -path '*KernelSU*kernel*Kconfig' -o -path '*drivers*kernelsu*Kconfig' | head -n 50 || true
-              exit 1
-            fi
-            if ! grep -q 'config KSU_SUSFS' "$KSU_KCONFIG_REAL"; then
-              echo "→ Injecting external SUSFS Kconfig menu into: $KSU_KCONFIG_REAL"
-              python3 - "$KSU_KCONFIG_REAL" <<'SUSFSKCONFIG'
-          from pathlib import Path
-          import sys
-          p = Path(sys.argv[1])
-          t = p.read_text(encoding='utf-8')
-          block = r'''
-
-          menu "KernelSU - SUSFS"
-
-          config KSU_SUSFS
-          	bool "KernelSU addon - SUSFS"
-          	depends on KSU
-          	depends on THREAD_INFO_IN_TASK
-          	default y
-
-          config KSU_SUSFS_SUS_PATH
-          	bool "Enable to hide suspicious path"
-          	depends on KSU_SUSFS
-          	default y
-
-          config KSU_SUSFS_SUS_MOUNT
-          	bool "Enable to hide suspicious mounts"
-          	depends on KSU_SUSFS
-          	default y
-
-          config KSU_SUSFS_SUS_KSTAT
-          	bool "Enable to spoof suspicious kstat"
-          	depends on KSU_SUSFS
-          	default y
-
-          config KSU_SUSFS_SPOOF_UNAME
-          	bool "Enable to spoof uname"
-          	depends on KSU_SUSFS
-          	default y
-
-          config KSU_SUSFS_ENABLE_LOG
-          	bool "Enable logging susfs log to kernel"
-          	depends on KSU_SUSFS
-          	default y
-
-          config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
-          	bool "Hide ksu/susfs symbols from kallsyms"
-          	depends on KSU_SUSFS
-          	default y
-
-          config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-          	bool "Spoof /proc/cmdline or /proc/bootconfig"
-          	depends on KSU_SUSFS
-          	default y
-
-          config KSU_SUSFS_OPEN_REDIRECT
-          	bool "Enable open redirect"
-          	depends on KSU_SUSFS
-          	default y
-
-          config KSU_SUSFS_SUS_MAP
-          	bool "Enable suspicious map hiding"
-          	depends on KSU_SUSFS
-          	default y
-
-          endmenu
-          '''
-          if 'config KSU_SUSFS' not in t:
-              idx = t.rfind('endmenu')
-              if idx != -1:
-                  t = t[:idx] + block + '\n' + t[idx:]
-              else:
-                  t = t.rstrip() + block + '\n'
-              p.write_text(t, encoding='utf-8')
-          SUSFSKCONFIG
-            else
-              echo "✅ KernelSU Kconfig already exposes KSU_SUSFS."
-            fi
-          fi
           # Detect whether this kernel tree actually contains SUSFS config symbols after SukiSU setup.
           # If not, we'll allow the external SUSFS patch step to run (avoids false "susfs-main" assumption).
           if [[ "$SUSFS_IN" == "On" ]]; then
@@ -945,104 +858,102 @@ jobs:
 
 
 
-      - name: "Repair SukiSU latest/main + CCTV18 SUSFS manual-hook linkage"
+      - name: "Repair SukiSU 2aba6b8 + CCTV18 SUSFS symbol compatibility"
         if: ${{ github.event.inputs.SUSFS == 'On' }}
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "::group::Repair SukiSU latest/main + CCTV18 SUSFS manual-hook linkage"
+          echo "::group::Repair SukiSU 2aba6b8 + CCTV18 SUSFS symbol compatibility"
 
           KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
+          KSU_DIR="$KDIR/drivers/kernelsu"
           SUSFS_C="$KDIR/fs/susfs.c"
           SUSFS_H="$KDIR/include/linux/susfs.h"
 
-          # Resolve drivers/kernelsu correctly even when it is a symlink into KernelSU/kernel.
-          KSU_LINK="$KDIR/drivers/kernelsu"
-          KSU_DIR="$(readlink -f "$KSU_LINK" 2>/dev/null || true)"
-          if [[ -z "$KSU_DIR" || ! -d "$KSU_DIR" ]]; then
-            KSU_DIR="$(find "$KDIR" "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 8 -type d \( -path '*/KernelSU/kernel' -o -path '*/drivers/kernelsu' \) 2>/dev/null | head -n 1 || true)"
-          fi
-          if [[ -z "$KSU_DIR" || ! -d "$KSU_DIR" ]]; then
-            echo "::error::KernelSU/SukiSU source dir not found. drivers/kernelsu link: $(readlink "$KSU_LINK" 2>/dev/null || echo missing)"
-            find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 8 -type d -iname '*kernelsu*' -print | head -n 80 || true
+          if [[ ! -d "$KSU_DIR" ]]; then
+            echo "::error::KernelSU/SukiSU source dir not found: $KSU_DIR"
+            find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 6 -type f -path '*/drivers/kernelsu/Kbuild' -print | head -n 20 || true
             exit 1
           fi
 
-          KSU_BUILD_FILE=""
-          if [[ -f "$KSU_DIR/Kbuild" ]]; then
-            KSU_BUILD_FILE="$KSU_DIR/Kbuild"
-          elif [[ -f "$KSU_DIR/Makefile" ]]; then
-            KSU_BUILD_FILE="$KSU_DIR/Makefile"
-          fi
-          if [[ -z "$KSU_BUILD_FILE" ]]; then
-            echo "::error::No KernelSU/SukiSU Kbuild or Makefile found in: $KSU_DIR"
+          if [[ ! -f "$KSU_DIR/Kbuild" ]]; then
+            echo "::error::KernelSU/SukiSU Kbuild not found: $KSU_DIR/Kbuild"
             ls -la "$KSU_DIR" || true
             exit 1
           fi
 
-          echo "Kernel dir       : $KDIR"
-          echo "SukiSU link      : $KSU_LINK -> $(readlink "$KSU_LINK" 2>/dev/null || echo not-a-link)"
-          echo "SukiSU real dir  : $KSU_DIR"
-          echo "SukiSU build file: $KSU_BUILD_FILE"
+          echo "Kernel dir : $KDIR"
+          echo "SukiSU dir : $KSU_DIR"
 
-          # CCTV18/susfs4oki Android 15/6.6 patches can reference these static keys from
-          # drivers/input/input.c and fs/stat.c. Some SukiSU layouts do not provide them.
-          # Define them once, then wire the object into the aggregate kernelsu.o object.
           if ! grep -RqsE '^[[:space:]]*DEFINE_STATIC_KEY_FALSE[[:space:]]*\([[:space:]]*ksu_is_input_hook_enabled[[:space:]]*\)' "$KSU_DIR" 2>/dev/null; then
             cat > "$KSU_DIR/manual_hook_keys_compat.c" <<'MANUALKEYS'
           #include <linux/jump_label.h>
 
-          /* OP13 SukiSU latest/main + CCTV18/susfs4oki compatibility. */
+          /* OP13 SukiSU 2aba6b8 + CCTV18/susfs4oki compatibility.
+           * Defines static keys referenced by CCTV18 Android 15/6.6 SUSFS hooks.
+           * Keep this inside kernelsu.o when possible, matching the old-good #90 lane.
+           */
           DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);
           DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);
           MANUALKEYS
+            echo "✅ Added manual_hook_keys_compat.c"
           else
             echo "✅ Manual-hook static key definitions already present"
           fi
 
-          if ! grep -q 'manual_hook_keys_compat.o' "$KSU_BUILD_FILE"; then
-            python3 - "$KSU_BUILD_FILE" <<'KBUILDPY'
+          # Link manual_hook_keys_compat.o in the least invasive way:
+          # 1) Prefer kernelsu-objs / kernelsu-y so it is folded into kernelsu.o.
+          # 2) Fall back to ksu_obj-y only if Kbuild still uses that live variable.
+          # 3) Final fallback: obj-$(CONFIG_KSU), only when no aggregate target exists.
+          # This avoids the old ignored ksu_obj-y append while staying closer to the #90 working layout.
+          python3 - "$KSU_DIR/Kbuild" <<'KBUILDPY'
           from pathlib import Path
-          import sys
-
+          import re, sys
           p = Path(sys.argv[1])
-          t = p.read_text(encoding='utf-8')
-          line = 'kernelsu-objs += manual_hook_keys_compat.o\n'
+          t = p.read_text()
 
-          if 'manual_hook_keys_compat.o' not in t:
-              # Correct for both latest-main and old flat SukiSU layouts:
-              # kernelsu.o is built from kernelsu-objs, so add directly to that aggregate.
-              if 'kernelsu-objs :=' in t or 'kernelsu-objs +=' in t:
-                  marker = 'obj-$(CONFIG_KSU) += kernelsu.o'
-                  if marker in t:
-                      t = t.replace(marker, line + marker, 1)
-                  else:
-                      t = t.rstrip() + '\n' + line
-              elif 'kernelsu-y :=' in t or 'kernelsu-y +=' in t:
-                  t = t.rstrip() + '\nkernelsu-y += manual_hook_keys_compat.o\n'
-              elif 'ksu_obj-y' in t and 'kernelsu-objs := $(ksu_obj-y)' in t:
-                  # Do NOT append to ksu_obj-y after kernelsu-objs := $(ksu_obj-y), because := is already expanded.
-                  t = t.replace('kernelsu-objs := $(ksu_obj-y)', 'kernelsu-objs := $(ksu_obj-y)\nkernelsu-objs += manual_hook_keys_compat.o', 1)
-              else:
-                  # Last resort: build it as a standalone built-in object.
-                  t = t.rstrip() + '\n\n# OP13 SukiSU + CCTV18 SUSFS final-link compatibility\nobj-$(CONFIG_KSU) += manual_hook_keys_compat.o\n'
-              p.write_text(t, encoding='utf-8')
+          # Remove prior bad/duplicate wiring. Keep one clean wiring line only.
+          t = re.sub(r'^\s*ksu_obj-y\s*\+=\s*manual_hook_keys_compat\.o\s*\n', '', t, flags=re.M)
+          t = re.sub(r'^\s*kernelsu-objs\s*\+=\s*manual_hook_keys_compat\.o\s*\n', '', t, flags=re.M)
+          t = re.sub(r'^\s*kernelsu-y\s*\+=\s*manual_hook_keys_compat\.o\s*\n', '', t, flags=re.M)
+          t = re.sub(r'^\s*obj-\$\(CONFIG_KSU\)\s*\+=\s*manual_hook_keys_compat\.o\s*\n', '', t, flags=re.M)
+
+          def append_after(pattern: str, line: str) -> bool:
+              global t
+              m = re.search(pattern, t, flags=re.M)
+              if not m:
+                  return False
+              t = t[:m.end()] + line + t[m.end():]
+              return True
+
+          if re.search(r'^\s*kernelsu-objs\s*[:+]?=', t, flags=re.M):
+              append_after(r'^\s*kernelsu-objs\s*[:+]?=.*\n', 'kernelsu-objs += manual_hook_keys_compat.o\n')
+              mode = 'kernelsu-objs'
+          elif re.search(r'^\s*kernelsu-y\s*[:+]?=', t, flags=re.M):
+              append_after(r'^\s*kernelsu-y\s*[:+]?=.*\n', 'kernelsu-y += manual_hook_keys_compat.o\n')
+              mode = 'kernelsu-y'
+          elif re.search(r'\$\(ksu_obj-y\)', t):
+              if not append_after(r'^\s*ksu_obj-y\s*\+=\s*ksuinit\.o\s*\n', 'ksu_obj-y += manual_hook_keys_compat.o\n'):
+                  append_after(r'^\s*ksu_obj-y\s*[:+]?=.*\n', 'ksu_obj-y += manual_hook_keys_compat.o\n')
+              mode = 'ksu_obj-y'
+          else:
+              if not t.endswith('\n'):
+                  t += '\n'
+              t += '\n# OP13 SukiSU + CCTV18 SUSFS manual-hook static-key compatibility\n'
+              t += 'obj-$(CONFIG_KSU) += manual_hook_keys_compat.o\n'
+              mode = 'obj-CONFIG_KSU-fallback'
+
+          p.write_text(t)
+          print(f'Wired manual_hook_keys_compat.o via {mode}')
           KBUILDPY
-            echo "✅ Added manual_hook_keys_compat.o to live KernelSU/SukiSU build aggregate"
-          else
-            echo "✅ manual_hook_keys_compat.o already present in build file"
-          fi
 
-          if ! grep -q 'manual_hook_keys_compat.o' "$KSU_BUILD_FILE"; then
-            echo "::error::manual_hook_keys_compat.o was not wired into $KSU_BUILD_FILE"
-            sed -n '1,120p' "$KSU_BUILD_FILE" || true
-            exit 1
-          fi
+          echo "manual_hook_keys_compat Kbuild wiring:"
+          grep -n 'manual_hook_keys_compat.o' "$KSU_DIR/Kbuild" || true
 
           if [[ -f "$SUSFS_C" ]] && ! grep -q 'susfs_set_i_state_on_external_dir' "$SUSFS_C"; then
             cat >> "$SUSFS_C" <<'SUSFSCOMPAT'
-          /* OP13 compatibility for SukiSU inline-hook supercalls. */
+          /* OP13 compatibility for older SukiSU inline-hook supercalls. */
           #ifdef CONFIG_KSU_SUSFS_SUS_PATH
           void susfs_set_i_state_on_external_dir(void __user **user_info)
           {
@@ -1098,7 +1009,7 @@ jobs:
           from pathlib import Path
           import sys
           p = Path(sys.argv[1])
-          t = p.read_text(encoding='utf-8')
+          t = p.read_text()
           proto = 'void susfs_set_i_state_on_external_dir(void __user **user_info);\n'
           if 'susfs_set_i_state_on_external_dir' not in t:
               needle = 'void susfs_add_sus_path_loop(void __user **user_info);\n'
@@ -1106,152 +1017,15 @@ jobs:
                   t = t.replace(needle, needle + proto, 1)
               else:
                   t = t.replace('#endif', proto + '#endif', 1)
-              p.write_text(t, encoding='utf-8')
+              p.write_text(t)
           SUSFSHPY
             echo "✅ Added susfs_set_i_state_on_external_dir() prototype"
           fi
 
-          echo "SukiSU build-file compat scan:"
-          grep -n 'manual_hook_keys_compat.o' "$KSU_BUILD_FILE" || true
           echo "SukiSU/KSU symbol scan:"
           grep -RnsE 'manual_hook_keys_compat|ksu_is_input_hook_enabled|ksu_is_init_rc_hook_enabled' "$KSU_DIR" 2>/dev/null | head -n 80 || true
           echo "SUSFS external-dir helper scan:"
           grep -Rns 'susfs_set_i_state_on_external_dir' "$SUSFS_C" "$SUSFS_H" 2>/dev/null || true
-
-          echo "::endgroup::"
-
-
-
-
-      - name: "Repair SukiSU main legacy inline-hook ABI bridge"
-        if: ${{ github.event.inputs.SUSFS == 'On' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "::group::Repair SukiSU main legacy inline-hook ABI bridge"
-
-          KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
-          KSU_LINK="$KDIR/drivers/kernelsu"
-          KSU_DIR="$(readlink -f "$KSU_LINK" 2>/dev/null || true)"
-          if [[ -z "$KSU_DIR" || ! -d "$KSU_DIR" ]]; then
-            KSU_DIR="$(find "$KDIR" "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 8 -type d \( -path '*/KernelSU/kernel' -o -path '*/drivers/kernelsu' \) 2>/dev/null | head -n 1 || true)"
-          fi
-          if [[ -z "$KSU_DIR" || ! -d "$KSU_DIR" ]]; then
-            echo "::error::KernelSU/SukiSU source dir not found. drivers/kernelsu link: $(readlink "$KSU_LINK" 2>/dev/null || echo missing)"
-            exit 1
-          fi
-
-          KSU_BUILD_FILE=""
-          if [[ -f "$KSU_DIR/Kbuild" ]]; then
-            KSU_BUILD_FILE="$KSU_DIR/Kbuild"
-          elif [[ -f "$KSU_DIR/Makefile" ]]; then
-            KSU_BUILD_FILE="$KSU_DIR/Makefile"
-          else
-            echo "::error::No KernelSU/SukiSU Kbuild or Makefile found in: $KSU_DIR"
-            ls -la "$KSU_DIR" || true
-            exit 1
-          fi
-
-          echo "Kernel dir       : $KDIR"
-          echo "SukiSU real dir  : $KSU_DIR"
-          echo "SukiSU build file: $KSU_BUILD_FILE"
-
-          # CCTV18's android15/6.6 SUSFS patch still references the older inline-hook KernelSU ABI
-          # from core kernel files. SukiSU main moved to the newer syscall-event bridge, so these
-          # old callsite symbols may not exist. These weak wrappers satisfy old callsites without
-          # replacing SukiSU main's own tracepoint/syscall hook implementation.
-          cat > "$KSU_DIR/main_legacy_inline_compat.c" <<'LEGACYABI'
-          #include <linux/types.h>
-          #include <linux/fs.h>
-          #include <linux/uidgid.h>
-          #include <linux/uaccess.h>
-          #include <linux/jump_label.h>
-          #include <linux/compiler_attributes.h>
-
-          struct filename;
-
-          /* SUSFS AVC-log spoof globals expected by CCTV18's kernel patch. */
-          __attribute__((weak)) u32 susfs_ksu_sid;
-          __attribute__((weak)) u32 susfs_priv_app_sid;
-
-          /* Domain check expected by SUSFS mount/proc_namespace code. */
-          __attribute__((weak)) bool susfs_is_current_ksu_domain(void)
-          {
-          	return false;
-          }
-
-          /* Older inline-hook ABI expected by CCTV18's android15/6.6 patch. */
-          __attribute__((weak)) int ksu_handle_devpts(struct inode *inode)
-          {
-          	return 0;
-          }
-
-          __attribute__((weak)) void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)
-          {
-          }
-
-          __attribute__((weak)) int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
-          					       void *argv, void *envp, int *flags)
-          {
-          	return 0;
-          }
-
-          __attribute__((weak)) int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
-          					                void *argv, void *envp, int *flags)
-          {
-          	return 0;
-          }
-
-          __attribute__((weak)) int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr,
-          					      size_t *count_ptr)
-          {
-          	return 0;
-          }
-
-          __attribute__((weak)) int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
-          					        void __user **arg)
-          {
-          	return 0;
-          }
-
-          __attribute__((weak)) int ksu_handle_input_handle_event(unsigned int *type,
-          					              unsigned int *code, int *value)
-          {
-          	return 0;
-          }
-          LEGACYABI
-
-          if ! grep -q 'main_legacy_inline_compat.o' "$KSU_BUILD_FILE"; then
-            python3 - "$KSU_BUILD_FILE" <<'KBUILDPY'
-          from pathlib import Path
-          import sys
-
-          p = Path(sys.argv[1])
-          t = p.read_text(encoding='utf-8')
-          line = 'kernelsu-objs += main_legacy_inline_compat.o\n'
-
-          if 'main_legacy_inline_compat.o' not in t:
-              if 'kernelsu-objs :=' in t or 'kernelsu-objs +=' in t:
-                  marker = 'obj-$(CONFIG_KSU) += kernelsu.o'
-                  if marker in t:
-                      t = t.replace(marker, line + marker, 1)
-                  else:
-                      t = t.rstrip() + '\n' + line
-              elif 'kernelsu-y :=' in t or 'kernelsu-y +=' in t:
-                  t = t.rstrip() + '\nkernelsu-y += main_legacy_inline_compat.o\n'
-              elif 'ksu_obj-y' in t and 'kernelsu-objs := $(ksu_obj-y)' in t:
-                  t = t.replace('kernelsu-objs := $(ksu_obj-y)', 'kernelsu-objs := $(ksu_obj-y)\nkernelsu-objs += main_legacy_inline_compat.o', 1)
-              else:
-                  t = t.rstrip() + '\n\n# OP13 SukiSU main + CCTV18 SUSFS old inline ABI bridge\nobj-$(CONFIG_KSU) += main_legacy_inline_compat.o\n'
-              p.write_text(t, encoding='utf-8')
-          KBUILDPY
-          fi
-
-          echo "Legacy ABI bridge build-file scan:"
-          grep -n 'main_legacy_inline_compat.o' "$KSU_BUILD_FILE" || true
-          echo "Legacy ABI bridge symbol scan:"
-          grep -RnsE 'main_legacy_inline_compat|ksu_handle_devpts|susfs_ksu_sid|ksu_handle_sys_reboot|ksu_handle_sys_read|ksu_handle_execveat|ksu_handle_vfs_fstat|susfs_is_current_ksu_domain' "$KSU_DIR" 2>/dev/null | head -n 120 || true
 
           echo "::endgroup::"
 
@@ -1309,9 +1083,15 @@ jobs:
           # KernelSU base
           echo "CONFIG_KSU=y" >> "$DEFCONFIG" || true
 
-          # SUSFS vs MANUAL_HOOK (match your original logic)
+          # SukiSU hook selection:
+          # For SukiSU 2aba6b8, SUSFS inline mode is selected by CONFIG_KSU_NONE_HOOK=y
+          # together with CONFIG_KSU_SUSFS=y. If NONE_HOOK is disabled, Kconfig can fall
+          # back to syscall/tracepoint mode, which is exactly what broke HMA/Edge X Pro.
           if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
             echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_NONE_HOOK=y" >> "$DEFCONFIG"
+            echo "# CONFIG_KSU_MANUAL_HOOK is not set" >> "$DEFCONFIG"
+            echo "# CONFIG_KSU_SYSCALL_HOOK is not set" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$DEFCONFIG"
@@ -1325,6 +1105,8 @@ jobs:
           else
             echo "CONFIG_KSU_SUSFS=n" >> "$DEFCONFIG"
             echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$DEFCONFIG"
+            echo "# CONFIG_KSU_NONE_HOOK is not set" >> "$DEFCONFIG"
+            echo "# CONFIG_KSU_SYSCALL_HOOK is not set" >> "$DEFCONFIG"
           fi
 
           # Support Mountify-style tmpfs xattrs (as in your base workflow)
@@ -1351,9 +1133,13 @@ jobs:
             echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG" || true
           fi
 
-          # SukiSU safety: avoid experimental modes that can destabilize OEM kernels
+          # SukiSU safety: avoid experimental modes that can destabilize OEM kernels.
+          # Do NOT disable CONFIG_KSU_NONE_HOOK when SUSFS is On; SukiSU uses
+          # NONE_HOOK + KSU_SUSFS as the SUSFS_INLINE_HOOK mode.
           echo "# CONFIG_KSU_MANUAL_SU is not set" >> "$DEFCONFIG" || true
-          echo "# CONFIG_KSU_NONE_HOOK is not set" >> "$DEFCONFIG" || true
+          if [ "${{ github.event.inputs.SUSFS }}" != "On" ]; then
+            echo "# CONFIG_KSU_NONE_HOOK is not set" >> "$DEFCONFIG" || true
+          fi
           echo "CONFIG_KSU_THRONE_TRACKER_ALWAYS_THREADED=y" >> "$DEFCONFIG" || true
 
 
@@ -1402,6 +1188,34 @@ jobs:
             # Balanced: keep upstream defaults (recommended daily driver)
             true
           fi
+
+
+      - name: "Verify SukiSU hook config before build"
+        if: ${{ github.event.inputs.SUSFS == 'On' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEFCONFIG="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig"
+          echo "SukiSU/SUSFS hook config lines in defconfig:"
+          grep -nE 'CONFIG_KSU_(SUSFS|NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK)' "$DEFCONFIG" || true
+
+          if ! grep -q '^CONFIG_KSU_SUSFS=y' "$DEFCONFIG"; then
+            echo "::error::CONFIG_KSU_SUSFS=y is missing. SUSFS will not be compiled."
+            exit 1
+          fi
+          if ! grep -q '^CONFIG_KSU_NONE_HOOK=y' "$DEFCONFIG"; then
+            echo "::error::CONFIG_KSU_NONE_HOOK=y is missing. SukiSU will not use SUSFS_INLINE_HOOK."
+            exit 1
+          fi
+          if grep -q '^CONFIG_KSU_SYSCALL_HOOK=y' "$DEFCONFIG"; then
+            echo "::error::CONFIG_KSU_SYSCALL_HOOK=y is enabled. This causes Tracepoint syscall redirect instead of SUSFS_INLINE_HOOK."
+            exit 1
+          fi
+          if grep -q '^CONFIG_KSU_MANUAL_HOOK=y' "$DEFCONFIG"; then
+            echo "::error::CONFIG_KSU_MANUAL_HOOK=y is enabled while SUSFS is On. Expected CONFIG_KSU_NONE_HOOK=y for inline SUSFS."
+            exit 1
+          fi
+          echo "✅ Hook config expects SukiSU build log: KernelSU: SUSFS_INLINE_HOOK"
 
 
       - name: "Set kernel version suffix (LOCALVERSION)"
@@ -1577,11 +1391,16 @@ jobs:
             -e PROBE_EVENTS_BTF_ARGS \
             -d DEBUG_INFO_REDUCED || true
 
-          # 3) Force-enable SUSFS module (kernel-r25) options if SUSFS is On
+          # 3) Force-enable SUSFS module (kernel-r25) options if SUSFS is On.
+          # SukiSU 2aba6b8 selects SUSFS_INLINE_HOOK through KSU_NONE_HOOK + KSU_SUSFS.
+          # If KSU_SYSCALL_HOOK survives here, the manager reports "Tracepoint syscall redirect".
           if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
             ./scripts/config --file "$CFG" \
               -e KSU \
               -e KSU_SUSFS \
+              -e KSU_NONE_HOOK \
+              -d KSU_MANUAL_HOOK \
+              -d KSU_SYSCALL_HOOK \
               -e KSU_SUSFS_SUS_PATH \
               -e KSU_SUSFS_SUS_MOUNT \
               -e KSU_SUSFS_SUS_KSTAT \
@@ -1595,8 +1414,8 @@ jobs:
 
           echo "::group::Key options in final .config"
           grep -nE '^(CONFIG_DEBUG_INFO_BTF=|CONFIG_DEBUG_INFO_BTF_MODULES=|CONFIG_MODULE_ALLOW_BTF_MISMATCH=|CONFIG_PROBE_EVENTS_BTF_ARGS=|CONFIG_CC_OPTIMIZE_FOR_)=|^# CONFIG_CC_OPTIMIZE_FOR_SIZE is not set|^# CONFIG_DEBUG_INFO_REDUCED is not set' "$CFG" || true
-          grep -nE '^(CONFIG_KSU_SUSFS|CONFIG_KSU_SUSFS_SPOOF_UNAME|CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG|CONFIG_KSU_SUSFS_TRY_UMOUNT)=' "$CFG" || true
-          grep -nE '^# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set' "$CFG" || true
+          grep -nE '^(CONFIG_KSU_(SUSFS|NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK)|CONFIG_KSU_SUSFS_SPOOF_UNAME|CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG|CONFIG_KSU_SUSFS_TRY_UMOUNT)=' "$CFG" || true
+          grep -nE '^# CONFIG_KSU_(NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK|SUSFS_TRY_UMOUNT) is not set' "$CFG" || true
           echo "::endgroup::"
 
           # 4) Build
@@ -1634,6 +1453,28 @@ jobs:
               echo "::notice::If both groups are empty, SUSFS patch likely applied to wrong root. Use v6.7 which applies patches from kernel_platform root when patch paths start with common/."
               exit 1
             fi
+
+          # SukiSU inline SUSFS hook validation. Without this, apps show
+          # "Tracepoint syscall redirect" and SUSFS-backed hiding breaks.
+          if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
+            if ! grep -q '^CONFIG_KSU_NONE_HOOK=y$' "$CFG"; then
+              echo "::error::CONFIG_KSU_NONE_HOOK=y expected. Final kernel will not be SUSFS_INLINE_HOOK."
+              grep -nE 'CONFIG_KSU_(NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK|SUSFS)' "$CFG" || true
+              exit 1
+            fi
+            if grep -q '^CONFIG_KSU_SYSCALL_HOOK=y$' "$CFG"; then
+              echo "::error::CONFIG_KSU_SYSCALL_HOOK=y detected. This is the Tracepoint syscall redirect build, not inline SUSFS."
+              grep -nE 'CONFIG_KSU_(NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK|SUSFS)' "$CFG" || true
+              exit 1
+            fi
+            if grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$CFG"; then
+              echo "::error::CONFIG_KSU_MANUAL_HOOK=y detected while SUSFS is On. Expected KSU_NONE_HOOK inline SUSFS."
+              grep -nE 'CONFIG_KSU_(NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK|SUSFS)' "$CFG" || true
+              exit 1
+            fi
+            echo "✅ Final .config hook mode: CONFIG_KSU_NONE_HOOK=y + CONFIG_KSU_SUSFS=y → SUSFS_INLINE_HOOK"
+          fi
+
 
           # kernel-r25 SUSFS module compatibility (required by recent susfs module)
           if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
