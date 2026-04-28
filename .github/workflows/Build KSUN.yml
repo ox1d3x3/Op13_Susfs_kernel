@@ -287,14 +287,101 @@ jobs:
           set -euo pipefail
           mkdir -p kernel_workspace
           cd kernel_workspace
+
           # Manifest repo: only zh branch contains manifest.xml
           MANIFEST_REPO="https://github.com/mrcxlinux/actions_oplus_sm8750.git"
           MANIFEST_BRANCH="zh"
           MANIFEST_FILE="manifest.xml"
           echo "Using manifest: $MANIFEST_REPO ($MANIFEST_BRANCH/$MANIFEST_FILE)"
-          curl -fsSL "https://raw.githubusercontent.com/mrcxlinux/actions_oplus_sm8750/${MANIFEST_BRANCH}/${MANIFEST_FILE}" >/dev/null
-          repo init -u "$MANIFEST_REPO" -b "$MANIFEST_BRANCH" -m "$MANIFEST_FILE" --depth=1
-          repo sync -c -j"$(nproc)" --no-tags --no-clone-bundle --force-sync
+
+          # GitHub hosted runners sometimes hit temporary CodeLinaro 502/connection errors
+          # while syncing the many CLO external/prebuilt repos. Treat sync as resumable
+          # network work: retry, lower parallelism, then diagnose with -j1 --fail-fast.
+          git config --global protocol.version 2 || true
+          git config --global fetch.parallel 2 || true
+          git config --global http.lowSpeedLimit 1000 || true
+          git config --global http.lowSpeedTime 120 || true
+
+          retry_cmd() {
+            local desc="$1"
+            shift
+            local max_attempts=5
+            local delay=20
+            local attempt
+            for attempt in $(seq 1 "$max_attempts"); do
+              echo "::group::$desc attempt $attempt/$max_attempts"
+              if "$@"; then
+                echo "::endgroup::"
+                return 0
+              fi
+              echo "::endgroup::"
+              echo "::warning::$desc failed on attempt $attempt/$max_attempts"
+              if [[ "$attempt" -lt "$max_attempts" ]]; then
+                echo "Sleeping ${delay}s before retry..."
+                sleep "$delay"
+                delay=$((delay * 2))
+                [[ "$delay" -gt 240 ]] && delay=240
+              fi
+            done
+            return 1
+          }
+
+          retry_cmd "Manifest availability check" curl -fsSL "https://raw.githubusercontent.com/mrcxlinux/actions_oplus_sm8750/${MANIFEST_BRANCH}/${MANIFEST_FILE}" -o /tmp/op13_manifest.xml
+          retry_cmd "repo init" repo init -u "$MANIFEST_REPO" -b "$MANIFEST_BRANCH" -m "$MANIFEST_FILE" --depth=1
+
+          REPO_SYNC_BASE=(-c --no-tags --no-clone-bundle --force-sync --prune)
+          if repo help sync 2>/dev/null | grep -q -- '--retry-fetches'; then
+            REPO_SYNC_BASE+=(--retry-fetches=10)
+          fi
+          if repo help sync 2>/dev/null | grep -q -- '--optimized-fetch'; then
+            REPO_SYNC_BASE+=(--optimized-fetch)
+          fi
+
+          run_repo_sync() {
+            local jobs="$1"
+            echo "Running repo sync with -j${jobs}"
+            repo sync "${REPO_SYNC_BASE[@]}" -j"$jobs"
+          }
+
+          diagnose_first_failure() {
+            echo "::group::repo sync diagnostic (-j1 --fail-fast)"
+            repo sync "${REPO_SYNC_BASE[@]}" -j1 --fail-fast || true
+            echo "::endgroup::"
+          }
+
+          CPU_JOBS="$(nproc)"
+          JOBS="$CPU_JOBS"
+          if [[ "$JOBS" -gt 8 ]]; then JOBS=8; fi
+          if [[ "$JOBS" -lt 1 ]]; then JOBS=1; fi
+
+          SYNC_OK=0
+          DELAYS=(20 45 90 180 300 300)
+          for attempt in 1 2 3 4 5 6; do
+            echo "::group::repo sync attempt ${attempt}/6 using ${JOBS} job(s)"
+            if run_repo_sync "$JOBS"; then
+              SYNC_OK=1
+              echo "::endgroup::"
+              break
+            fi
+            echo "::endgroup::"
+            echo "::warning::repo sync failed on attempt ${attempt}/6. This is usually transient CodeLinaro/CLO network failure when HTTP 502 appears."
+            diagnose_first_failure
+            if [[ "$JOBS" -gt 1 ]]; then
+              JOBS=$((JOBS / 2))
+              [[ "$JOBS" -lt 1 ]] && JOBS=1
+            fi
+            sleep "${DELAYS[$((attempt-1))]}"
+          done
+
+          if [[ "$SYNC_OK" != "1" ]]; then
+            echo "::error::repo sync could not complete after retries. This is a remote/network sync failure, not a KSUN/SUSFS compile error."
+            echo "Recent failing project hints:"
+            repo sync "${REPO_SYNC_BASE[@]}" -j1 --fail-fast || true
+            exit 1
+          fi
+
+          # One final light pass resumes any project that may have finished during retry windows.
+          repo sync "${REPO_SYNC_BASE[@]}" -j1
 
           rm -f kernel_platform/common/android/abi_gki_protected_exports_* || true
           rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || true
