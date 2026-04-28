@@ -945,13 +945,13 @@ jobs:
 
 
 
-      - name: "Repair SukiSU latest-main + CCTV18 SUSFS symbol compatibility"
+      - name: "Repair SukiSU latest/main + CCTV18 SUSFS manual-hook linkage"
         if: ${{ github.event.inputs.SUSFS == 'On' }}
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "::group::Repair SukiSU latest-main + CCTV18 SUSFS symbol compatibility"
+          echo "::group::Repair SukiSU latest/main + CCTV18 SUSFS manual-hook linkage"
 
           KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
           SUSFS_C="$KDIR/fs/susfs.c"
@@ -986,39 +986,58 @@ jobs:
           echo "SukiSU real dir  : $KSU_DIR"
           echo "SukiSU build file: $KSU_BUILD_FILE"
 
+          # CCTV18/susfs4oki Android 15/6.6 patches can reference these static keys from
+          # drivers/input/input.c and fs/stat.c. Some SukiSU layouts do not provide them.
+          # Define them once, then wire the object into the aggregate kernelsu.o object.
           if ! grep -RqsE '^[[:space:]]*DEFINE_STATIC_KEY_FALSE[[:space:]]*\([[:space:]]*ksu_is_input_hook_enabled[[:space:]]*\)' "$KSU_DIR" 2>/dev/null; then
             cat > "$KSU_DIR/manual_hook_keys_compat.c" <<'MANUALKEYS'
           #include <linux/jump_label.h>
 
-          /* OP13 SukiSU latest-main + CCTV18/susfs4oki compatibility. */
+          /* OP13 SukiSU latest/main + CCTV18/susfs4oki compatibility. */
           DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);
           DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);
           MANUALKEYS
-            if ! grep -q 'manual_hook_keys_compat.o' "$KSU_BUILD_FILE"; then
-              python3 - "$KSU_BUILD_FILE" <<'KBUILDPY'
+          else
+            echo "✅ Manual-hook static key definitions already present"
+          fi
+
+          if ! grep -q 'manual_hook_keys_compat.o' "$KSU_BUILD_FILE"; then
+            python3 - "$KSU_BUILD_FILE" <<'KBUILDPY'
           from pathlib import Path
           import sys
+
           p = Path(sys.argv[1])
           t = p.read_text(encoding='utf-8')
+          line = 'kernelsu-objs += manual_hook_keys_compat.o\n'
+
           if 'manual_hook_keys_compat.o' not in t:
-              if 'kernelsu-objs' in t:
-                  if 'kernelsu-objs += allowlist.o' in t:
-                      t = t.replace('kernelsu-objs += allowlist.o', 'kernelsu-objs += allowlist.o\nkernelsu-objs += manual_hook_keys_compat.o', 1)
+              # Correct for both latest-main and old flat SukiSU layouts:
+              # kernelsu.o is built from kernelsu-objs, so add directly to that aggregate.
+              if 'kernelsu-objs :=' in t or 'kernelsu-objs +=' in t:
+                  marker = 'obj-$(CONFIG_KSU) += kernelsu.o'
+                  if marker in t:
+                      t = t.replace(marker, line + marker, 1)
                   else:
-                      t = t.rstrip() + '\nkernelsu-objs += manual_hook_keys_compat.o\n'
-              elif 'kernelsu-y' in t:
+                      t = t.rstrip() + '\n' + line
+              elif 'kernelsu-y :=' in t or 'kernelsu-y +=' in t:
                   t = t.rstrip() + '\nkernelsu-y += manual_hook_keys_compat.o\n'
-              elif 'ksu_obj-y' in t:
-                  t = t.rstrip() + '\nksu_obj-y += manual_hook_keys_compat.o\n'
+              elif 'ksu_obj-y' in t and 'kernelsu-objs := $(ksu_obj-y)' in t:
+                  # Do NOT append to ksu_obj-y after kernelsu-objs := $(ksu_obj-y), because := is already expanded.
+                  t = t.replace('kernelsu-objs := $(ksu_obj-y)', 'kernelsu-objs := $(ksu_obj-y)\nkernelsu-objs += manual_hook_keys_compat.o', 1)
               else:
-                  # Last resort: standalone final-link object.
+                  # Last resort: build it as a standalone built-in object.
                   t = t.rstrip() + '\n\n# OP13 SukiSU + CCTV18 SUSFS final-link compatibility\nobj-$(CONFIG_KSU) += manual_hook_keys_compat.o\n'
               p.write_text(t, encoding='utf-8')
           KBUILDPY
-            fi
-            echo "✅ Added manual_hook_keys_compat.o to SukiSU build file"
+            echo "✅ Added manual_hook_keys_compat.o to live KernelSU/SukiSU build aggregate"
           else
-            echo "✅ Manual-hook static key definitions already present"
+            echo "✅ manual_hook_keys_compat.o already present in build file"
+          fi
+
+          if ! grep -q 'manual_hook_keys_compat.o' "$KSU_BUILD_FILE"; then
+            echo "::error::manual_hook_keys_compat.o was not wired into $KSU_BUILD_FILE"
+            sed -n '1,120p' "$KSU_BUILD_FILE" || true
+            exit 1
           fi
 
           if [[ -f "$SUSFS_C" ]] && ! grep -q 'susfs_set_i_state_on_external_dir' "$SUSFS_C"; then
@@ -1086,19 +1105,153 @@ jobs:
               if needle in t:
                   t = t.replace(needle, needle + proto, 1)
               else:
-                  idx = t.rfind('#endif')
-                  t = t[:idx] + proto + t[idx:] if idx != -1 else t.rstrip() + '\n' + proto
+                  t = t.replace('#endif', proto + '#endif', 1)
               p.write_text(t, encoding='utf-8')
           SUSFSHPY
             echo "✅ Added susfs_set_i_state_on_external_dir() prototype"
           fi
 
-          echo "SukiSU/KSU build wiring scan:"
+          echo "SukiSU build-file compat scan:"
           grep -n 'manual_hook_keys_compat.o' "$KSU_BUILD_FILE" || true
           echo "SukiSU/KSU symbol scan:"
           grep -RnsE 'manual_hook_keys_compat|ksu_is_input_hook_enabled|ksu_is_init_rc_hook_enabled' "$KSU_DIR" 2>/dev/null | head -n 80 || true
           echo "SUSFS external-dir helper scan:"
           grep -Rns 'susfs_set_i_state_on_external_dir' "$SUSFS_C" "$SUSFS_H" 2>/dev/null || true
+
+          echo "::endgroup::"
+
+
+
+
+      - name: "Repair SukiSU main legacy inline-hook ABI bridge"
+        if: ${{ github.event.inputs.SUSFS == 'On' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "::group::Repair SukiSU main legacy inline-hook ABI bridge"
+
+          KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
+          KSU_LINK="$KDIR/drivers/kernelsu"
+          KSU_DIR="$(readlink -f "$KSU_LINK" 2>/dev/null || true)"
+          if [[ -z "$KSU_DIR" || ! -d "$KSU_DIR" ]]; then
+            KSU_DIR="$(find "$KDIR" "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 8 -type d \( -path '*/KernelSU/kernel' -o -path '*/drivers/kernelsu' \) 2>/dev/null | head -n 1 || true)"
+          fi
+          if [[ -z "$KSU_DIR" || ! -d "$KSU_DIR" ]]; then
+            echo "::error::KernelSU/SukiSU source dir not found. drivers/kernelsu link: $(readlink "$KSU_LINK" 2>/dev/null || echo missing)"
+            exit 1
+          fi
+
+          KSU_BUILD_FILE=""
+          if [[ -f "$KSU_DIR/Kbuild" ]]; then
+            KSU_BUILD_FILE="$KSU_DIR/Kbuild"
+          elif [[ -f "$KSU_DIR/Makefile" ]]; then
+            KSU_BUILD_FILE="$KSU_DIR/Makefile"
+          else
+            echo "::error::No KernelSU/SukiSU Kbuild or Makefile found in: $KSU_DIR"
+            ls -la "$KSU_DIR" || true
+            exit 1
+          fi
+
+          echo "Kernel dir       : $KDIR"
+          echo "SukiSU real dir  : $KSU_DIR"
+          echo "SukiSU build file: $KSU_BUILD_FILE"
+
+          # CCTV18's android15/6.6 SUSFS patch still references the older inline-hook KernelSU ABI
+          # from core kernel files. SukiSU main moved to the newer syscall-event bridge, so these
+          # old callsite symbols may not exist. These weak wrappers satisfy old callsites without
+          # replacing SukiSU main's own tracepoint/syscall hook implementation.
+          cat > "$KSU_DIR/main_legacy_inline_compat.c" <<'LEGACYABI'
+          #include <linux/types.h>
+          #include <linux/fs.h>
+          #include <linux/uidgid.h>
+          #include <linux/uaccess.h>
+          #include <linux/jump_label.h>
+          #include <linux/compiler_attributes.h>
+
+          struct filename;
+
+          /* SUSFS AVC-log spoof globals expected by CCTV18's kernel patch. */
+          __attribute__((weak)) u32 susfs_ksu_sid;
+          __attribute__((weak)) u32 susfs_priv_app_sid;
+
+          /* Domain check expected by SUSFS mount/proc_namespace code. */
+          __attribute__((weak)) bool susfs_is_current_ksu_domain(void)
+          {
+          	return false;
+          }
+
+          /* Older inline-hook ABI expected by CCTV18's android15/6.6 patch. */
+          __attribute__((weak)) int ksu_handle_devpts(struct inode *inode)
+          {
+          	return 0;
+          }
+
+          __attribute__((weak)) void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)
+          {
+          }
+
+          __attribute__((weak)) int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
+          					       void *argv, void *envp, int *flags)
+          {
+          	return 0;
+          }
+
+          __attribute__((weak)) int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+          					                void *argv, void *envp, int *flags)
+          {
+          	return 0;
+          }
+
+          __attribute__((weak)) int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr,
+          					      size_t *count_ptr)
+          {
+          	return 0;
+          }
+
+          __attribute__((weak)) int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
+          					        void __user **arg)
+          {
+          	return 0;
+          }
+
+          __attribute__((weak)) int ksu_handle_input_handle_event(unsigned int *type,
+          					              unsigned int *code, int *value)
+          {
+          	return 0;
+          }
+          LEGACYABI
+
+          if ! grep -q 'main_legacy_inline_compat.o' "$KSU_BUILD_FILE"; then
+            python3 - "$KSU_BUILD_FILE" <<'KBUILDPY'
+          from pathlib import Path
+          import sys
+
+          p = Path(sys.argv[1])
+          t = p.read_text(encoding='utf-8')
+          line = 'kernelsu-objs += main_legacy_inline_compat.o\n'
+
+          if 'main_legacy_inline_compat.o' not in t:
+              if 'kernelsu-objs :=' in t or 'kernelsu-objs +=' in t:
+                  marker = 'obj-$(CONFIG_KSU) += kernelsu.o'
+                  if marker in t:
+                      t = t.replace(marker, line + marker, 1)
+                  else:
+                      t = t.rstrip() + '\n' + line
+              elif 'kernelsu-y :=' in t or 'kernelsu-y +=' in t:
+                  t = t.rstrip() + '\nkernelsu-y += main_legacy_inline_compat.o\n'
+              elif 'ksu_obj-y' in t and 'kernelsu-objs := $(ksu_obj-y)' in t:
+                  t = t.replace('kernelsu-objs := $(ksu_obj-y)', 'kernelsu-objs := $(ksu_obj-y)\nkernelsu-objs += main_legacy_inline_compat.o', 1)
+              else:
+                  t = t.rstrip() + '\n\n# OP13 SukiSU main + CCTV18 SUSFS old inline ABI bridge\nobj-$(CONFIG_KSU) += main_legacy_inline_compat.o\n'
+              p.write_text(t, encoding='utf-8')
+          KBUILDPY
+          fi
+
+          echo "Legacy ABI bridge build-file scan:"
+          grep -n 'main_legacy_inline_compat.o' "$KSU_BUILD_FILE" || true
+          echo "Legacy ABI bridge symbol scan:"
+          grep -RnsE 'main_legacy_inline_compat|ksu_handle_devpts|susfs_ksu_sid|ksu_handle_sys_reboot|ksu_handle_sys_read|ksu_handle_execveat|ksu_handle_vfs_fstat|susfs_is_current_ksu_domain' "$KSU_DIR" 2>/dev/null | head -n 120 || true
 
           echo "::endgroup::"
 
