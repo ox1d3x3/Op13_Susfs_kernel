@@ -981,6 +981,20 @@ jobs:
             $s =~ s/^\s*if\s*\(\s*!\s*ksu_late_loaded\s*\)\s*\{\s*\n\s*\}\s*//mg;
             $s =~ s/^\s*if\s*\(\s*!\s*ksu_late_loaded\s*\)\s*$//mg;
 
+            # KSUN v3.2.0 may still retain late-load conditionals even after
+            # WildKernels removes syscall hook objects from Kbuild. For this built-in
+            # OP13 kernel, late-loaded is always false, but if any ksu_late_loaded
+            # conditionals remain, the symbol still has to be declared.
+            if ($s =~ /\bksu_late_loaded\b/ && $s !~ /(?:^|\n)\s*(?:static\s+)?bool\s+ksu_late_loaded\s*;/) {
+              if ($s =~ s/(struct\s+cred\s+\*ksu_cred\s*;\s*\n)/$1static bool ksu_late_loaded;\n/s) {
+                print "added static bool ksu_late_loaded compat declaration\n";
+              } elsif ($s =~ s/(int\s+__init\s+kernelsu_init\s*\(\s*void\s*\)\s*\{)/static bool ksu_late_loaded;\n\n$1/s) {
+                print "added static bool ksu_late_loaded compat declaration before kernelsu_init\n";
+              } else {
+                die "ksu_late_loaded remains but declaration insertion point was not found\n";
+              }
+            }
+
             if ($s !~ /#include\s+"feature\/sucompat\.h"/) {
               $s =~ s/((?:^#include[^\n]*\n)+)/$1#include "feature\/sucompat.h"\n/m;
             }
@@ -1022,8 +1036,8 @@ jobs:
           if ($no_syscall && $s =~ /\bksu_syscall_hook_(?:manager_)?(?:init|exit)\s*\(/) {
             die "syscall hook calls remain even though Kbuild no longer builds syscall hook objects\n";
           }
-          if ($no_syscall && $s =~ /\bksu_late_loaded\b/) {
-            die "ksu_late_loaded conditional remains even though syscall hook path/header is disabled\n";
+          if ($no_syscall && $s =~ /\bksu_late_loaded\b/ && $s !~ /(?:^|\n)\s*(?:static\s+)?bool\s+ksu_late_loaded\s*;/) {
+            die "ksu_late_loaded remains without a declaration\n";
           }
           PERL
 
@@ -1034,9 +1048,12 @@ jobs:
               exit 1
             fi
             if grep -qE '\bksu_late_loaded\b' "$INIT_C"; then
-              echo "::error::ksu_late_loaded remains in init.c, but the syscall hook path/header is disabled."
-              grep -nE '\bksu_late_loaded\b' "$INIT_C" || true
-              exit 1
+              echo "::notice::ksu_late_loaded remains in init.c; checking compat declaration for built-in no-syscall KSUN."
+              grep -nE '\bksu_late_loaded\b|^[[:space:]]*(static[[:space:]]+)?bool[[:space:]]+ksu_late_loaded[[:space:]]*;' "$INIT_C" || true
+              if ! grep -qE '^[[:space:]]*(static[[:space:]]+)?bool[[:space:]]+ksu_late_loaded[[:space:]]*;' "$INIT_C"; then
+                echo "::error::ksu_late_loaded is referenced but not declared."
+                exit 1
+              fi
             fi
           fi
 
