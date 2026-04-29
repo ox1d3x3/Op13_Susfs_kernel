@@ -896,13 +896,13 @@ jobs:
 
           echo "✅ SUSFS patching complete."
 
-      - name: "Repair KernelSU-Next v3.2.0 init.c after external SUSFS patches"
+      - name: "Repair KernelSU-Next v3.2.0 init.c for WildKernels SUSFS no-syscall path"
         shell: bash
         run: |
           set -euo pipefail
 
           if [[ "${{ github.event.inputs.SUSFS }}" != "On" ]]; then
-            echo "SUSFS Off → skipping KSUN init.c repair."
+            echo "SUSFS Off → skipping KSUN init.c no-syscall repair."
             exit 0
           fi
 
@@ -927,66 +927,102 @@ jobs:
           fi
 
           if [[ -z "$KSU_KERNEL_DIR" || ! -f "$KSU_KERNEL_DIR/core/init.c" ]]; then
-            echo "::error::Could not locate KernelSU-Next core/init.c for compatibility repair."
-            find . -maxdepth 6 \( -path '*KernelSU*' -o -path '*kernelsu*' \) | head -n 100 || true
+            echo "::error::Could not locate KernelSU-Next core/init.c for no-syscall repair."
+            find . -maxdepth 7 \( -path '*KernelSU*' -o -path '*kernelsu*' \) | head -n 120 || true
             exit 1
           fi
 
           INIT_C="$KSU_KERNEL_DIR/core/init.c"
-          echo "→ Repairing KernelSU-Next init.c: $INIT_C"
+          KSU_KBUILD="$KSU_KERNEL_DIR/Kbuild"
 
-          python3 - "$INIT_C" <<'PY'
-          import re
-          import sys
-          from pathlib import Path
+          echo "→ KernelSU-Next kernel dir: $KSU_KERNEL_DIR"
+          echo "→ init.c: $INIT_C"
+          echo "→ Kbuild: $KSU_KBUILD"
 
-          p = Path(sys.argv[1])
-          s = p.read_text(encoding='utf-8')
-          orig = s
+          perl - "$INIT_C" "$KSU_KBUILD" <<'PERL'
+          use strict;
+          use warnings;
+          my ($init_c, $kbuild_file) = @ARGV;
 
-          # Wild/CCTV18 SUSFS patching can leave KernelSU-Next v3.2.0 init.c with
-          # calls to ksu_syscall_hook_manager_* but without the manager header.
-          if 'ksu_syscall_hook_manager_init' in s and '#include "hook/syscall_hook_manager.h"' not in s:
-              if '#include "hook/syscall_hook.h"' in s:
-                  s = s.replace(
-                      '#include "hook/syscall_hook.h"',
-                      '#include "hook/syscall_hook.h"\n#include "hook/syscall_hook_manager.h"',
-                      1,
-                  )
-              elif '#include "manager/throne_tracker.h"' in s:
-                  s = s.replace(
-                      '#include "manager/throne_tracker.h"',
-                      '#include "manager/throne_tracker.h"\n#include "hook/syscall_hook_manager.h"',
-                      1,
-                  )
-              else:
-                  s = '#include "hook/syscall_hook_manager.h"\n' + s
+          open my $ifh, '<', $init_c or die "open init.c failed: $!";
+          local $/;
+          my $s = <$ifh>;
+          close $ifh;
+          my $orig = $s;
 
-          # KernelSU-Next v3.2.0 still uses ksu_late_loaded in built-in mode.
-          # Some SUSFS fix_init patches remove its global definition while leaving
-          # the code paths that reference it.
-          if re.search(r'\bksu_late_loaded\b', s) and not re.search(r'\bbool\s+ksu_late_loaded\s*;', s):
-              if re.search(r'\bstruct\s+cred\s+\*ksu_cred\s*;', s):
-                  s = re.sub(
-                      r'(\bstruct\s+cred\s+\*ksu_cred\s*;)',
-                      r'\1\nbool ksu_late_loaded;',
-                      s,
-                      count=1,
-                  )
-              elif 'int __init kernelsu_init' in s:
-                  s = s.replace('int __init kernelsu_init', 'bool ksu_late_loaded;\nint __init kernelsu_init', 1)
-              else:
-                  s += '\n/* OP13 workflow compat: KernelSU-Next v3.2.0 late-load state */\nbool ksu_late_loaded;\n'
+          my $kb = '';
+          if (open my $kfh, '<', $kbuild_file) {
+            $kb = <$kfh>;
+            close $kfh;
+          }
 
-          if s != orig:
-              p.write_text(s, encoding='utf-8')
-              print('patched init.c')
-          else:
-              print('init.c already looks OK')
-          PY
+          # WildKernels' KSUN SUSFS v2.1.0 Kbuild patch intentionally removes the
+          # syscall hook objects. If init.c still calls ksu_syscall_hook_* after
+          # that, final vmlinux linking fails with undefined symbols.
+          my $no_syscall = ($kb !~ /hook\/syscall_hook_manager\.o/ && $kb !~ /hook\/arm64\/syscall_hook\.o/ && $kb !~ /hook\/x86_64\/syscall_hook\.o/);
 
-          echo "::group::KernelSU-Next init.c repair scan"
-          grep -nE 'ksu_late_loaded|syscall_hook_manager' "$INIT_C" | head -n 80 || true
+          if ($no_syscall) {
+            $s =~ s/^#include\s+"hook\/syscall_hook(?:_manager)?\.h"\s*\n//mg;
+            $s =~ s/^\s*ksu_syscall_hook_init\s*\(\s*\)\s*;\s*\n//mg;
+            $s =~ s/^\s*ksu_syscall_hook_manager_init\s*\(\s*\)\s*;\s*\n//mg;
+            $s =~ s/^\s*ksu_syscall_hook_manager_exit\s*\(\s*\)\s*;\s*\n//mg;
+
+            if ($s !~ /#include\s+"feature\/sucompat\.h"/) {
+              $s =~ s/((?:^#include[^\n]*\n)+)/$1#include "feature\/sucompat.h"\n/m;
+            }
+            if ($s !~ /#include\s+"hook\/setuid_hook\.h"/) {
+              $s =~ s/((?:^#include[^\n]*\n)+)/$1#include "hook\/setuid_hook.h"\n/m;
+            }
+            if ($s !~ /#include\s+<linux\/susfs\.h>/) {
+              $s =~ s/((?:^#include[^\n]*\n)+)/$1#ifdef CONFIG_KSU_SUSFS\n#include <linux\/susfs.h>\n#endif\n/m;
+            }
+
+            my $init_block = '';
+            $init_block .= "\n\tksu_sucompat_init();" unless $s =~ /ksu_sucompat_init\s*\(/;
+            $init_block .= "\n\tksu_setuid_hook_init();" unless $s =~ /ksu_setuid_hook_init\s*\(/;
+            $init_block .= "\n#ifdef CONFIG_KSU_SUSFS\n\tsusfs_init();\n#endif" unless $s =~ /susfs_init\s*\(/;
+            if ($init_block ne '') {
+              if ($s =~ s/ksu_supercalls_init\s*\(\s*\)\s*;/ksu_supercalls_init();$init_block/s) {}
+              elsif ($s =~ s/ksu_feature_init\s*\(\s*\)\s*;/ksu_feature_init();$init_block/s) {}
+              else { $s =~ s/int __init kernelsu_init\(void\)\s*\{/int __init kernelsu_init(void) {$init_block/s; }
+            }
+
+            my $exit_block = '';
+            $exit_block .= "\n\tksu_setuid_hook_exit();" unless $s =~ /ksu_setuid_hook_exit\s*\(/;
+            $exit_block .= "\n\tksu_sucompat_exit();" unless $s =~ /ksu_sucompat_exit\s*\(/;
+            if ($exit_block ne '') {
+              if ($s =~ s/ksu_supercalls_exit\s*\(\s*\)\s*;/ksu_supercalls_exit();$exit_block/s) {}
+              else { $s =~ s/void __exit kernelsu_exit\(void\)\s*\{/void __exit kernelsu_exit(void) {$exit_block/s; }
+            }
+          }
+
+          if ($s ne $orig) {
+            open my $ofh, '>', $init_c or die "write init.c failed: $!";
+            print $ofh $s;
+            close $ofh;
+            print "patched init.c for KSUN no-syscall SUSFS path\n";
+          } else {
+            print "init.c already matched KSUN no-syscall SUSFS path\n";
+          }
+
+          if ($no_syscall && $s =~ /\bksu_syscall_hook_(?:manager_)?(?:init|exit)\s*\(/) {
+            die "syscall hook calls remain even though Kbuild no longer builds syscall hook objects\n";
+          }
+          PERL
+
+          if ! grep -q 'hook/syscall_hook_manager.o\|hook/arm64/syscall_hook.o\|hook/x86_64/syscall_hook.o' "$KSU_KBUILD"; then
+            if grep -qE 'ksu_syscall_hook_(manager_)?(init|exit)[[:space:]]*\(' "$INIT_C"; then
+              echo "::error::syscall hook calls remain in init.c, but Kbuild no longer builds syscall hook objects."
+              grep -nE 'ksu_syscall_hook_(manager_)?(init|exit)' "$INIT_C" || true
+              exit 1
+            fi
+          fi
+
+          echo "::group::KernelSU-Next init.c no-syscall repair scan"
+          echo "Kbuild syscall object lines:"
+          grep -nE 'hook/(syscall|arm64/.*syscall|x86_64/.*syscall).*\.o' "$KSU_KBUILD" || true
+          echo "init.c relevant lines:"
+          grep -nE 'ksu_syscall_hook|ksu_sucompat_init|ksu_setuid_hook_init|susfs_init|ksu_sucompat_exit|ksu_setuid_hook_exit|feature/sucompat|hook/setuid_hook|linux/susfs' "$INIT_C" | head -n 120 || true
           echo "::endgroup::"
 
       - name: "KernelSU-Next external SUSFS static-key compat"
