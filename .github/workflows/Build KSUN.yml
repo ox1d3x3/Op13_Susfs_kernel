@@ -962,10 +962,24 @@ jobs:
           my $no_syscall = ($kb !~ /hook\/syscall_hook_manager\.o/ && $kb !~ /hook\/arm64\/syscall_hook\.o/ && $kb !~ /hook\/x86_64\/syscall_hook\.o/);
 
           if ($no_syscall) {
+            # Remove KernelSU-Next syscall-hook init/exit blocks before removing
+            # individual calls. On KSUN v3.2.0, ksu_late_loaded is declared by the
+            # syscall-hook path/header. WildKernels' SUSFS Kbuild patch removes that
+            # path, so leaving the surrounding if (ksu_late_loaded) blocks behind
+            # breaks compilation even after the calls themselves are removed.
             $s =~ s/^#include\s+"hook\/syscall_hook(?:_manager)?\.h"\s*\n//mg;
+            $s =~ s/\n\s*if\s*\(\s*ksu_late_loaded\s*\)\s*\{\s*\n\s*ksu_syscall_hook_manager_init\s*\(\s*\)\s*;\s*\n\s*\}\s*else\s*\{\s*\n\s*ksu_syscall_hook_init\s*\(\s*\)\s*;\s*\n\s*\}//sg;
+            $s =~ s/\n\s*if\s*\(\s*ksu_late_loaded\s*\)\s*\{\s*\n\s*ksu_syscall_hook_manager_init\s*\(\s*\)\s*;\s*\n\s*\}//sg;
+            $s =~ s/\n\s*if\s*\(\s*!\s*ksu_late_loaded\s*\)\s*\{\s*\n\s*ksu_syscall_hook_manager_exit\s*\(\s*\)\s*;\s*\n\s*\}//sg;
+            $s =~ s/\n\s*if\s*\(\s*!\s*ksu_late_loaded\s*\)\s*\n\s*ksu_syscall_hook_manager_exit\s*\(\s*\)\s*;\s*//sg;
             $s =~ s/^\s*ksu_syscall_hook_init\s*\(\s*\)\s*;\s*\n//mg;
             $s =~ s/^\s*ksu_syscall_hook_manager_init\s*\(\s*\)\s*;\s*\n//mg;
             $s =~ s/^\s*ksu_syscall_hook_manager_exit\s*\(\s*\)\s*;\s*\n//mg;
+            # Clean up any empty/lone ksu_late_loaded conditionals left behind by
+            # previously patched init.c layouts.
+            $s =~ s/^\s*if\s*\(\s*ksu_late_loaded\s*\)\s*\{\s*\n\s*\}\s*else\s*\{\s*\n\s*\}\s*//mg;
+            $s =~ s/^\s*if\s*\(\s*!\s*ksu_late_loaded\s*\)\s*\{\s*\n\s*\}\s*//mg;
+            $s =~ s/^\s*if\s*\(\s*!\s*ksu_late_loaded\s*\)\s*$//mg;
 
             if ($s !~ /#include\s+"feature\/sucompat\.h"/) {
               $s =~ s/((?:^#include[^\n]*\n)+)/$1#include "feature\/sucompat.h"\n/m;
@@ -1008,6 +1022,9 @@ jobs:
           if ($no_syscall && $s =~ /\bksu_syscall_hook_(?:manager_)?(?:init|exit)\s*\(/) {
             die "syscall hook calls remain even though Kbuild no longer builds syscall hook objects\n";
           }
+          if ($no_syscall && $s =~ /\bksu_late_loaded\b/) {
+            die "ksu_late_loaded conditional remains even though syscall hook path/header is disabled\n";
+          }
           PERL
 
           if ! grep -q 'hook/syscall_hook_manager.o\|hook/arm64/syscall_hook.o\|hook/x86_64/syscall_hook.o' "$KSU_KBUILD"; then
@@ -1016,13 +1033,18 @@ jobs:
               grep -nE 'ksu_syscall_hook_(manager_)?(init|exit)' "$INIT_C" || true
               exit 1
             fi
+            if grep -qE '\bksu_late_loaded\b' "$INIT_C"; then
+              echo "::error::ksu_late_loaded remains in init.c, but the syscall hook path/header is disabled."
+              grep -nE '\bksu_late_loaded\b' "$INIT_C" || true
+              exit 1
+            fi
           fi
 
           echo "::group::KernelSU-Next init.c no-syscall repair scan"
           echo "Kbuild syscall object lines:"
           grep -nE 'hook/(syscall|arm64/.*syscall|x86_64/.*syscall).*\.o' "$KSU_KBUILD" || true
           echo "init.c relevant lines:"
-          grep -nE 'ksu_syscall_hook|ksu_sucompat_init|ksu_setuid_hook_init|susfs_init|ksu_sucompat_exit|ksu_setuid_hook_exit|feature/sucompat|hook/setuid_hook|linux/susfs' "$INIT_C" | head -n 120 || true
+          grep -nE 'ksu_syscall_hook|ksu_late_loaded|ksu_sucompat_init|ksu_setuid_hook_init|susfs_init|ksu_sucompat_exit|ksu_setuid_hook_exit|feature/sucompat|hook/setuid_hook|linux/susfs' "$INIT_C" | head -n 120 || true
           echo "::endgroup::"
 
       - name: "KernelSU-Next external SUSFS static-key compat"
