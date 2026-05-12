@@ -928,10 +928,24 @@ jobs:
            */
           DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);
           DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);
+
+          /* Some CCTV18/SukiSU source combinations reference this helper from
+           * drivers/kernelsu/kernel_umount.c while fs/susfs.c only builds it
+           * when SUS_PATH_LOOP internals are enabled. Provide a weak fallback
+           * so final vmlinux links; a real fs/susfs.c implementation wins when present.
+           */
+          __attribute__((weak)) void susfs_run_sus_path_loop(void) { }
           MANUALKEYS
-            echo "✅ Added manual_hook_keys_compat.c"
+            echo "✅ Added manual_hook_keys_compat.c with SUS path-loop weak fallback"
           else
-            echo "✅ Manual-hook static key definitions already present"
+            cat > "$KSU_DIR/manual_hook_keys_compat.c" <<'MANUALKEYS'
+          /* OP13 SukiSU/CCTV18 compatibility object.
+           * Static keys already exist elsewhere, so only provide the weak
+           * SUS path-loop fallback used by kernel_umount.c when needed.
+           */
+          __attribute__((weak)) void susfs_run_sus_path_loop(void) { }
+          MANUALKEYS
+            echo "✅ Manual-hook static key definitions already present; added SUS path-loop weak fallback"
           fi
 
           # Link manual_hook_keys_compat.o in the least invasive way:
