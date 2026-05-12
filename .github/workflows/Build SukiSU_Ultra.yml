@@ -33,14 +33,14 @@ on:
         description: "Apply ZRAM LZ4 perf patch (best-effort, may not apply on all trees)"
         type: choice
         required: true
-        default: "On"
+        default: "Off"
         options: ["On", "Off"]
 
       zram_module:
         description: "Build flashable zram-module.zip (replace zram.ko)"
         type: choice
         required: true
-        default: "On"
+        default: "Off"
         options: ["On", "Off"]
 
       SUSFS:
@@ -132,11 +132,38 @@ on:
         required: false
         default: ""
 
+      target_stock_uts:
+        description: "Expected stock uname -r for current firmware. Leave default for PJZ110 COS16 C.89 / 16.0.7.201, or paste your stock uname -r."
+        type: string
+        required: false
+        default: "6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k"
+
+      allow_uts_mismatch:
+        description: "Allow build artifact even if UTS_RELEASE does not match target_stock_uts. Keep false for bootloop safety."
+        type: choice
+        required: true
+        default: "false"
+        options: ["false", "true"]
+
+      cos201_safe_mode:
+        description: "COS 16.0.7.201 safe mode: avoid module/vermagic-sensitive ZRAM module and risky default scheduler changes."
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+
+      c89_preserve_stock_kmi:
+        description: "C.89 first-boot test: preserve stock-sensitive ZRAM/LZ4 config and avoid module ABI/KMI drift."
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+
       BUILD_TIME:
         description: "Custom build time string (Enter F to use current UTC)"
         type: string
         required: false
-        default: "Thu Dec 11 04:17:27 UTC 2025"
+        default: "F"
 
       BUILD_USER:
         description: "KBUILD_BUILD_USER"
@@ -1051,22 +1078,28 @@ jobs:
 
           mkdir -p lib/lz4/lz4armv8
 
-          P_BASE="https://raw.githubusercontent.com/mrcxlinux/kernel_patches/master/zram"
-          P_MIRROR="https://cdn.jsdelivr.net/gh/mrcxlinux/kernel_patches@master/zram"
+          # COS 16.0.7.201/C.89 safety: respect the workflow toggle and avoid patching
+          # the compression path while diagnosing a bootloop on a new OTA. LZ4 crypto
+          # support can still be enabled in defconfig; this only skips the source patch.
+          if [ "${{ github.event.inputs.lz4_zram_patch }}" = "On" ] && [ "${{ github.event.inputs.cos201_safe_mode }}" != "On" ] && [ "${{ github.event.inputs.c89_preserve_stock_kmi }}" != "On" ]; then
+            P_BASE="https://raw.githubusercontent.com/mrcxlinux/kernel_patches/master/zram"
+            P_MIRROR="https://cdn.jsdelivr.net/gh/mrcxlinux/kernel_patches@master/zram"
 
-          curl -fsSL "$P_BASE/001-lz4.patch" -o 001-lz4.patch || curl -fsSL "$P_MIRROR/001-lz4.patch" -o 001-lz4.patch
-          curl -fsSL "$P_BASE/lz4armv8.S" -o lib/lz4/lz4armv8.S || curl -fsSL "$P_MIRROR/lz4armv8.S" -o lib/lz4/lz4armv8.S
-          cp lib/lz4/lz4armv8.S lib/lz4/lz4armv8/lz4armv8.S
+            curl -fsSL "$P_BASE/001-lz4.patch" -o 001-lz4.patch || curl -fsSL "$P_MIRROR/001-lz4.patch" -o 001-lz4.patch
+            curl -fsSL "$P_BASE/lz4armv8.S" -o lib/lz4/lz4armv8.S || curl -fsSL "$P_MIRROR/lz4armv8.S" -o lib/lz4/lz4armv8.S
+            cp lib/lz4/lz4armv8.S lib/lz4/lz4armv8/lz4armv8.S
 
-          echo "📦 Applying 001-lz4.patch (best-effort)..."
-          if patch -p1 --dry-run < 001-lz4.patch >/dev/null 2>&1; then
-            patch -p1 < 001-lz4.patch || true
+            echo "📦 Applying 001-lz4.patch (best-effort)..."
+            if patch -p1 --dry-run < 001-lz4.patch >/dev/null 2>&1; then
+              patch -p1 < 001-lz4.patch || true
+            else
+              echo "Patch does not apply cleanly → retrying with fuzz=3"
+              patch -p1 -F 3 < 001-lz4.patch || true
+            fi
+            echo "✅ LZ4 patch step finished (non-fatal if it didn't apply cleanly)."
           else
-            echo "Patch does not apply cleanly → retrying with fuzz=3"
-            patch -p1 -F 3 < 001-lz4.patch || true
+            echo "ℹ️ Skipping ZRAM LZ4 source patch. lz4_zram_patch=${{ github.event.inputs.lz4_zram_patch }}, cos201_safe_mode=${{ github.event.inputs.cos201_safe_mode }}, c89_preserve_stock_kmi=${{ github.event.inputs.c89_preserve_stock_kmi }}"
           fi
-
-          echo "✅ LZ4 patch step finished (non-fatal if it didn't apply cleanly)."
 
 
       - name: "Enable features via defconfig"
@@ -1115,22 +1148,35 @@ jobs:
 
 
           # =========================
-          # LZ4 support (for ZRAM / fs / crypto) — enable support only (no forcing)
+          # LZ4/ZRAM handling
           # =========================
-          echo "CONFIG_LZ4_COMPRESS=y" >> "$DEFCONFIG" || true
-          echo "CONFIG_LZ4_DECOMPRESS=y" >> "$DEFCONFIG" || true
-          echo "CONFIG_CRYPTO_LZ4=y" >> "$DEFCONFIG" || true
-          echo "CONFIG_CRYPTO_LZ4HC=y" >> "$DEFCONFIG" || true
-
-          # ZRAM: if you want a flashable zram.ko module, it must be built as a module (m).
-          if [ "${{ github.event.inputs.zram_module }}" = "On" ]; then
-            echo "CONFIG_ZRAM=m" >> "$DEFCONFIG" || true
-            echo "CONFIG_ZSMALLOC=m" >> "$DEFCONFIG" || true
-            # Prefer LZ4 as the default compressor when module mode is used
-            echo 'CONFIG_ZRAM_DEF_COMP="lz4"' >> "$DEFCONFIG" || true
+          # C.89 stock-KMI safe mode: do not force ZRAM/LZ4 config while testing a
+          # new OTA bootloop. The stock defconfig decides CONFIG_ZRAM / compressor.
+          # This avoids changing built-in vs module behaviour and module ABI/KMI expectations.
+          if [ "${{ github.event.inputs.c89_preserve_stock_kmi }}" = "On" ]; then
+            echo "ℹ️ C.89 stock-KMI safe mode: preserving stock ZRAM/LZ4 defconfig."
           else
-            echo "CONFIG_ZRAM=y" >> "$DEFCONFIG" || true
-            echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG" || true
+            # LZ4 support (for ZRAM / fs / crypto) — enable support only (no forcing)
+            echo "CONFIG_LZ4_COMPRESS=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_LZ4_DECOMPRESS=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_CRYPTO_LZ4=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_CRYPTO_LZ4HC=y" >> "$DEFCONFIG" || true
+
+            # ZRAM: COS safe mode keeps ZRAM built-in to avoid relying on
+            # a zram.ko/vermagic combination across a new OTA.
+            if [ "${{ github.event.inputs.cos201_safe_mode }}" = "On" ]; then
+              echo "CONFIG_ZRAM=y" >> "$DEFCONFIG" || true
+              echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG" || true
+              echo 'CONFIG_ZRAM_DEF_COMP="lzo-rle"' >> "$DEFCONFIG" || true
+            elif [ "${{ github.event.inputs.zram_module }}" = "On" ]; then
+              echo "CONFIG_ZRAM=m" >> "$DEFCONFIG" || true
+              echo "CONFIG_ZSMALLOC=m" >> "$DEFCONFIG" || true
+              # Prefer LZ4 as the default compressor when module mode is used
+              echo 'CONFIG_ZRAM_DEF_COMP="lz4"' >> "$DEFCONFIG" || true
+            else
+              echo "CONFIG_ZRAM=y" >> "$DEFCONFIG" || true
+              echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG" || true
+            fi
           fi
 
           # SukiSU safety: avoid experimental modes that can destabilize OEM kernels.
@@ -1148,7 +1194,12 @@ jobs:
           if [ "${{ github.event.inputs.bbr }}" = "On" ]; then echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"; fi
           if [ "${{ github.event.inputs.adios }}" = "On" ]; then
             echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> "$DEFCONFIG"
-            echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> "$DEFCONFIG"
+            if [ "${{ github.event.inputs.cos201_safe_mode }}" = "On" ] || [ "${{ github.event.inputs.c89_preserve_stock_kmi }}" = "On" ]; then
+              # Compile ADIOS but do not force it as the default scheduler on first COS C.89 boot.
+              echo "# CONFIG_MQ_IOSCHED_DEFAULT_ADIOS is not set" >> "$DEFCONFIG"
+            else
+              echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> "$DEFCONFIG"
+            fi
           fi
           if [ "${{ github.event.inputs.rekernel }}" = "On" ]; then echo "CONFIG_REKERNEL=y" >> "$DEFCONFIG"; fi
           if [ "${{ github.event.inputs.TTL }}" = "On" ]; then
@@ -1426,6 +1477,22 @@ jobs:
           echo "KERNEL_RELEASE=$REL" >> "$GITHUB_ENV"
           echo "Kernel release: $REL"
 
+          TARGET_UTS="${{ github.event.inputs.target_stock_uts }}"
+          ALLOW_MISMATCH="${{ github.event.inputs.allow_uts_mismatch }}"
+          if [ -n "$TARGET_UTS" ] && [ "$REL" != "$TARGET_UTS" ]; then
+            echo "::error::Built UTS_RELEASE does not match target stock uname -r."
+            echo "::error::Built : $REL"
+            echo "::error::Target: $TARGET_UTS"
+            echo "::error::Flashing a mismatched GKI Image after a new OTA is a common bootloop cause."
+            if [ "$ALLOW_MISMATCH" != "true" ]; then
+              echo "::error::Set allow_uts_mismatch=true only if you have verified the stock kernel ABI/localversion manually."
+              exit 89
+            fi
+            echo "::warning::UTS mismatch allowed by input. Flash at your own risk."
+          else
+            echo "✅ UTS_RELEASE matches target stock uname -r: ${TARGET_UTS:-not set}"
+          fi
+
 
       - name: Verify final config (SukiSU Ultra / SUSFS)
         shell: bash
@@ -1606,7 +1673,7 @@ jobs:
           ====================================================
           EOF
 
-          OUT="OP13_${{ env.ANDROID_VERSION }}_${{ env.KERNEL_VERSION }}_${{ env.SUFFIX }}_${{ env.PROFILE_TAG }}_${{ github.run_number }}_${MODE_TAG}_FLASH_THIS.zip"
+          OUT="OP13_C89FIX_${{ env.ANDROID_VERSION }}_${{ env.KERNEL_VERSION }}_${{ env.SUFFIX }}_${{ env.PROFILE_TAG }}_${{ github.run_number }}_${MODE_TAG}_FLASH_THIS.zip"
           rm -f "$OUT" || true
           (cd AnyKernel3 && zip -r9 "../$OUT" . -x "*.git*" -x "*README*" -x "*.md" >/dev/null)
           echo "OUT_ZIP=$OUT" >> "$GITHUB_ENV"
@@ -1622,7 +1689,7 @@ jobs:
 
 
       - name: "Build flashable ZRAM module (replace zram.ko)"
-        if: ${{ github.event.inputs.zram_module == 'On' }}
+        if: ${{ github.event.inputs.zram_module == 'On' && github.event.inputs.c89_preserve_stock_kmi != 'On' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1753,6 +1820,10 @@ jobs:
           echo "| Profile | \`${{ inputs.profile }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Kernel suffix | \`${{ inputs.kernel_suffix }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build time input | \`${{ inputs.BUILD_TIME }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| COS 16.0.7.201 safe mode | \`${{ inputs.cos201_safe_mode }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| C.89 stock-KMI safe mode | \`${{ inputs.c89_preserve_stock_kmi }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Target stock UTS | \`${{ inputs.target_stock_uts }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Allow UTS mismatch | \`${{ inputs.allow_uts_mismatch }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Create Release | \`${{ inputs.create_release }}\` |" >> "$GITHUB_STEP_SUMMARY"
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
