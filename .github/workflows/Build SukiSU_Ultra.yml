@@ -57,6 +57,13 @@ on:
         default: external
         options: [sukisu, external]
 
+      cctv18_susfs_branch:
+        description: "CCTV18 susfs4oki branch for external SUSFS. Dev is latest Android 15 / 6.6 source; stable is safer fallback."
+        type: choice
+        required: true
+        default: oki-android15-6.6-dev
+        options: [oki-android15-6.6-dev, oki-android15-6.6]
+
       sukisu_ref:
         description: "SukiSU checkout ref. Default pins the old-good builtin branch state from before the LSPosed regression."
         type: string
@@ -463,7 +470,10 @@ jobs:
           SRC_REL="$(realpath --relative-to="$KERNEL_PLATFORM" "$KERNEL_DIR" 2>/dev/null || echo "common")"
           echo "Kernel source relpath: $SRC_REL"
 
-          SUSFS_SRC_BRANCH="oki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
+          SUSFS_SRC_BRANCH="${{ github.event.inputs.cctv18_susfs_branch }}"
+          if [[ -z "$SUSFS_SRC_BRANCH" ]]; then
+            SUSFS_SRC_BRANCH="oki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
+          fi
           SUSFS_PATCH_TAG="gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
           echo "Using susfs4oki clone branch: $SUSFS_SRC_BRANCH"
           echo "Using SUSFS patch tag: $SUSFS_PATCH_TAG"
@@ -480,6 +490,7 @@ jobs:
 
           echo "→ Cloning $repo ($SUSFS_SRC_BRANCH)"
           git clone --depth 1 --no-tags -b "$SUSFS_SRC_BRANCH" "$repo" "$SUSFS_FOLDER"
+          echo "→ susfs4oki checkout: $(git -C "$SUSFS_FOLDER" rev-parse --short=12 HEAD)"
 
           echo "::group::Copy SUSFS source/header files (if present)"
           # Some SUSFS branches ship extra files outside the main patch.
@@ -1051,7 +1062,7 @@ jobs:
 
           echo "SukiSU/KSU symbol scan:"
           grep -RnsE 'manual_hook_keys_compat|ksu_is_input_hook_enabled|ksu_is_init_rc_hook_enabled' "$KSU_DIR" 2>/dev/null | head -n 80 || true
-          # C.89 / mixed SUSFS compat: some SukiSU/CCTV18 combinations wire
+          # C.89 / latest CCTV18 SUSFS compat: some SukiSU/CCTV18 combinations wire
           # kernel_umount.c to susfs_run_sus_path_loop(), but the external SUSFS
           # tree may not export that symbol. Prefer a real implementation when
           # the internal SUS_PATH_LOOP list exists; otherwise add a safe no-op
@@ -1119,13 +1130,13 @@ jobs:
           import sys
           p = Path(sys.argv[1])
           t = p.read_text()
-          proto = 'void susfs_run_sus_path_loop(void);\\n'
+          proto = 'void susfs_run_sus_path_loop(void);\n'
           if 'susfs_run_sus_path_loop' not in t:
-          if '#endif' in t:
-          t = t.replace('#endif', proto + '#endif', 1)
-          else:
-          t = t.rstrip() + '\\n' + proto
-          p.write_text(t)
+              if '#endif' in t:
+                  t = t.replace('#endif', proto + '#endif', 1)
+              else:
+                  t = t.rstrip() + '\n' + proto
+              p.write_text(t)
           SUSPATHLOOPHPY
             echo "✅ Added susfs_run_sus_path_loop() prototype"
           fi
