@@ -184,12 +184,6 @@ on:
         required: false
         default: "ubuntu-build"
 
-      create_release:
-        description: "Create a GitHub Release (optional)"
-        type: choice
-        required: false
-        default: "false"
-        options: ["false", "true"]
 
 jobs:
   build:
@@ -1914,7 +1908,7 @@ jobs:
           echo "| C.89 stock-KMI safe mode | \`${{ inputs.c89_preserve_stock_kmi }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Target stock UTS | \`${{ inputs.target_stock_uts }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Allow UTS mismatch | \`${{ inputs.allow_uts_mismatch }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Create Release | \`${{ inputs.create_release }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Create Release | \`false\` |" >> "$GITHUB_STEP_SUMMARY"
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### 🔧 Feature Selection (Selected vs Detected)" >> "$GITHUB_STEP_SUMMARY"
@@ -1965,7 +1959,7 @@ jobs:
           echo "TAR=/usr/bin/tar" >> "$GITHUB_ENV"
 
       - name: "Prepare GitHub Release"
-        if: ${{ inputs.create_release == 'true' }}
+        if: ${{ false }}
         id: rel
         shell: bash
         run: |
@@ -1977,7 +1971,7 @@ jobs:
           echo "Release tag: $TAG"
 
       - name: "Publish GitHub Release (direct-download flash ZIP)"
-        if: ${{ inputs.create_release == 'true' }}
+        if: ${{ false }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.rel.outputs.tag }}
@@ -1990,7 +1984,7 @@ jobs:
 
 
       - name: "Publish ZRAM module to GitHub Release (optional)"
-        if: ${{ inputs.create_release == 'true' && hashFiles('zram-module.zip') != '' }}
+        if: ${{ false }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.rel.outputs.tag }}
@@ -2015,7 +2009,7 @@ jobs:
             echo ""
             echo "### Note about Downloads"
             echo "• **Actions Artifact**: downloads as a wrapper ZIP. Extract it and flash **${{ env.OUT_ZIP }}**."
-            if [[ "${{ inputs.create_release }}" == "true" ]]; then
+            if [[ "false" == "true" ]]; then
               echo "• **Release asset**: direct download (no wrapper ZIP)."
             else
               echo "• **Release asset**: not created in this run (create_release=false)."
