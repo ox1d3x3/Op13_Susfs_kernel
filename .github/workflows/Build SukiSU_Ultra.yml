@@ -1051,8 +1051,87 @@ jobs:
 
           echo "SukiSU/KSU symbol scan:"
           grep -RnsE 'manual_hook_keys_compat|ksu_is_input_hook_enabled|ksu_is_init_rc_hook_enabled' "$KSU_DIR" 2>/dev/null | head -n 80 || true
-          echo "SUSFS external-dir helper scan:"
-          grep -Rns 'susfs_set_i_state_on_external_dir' "$SUSFS_C" "$SUSFS_H" 2>/dev/null || true
+          # C.89 / mixed SUSFS compat: some SukiSU/CCTV18 combinations wire
+          # kernel_umount.c to susfs_run_sus_path_loop(), but the external SUSFS
+          # tree may not export that symbol. Prefer a real implementation when
+          # the internal SUS_PATH_LOOP list exists; otherwise add a safe no-op
+          # fallback so vmlinux links instead of failing at final LD.
+          if [[ -f "$SUSFS_C" ]] && ! grep -qE '^[[:space:]]*void[[:space:]]+susfs_run_sus_path_loop[[:space:]]*\(' "$SUSFS_C"; then
+            if grep -q 'LH_SUS_PATH_LOOP' "$SUSFS_C" && grep -q 'susfs_srcu_sus_path_loop' "$SUSFS_C"; then
+              cat >> "$SUSFS_C" <<'SUSPATHLOOPREAL'
+          
+          /* OP13 compatibility for SukiSU kernel_umount.c expecting SUSFS path-loop rerun. */
+          #ifdef CONFIG_KSU_SUSFS_SUS_PATH
+          void susfs_run_sus_path_loop(void)
+          {
+          	struct st_susfs_sus_path_list *cursor = NULL;
+          	struct path path;
+          	struct inode *inode = NULL;
+          #ifdef FUSE_SUPER_MAGIC
+          	struct fuse_inode *fi = NULL;
+          #endif
+          	int srcu_idx = srcu_read_lock(&susfs_srcu_sus_path_loop);
+          
+          	list_for_each_entry_rcu(cursor, &LH_SUS_PATH_LOOP, list) {
+          		if (kern_path(cursor->target_pathname, 0, &path))
+          			continue;
+          
+          		inode = d_backing_inode(path.dentry);
+          		if (!inode || !inode->i_mapping) {
+          			path_put(&path);
+          			continue;
+          		}
+          
+          #ifdef FUSE_SUPER_MAGIC
+          		if (inode->i_sb && inode->i_sb->s_magic == FUSE_SUPER_MAGIC) {
+          			fi = get_fuse_inode(inode);
+          			if (fi && fi->inode.i_mapping)
+          				set_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_mapping->flags);
+          		}
+          #endif
+          		set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
+          		path_put(&path);
+          	}
+          
+          	srcu_read_unlock(&susfs_srcu_sus_path_loop, srcu_idx);
+          }
+          #endif /* CONFIG_KSU_SUSFS_SUS_PATH */
+          SUSPATHLOOPREAL
+              echo "✅ Added real susfs_run_sus_path_loop() compatibility wrapper"
+            else
+              cat >> "$SUSFS_C" <<'SUSPATHLOOPNOOP'
+          
+          /* OP13 compatibility fallback: kernel_umount.c may reference this helper while
+          * this SUSFS source snapshot does not provide the path-loop implementation.
+          * Keep it no-op rather than breaking final vmlinux linkage.
+          */
+          void susfs_run_sus_path_loop(void) { }
+          SUSPATHLOOPNOOP
+              echo "✅ Added no-op susfs_run_sus_path_loop() compatibility fallback"
+            fi
+          else
+            echo "✅ susfs_run_sus_path_loop() already present or fs/susfs.c missing"
+          fi
+
+          if [[ -f "$SUSFS_H" ]] && ! grep -q 'susfs_run_sus_path_loop' "$SUSFS_H"; then
+            python3 - "$SUSFS_H" <<'SUSPATHLOOPHPY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          t = p.read_text()
+          proto = 'void susfs_run_sus_path_loop(void);\\n'
+          if 'susfs_run_sus_path_loop' not in t:
+          if '#endif' in t:
+          t = t.replace('#endif', proto + '#endif', 1)
+          else:
+          t = t.rstrip() + '\\n' + proto
+          p.write_text(t)
+          SUSPATHLOOPHPY
+            echo "✅ Added susfs_run_sus_path_loop() prototype"
+          fi
+
+          echo "SUSFS external-dir/path-loop helper scan:"
+          grep -RnsE 'susfs_set_i_state_on_external_dir|susfs_run_sus_path_loop' "$SUSFS_C" "$SUSFS_H" 2>/dev/null || true
 
           echo "::endgroup::"
 
