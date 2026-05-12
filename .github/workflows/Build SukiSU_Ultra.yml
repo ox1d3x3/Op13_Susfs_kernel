@@ -1132,6 +1132,33 @@ jobs:
             echo "✅ susfs_run_sus_path_loop() already present or fs/susfs.c missing"
           fi
 
+
+          # Final robust C.89 compatibility guard:
+          # kernel_umount.c can call susfs_run_sus_path_loop(), while the mixed
+          # SukiSU 2aba6b8 + current CCTV18/susfs4oki tree may not actually link
+          # that helper. The safe C.89 route is to disable this optional path-loop
+          # trigger from kernel_umount.c. The rest of SUSFS inline hook remains intact.
+          KUMOUNT_C="$KSU_DIR/kernel_umount.c"
+          if [[ -f "$KUMOUNT_C" ]]; then
+            python3 - "$KUMOUNT_C" <<'KUMOUNTPY'
+          from pathlib import Path
+          import sys, re
+          p = Path(sys.argv[1])
+          t = p.read_text()
+          before = t
+          t = re.sub(
+              r'(?m)^(?P<indent>\s*)susfs_run_sus_path_loop\s*\(\s*\)\s*;\s*$',
+              r'\g<indent>/* OP13 C.89 compat: disabled optional sus_path_loop trigger. */',
+              t,
+          )
+          if t != before:
+              p.write_text(t)
+              print('✅ Disabled optional kernel_umount.c susfs_run_sus_path_loop() trigger')
+          else:
+              print('ℹ️ No direct susfs_run_sus_path_loop() trigger found in kernel_umount.c')
+          KUMOUNTPY
+          fi
+
           if [[ -f "$SUSFS_H" ]] && ! grep -q 'susfs_run_sus_path_loop' "$SUSFS_H"; then
             python3 - "$SUSFS_H" <<'SUSPATHLOOPHPY'
           from pathlib import Path
