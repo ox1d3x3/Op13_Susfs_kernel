@@ -187,7 +187,7 @@ on:
 
 jobs:
   build:
-    name: "OP13 C89 Legendary Hybrid v2 | SUSFS=${{ github.event.inputs.SUSFS }} | ${{ github.event.inputs.toolchain }}"
+    name: "OP13 C89 Legendary Hybrid v4 | SUSFS=${{ github.event.inputs.SUSFS }} | ${{ github.event.inputs.toolchain }}"
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -241,7 +241,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Bismillah - OP13 CN C.89 Legendary Hybrid v2"
+          echo "Bismillah - OP13 CN C.89 Legendary Hybrid v4"
           echo "Source blend used by this workflow:"
           echo "  - mrcxlinux/actions_oplus_sm8750: OP13 GKI manifest/build foundation"
           echo "  - CCTV18/susfs4oki: SUSFS v2 external source for OPPO/OnePlus/Realme OKI-style patches"
@@ -1559,8 +1559,16 @@ jobs:
               -e KSU_SUSFS_SUS_MOUNT \
               -e KSU_SUSFS_SUS_KSTAT \
               -e KSU_SUSFS_SPOOF_UNAME \
-              -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-              -e KSU_SUSFS_TRY_UMOUNT || true
+              -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG || true
+
+            # Critical C.89 safety: do NOT force r25 TRY_UMOUNT unless requested.
+            # Earlier workflows accidentally re-enabled this here even when susfs_r25_compat=Off,
+            # making the generated kernel more aggressive than the selected inputs showed.
+            if [[ "${{ github.event.inputs.susfs_r25_compat }}" == "On" ]]; then
+              ./scripts/config --file "$CFG" -e KSU_SUSFS_TRY_UMOUNT || true
+            else
+              ./scripts/config --file "$CFG" -d KSU_SUSFS_TRY_UMOUNT || true
+            fi
           fi
 
           # Re-resolve dependencies once
@@ -1681,9 +1689,12 @@ jobs:
               echo "✅ kernel-r25 TRY_UMOUNT compatibility enabled."
             else
               if grep -qE '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y$' "$CFG"; then
-                echo "::notice::CONFIG_KSU_SUSFS_TRY_UMOUNT=y is enabled even though susfs_r25_compat=Off. Leaving it, but this was not requested."
+                echo "::error::CONFIG_KSU_SUSFS_TRY_UMOUNT=y is enabled even though susfs_r25_compat=Off."
+                echo "This is not allowed for the C.89 baseline because it changes SUSFS umount behaviour."
+                grep -n "KSU_SUSFS_TRY_UMOUNT" "$CFG" || true
+                exit 1
               else
-                echo "✅ kernel-r25 TRY_UMOUNT compatibility not requested; skipping final .config requirement."
+                echo "✅ susfs_r25_compat=Off → TRY_UMOUNT disabled/not required."
               fi
             fi
           fi
