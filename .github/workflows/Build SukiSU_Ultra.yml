@@ -58,7 +58,7 @@ on:
         options: [sukisu, external]
 
       cctv18_susfs_branch:
-        description: "CCTV18/susfs4oki branch. Stable is recommended for COS C.89; dev is available for testing."
+        description: "CCTV18/susfs4oki branch. Stable is default for daily-driver C.89; dev is available for latest SUSFS testing."
         type: choice
         required: true
         default: oki-android15-6.6
@@ -78,14 +78,14 @@ on:
         options: ["On", "Off"]
 
       susfs_r25_compat:
-        description: "Enable experimental SUSFS kernel-r25 try_umount source hook (Off by default; optional later)"
+        description: "Enable SUSFS TRY_UMOUNT config/source hook (Off by default for C.89 first test; available later)"
         type: choice
         required: true
         default: "Off"
         options: ["On", "Off"]
 
       susfs_path_loop:
-        description: "Enable optional SUSFS sus_path_loop trigger from kernel_umount.c (Off by default due C.89 symbol mismatch)"
+        description: "Enable optional SUSFS sus_path_loop trigger from kernel_umount.c (Off by default; use only after baseline boot is proven)"
         type: choice
         required: true
         default: "Off"
@@ -112,14 +112,14 @@ on:
         options: ["On", "Off"]
 
       bbr:
-        description: "Enable BBR congestion control support"
+        description: "Enable BBR congestion control support (feature-rich daily default)"
         type: choice
         required: true
         default: "On"
         options: ["On", "Off"]
 
       adios:
-        description: "Enable ADIOS I/O scheduler support (compiled only; not forced as default)"
+        description: "Enable ADIOS I/O scheduler support (compiled for smoothness; default scheduler is not forced)"
         type: choice
         required: true
         default: "On"
@@ -154,7 +154,7 @@ on:
         options: ["On", "Off"]
 
       hmbird:
-        description: "Dont use HMBIRD/Fengchi option/May Create instability"
+        description: "HMBIRD/Fengchi scheduler bundle (experimental; keep Off for first daily-driver C.89 test)"
         type: choice
         required: true
         default: "Off"
@@ -187,7 +187,7 @@ on:
 
 jobs:
   build:
-    name: "OP13 C89 Advanced Stable | SUSFS=${{ github.event.inputs.SUSFS }} | ${{ github.event.inputs.toolchain }}"
+    name: "OP13 C89 Legendary Hybrid v2 | SUSFS=${{ github.event.inputs.SUSFS }} | ${{ github.event.inputs.toolchain }}"
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -236,6 +236,19 @@ jobs:
 
           echo "has_mnt_disk=$has_mnt_disk" >> "$GITHUB_OUTPUT"
           echo "use_maximize=$use_maximize" >> "$GITHUB_OUTPUT"
+
+      - name: "Legendary hybrid source matrix"
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Bismillah - OP13 CN C.89 Legendary Hybrid v2"
+          echo "Source blend used by this workflow:"
+          echo "  - mrcxlinux/actions_oplus_sm8750: OP13 GKI manifest/build foundation"
+          echo "  - CCTV18/susfs4oki: SUSFS v2 external source for OPPO/OnePlus/Realme OKI-style patches"
+          echo "  - CCTV18/oppo_oplus_realme_sm8750: OPlus-specific direction: OKI/GKI split, F2FS caution, Fengchi/ADIOS/BBR/BBG feature set"
+          echo "  - WildKernels: feature inspiration: BBG, BBR, TTL, IP_SET, TMPFS XATTR/POSIX ACL, scheduler/network goodies"
+          echo "  - Your known-good SukiSU lane: pinned SukiSU ref and stock-like OP13 C.89 UTS"
+          echo "Safety rule: feature-rich does not mean blindly enabling every risky hook on first boot."
 
       - name: "Maximize build space (only if /mnt temp disk exists)"
         if: steps.disk.outputs.use_maximize == 'true'
@@ -1173,7 +1186,11 @@ jobs:
             echo "CONFIG_KSU_SUSFS_ENABLE_LOG=n" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
-            echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$DEFCONFIG"
+            if [ "${{ github.event.inputs.susfs_r25_compat }}" = "On" ]; then
+              echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$DEFCONFIG"
+            else
+              echo "# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set" >> "$DEFCONFIG"
+            fi
             echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$DEFCONFIG"
           else
