@@ -30,14 +30,14 @@ on:
 
 
       lz4_zram_patch:
-        description: "Apply ZRAM LZ4 perf patch (best-effort, may not apply on all trees)"
+        description: "Apply ZRAM LZ4 perf patch (Off by default for COS C.89 stability; available later)"
         type: choice
         required: true
         default: "Off"
         options: ["On", "Off"]
 
       zram_module:
-        description: "Build flashable zram-module.zip (replace zram.ko)"
+        description: "Build flashable zram-module.zip (Off by default; do not use for first COS C.89 test)"
         type: choice
         required: true
         default: "Off"
@@ -78,14 +78,14 @@ on:
         options: ["On", "Off"]
 
       susfs_r25_compat:
-        description: "Enable experimental SUSFS kernel-r25 try_umount source hook"
+        description: "Enable experimental SUSFS kernel-r25 try_umount source hook (Off by default; optional later)"
         type: choice
         required: true
         default: "Off"
         options: ["On", "Off"]
 
       susfs_path_loop:
-        description: "Enable optional SUSFS sus_path_loop trigger from kernel_umount.c"
+        description: "Enable optional SUSFS sus_path_loop trigger from kernel_umount.c (Off by default due C.89 symbol mismatch)"
         type: choice
         required: true
         default: "Off"
@@ -112,17 +112,17 @@ on:
         options: ["On", "Off"]
 
       bbr:
-        description: "Enable BBR congestion control"
+        description: "Enable BBR congestion control support"
         type: choice
         required: true
-        default: "Off"
+        default: "On"
         options: ["On", "Off"]
 
       adios:
-        description: "Enable ADIOS I/O scheduler (compiled only; not forced as default in stable mode)"
+        description: "Enable ADIOS I/O scheduler support (compiled only; not forced as default)"
         type: choice
         required: true
-        default: "Off"
+        default: "On"
         options: ["On", "Off"]
 
       rekernel:
@@ -187,7 +187,7 @@ on:
 
 jobs:
   build:
-    name: "SUSFS=${{ github.event.inputs.SUSFS }} | Toolchain=${{ github.event.inputs.toolchain }}"
+    name: "OP13 C89 Advanced Stable | SUSFS=${{ github.event.inputs.SUSFS }} | ${{ github.event.inputs.toolchain }}"
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -1233,6 +1233,33 @@ jobs:
             echo "CONFIG_IP_SET_HASH_IP=y" >> "$DEFCONFIG"
             echo "CONFIG_IP_SET_HASH_IPPORT=y" >> "$DEFCONFIG"
             echo "CONFIG_IP_SET_HASH_NETPORTNET=y" >> "$DEFCONFIG"
+          fi
+
+          if [ "${{ github.event.inputs.proxy }}" = "On" ]; then
+            # Proxy / transparent-proxy / advanced routing support.
+            # These are support configs only; they do not force any runtime proxy behaviour.
+            echo "CONFIG_NETFILTER=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NF_CONNTRACK=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NF_NAT=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NETFILTER_XTABLES=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NETFILTER_XT_MATCH_MARK=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NETFILTER_XT_MATCH_OWNER=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NETFILTER_XT_MATCH_SOCKET=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NETFILTER_XT_TARGET_MARK=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NETFILTER_XT_TARGET_TPROXY=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NETFILTER_XT_TARGET_REDIRECT=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_IP_NF_NAT=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_IP_NF_TARGET_MASQUERADE=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_IP_NF_TARGET_REDIRECT=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NF_TABLES=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NFT_NAT=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NFT_REDIR=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NFT_TPROXY=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NF_TABLES_IPV4=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NF_TABLES_IPV6=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NF_NAT_IPV4=y" >> "$DEFCONFIG" || true
+            echo "CONFIG_NF_NAT_IPV6=y" >> "$DEFCONFIG" || true
           fi
 
           # Reduce header install work
