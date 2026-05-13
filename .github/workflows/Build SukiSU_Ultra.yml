@@ -1603,22 +1603,33 @@ jobs:
           fi
 
 
-          # kernel-r25 SUSFS module compatibility (required by recent susfs module)
+          # kernel-r25 SUSFS module compatibility check.
+          # On OP13 C.89 this is intentionally optional: the source hook can be enabled later,
+          # but it must not fail the stable build when susfs_r25_compat is Off.
           if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
-            if ! grep -qE '^(CONFIG_KSU_SUSFS_TRY_UMOUNT=|# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set)' "$CFG"; then
-              echo "::error::CONFIG_KSU_SUSFS_TRY_UMOUNT symbol missing in final .config."
-              echo "::error::KernelSU SUSFS patchset (kernel-r25 options) likely did not apply to your SukiSU builtin revision."
-              echo "::group::KernelSU Kconfig scan (drivers/kernelsu)"
-              (cd "${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}" && grep -Rns "KSU_SUSFS_TRY_UMOUNT" drivers/kernelsu 2>/dev/null | head -n 80) || true
-              echo "::endgroup::"
-              exit 1
-            fi
-            if ! grep -qE '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y$' "$CFG"; then
-              echo "::error::CONFIG_KSU_SUSFS_TRY_UMOUNT=y expected for SUSFS module compatibility (kernel-r25+) but was not enabled."
-              echo "::group::.config CONFIG_KSU_SUSFS_TRY_UMOUNT lines"
-              grep -n "KSU_SUSFS_TRY_UMOUNT" "$CFG" || true
-              echo "::endgroup::"
-              exit 1
+            if [[ "${{ github.event.inputs.susfs_r25_compat }}" == "On" ]]; then
+              if ! grep -qE '^(CONFIG_KSU_SUSFS_TRY_UMOUNT=|# CONFIG_KSU_SUSFS_TRY_UMOUNT is not set)' "$CFG"; then
+                echo "::error::susfs_r25_compat=On but CONFIG_KSU_SUSFS_TRY_UMOUNT symbol is missing in final .config."
+                echo "::error::KernelSU SUSFS kernel-r25 compatibility patch did not land in this SukiSU tree."
+                echo "::group::KernelSU Kconfig scan (drivers/kernelsu)"
+                (cd "${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}" && grep -Rns "KSU_SUSFS_TRY_UMOUNT" drivers/kernelsu 2>/dev/null | head -n 80) || true
+                echo "::endgroup::"
+                exit 1
+              fi
+              if ! grep -qE '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y$' "$CFG"; then
+                echo "::error::susfs_r25_compat=On but CONFIG_KSU_SUSFS_TRY_UMOUNT=y is not enabled."
+                echo "::group::.config CONFIG_KSU_SUSFS_TRY_UMOUNT lines"
+                grep -n "KSU_SUSFS_TRY_UMOUNT" "$CFG" || true
+                echo "::endgroup::"
+                exit 1
+              fi
+              echo "✅ kernel-r25 TRY_UMOUNT compatibility enabled."
+            else
+              if grep -qE '^CONFIG_KSU_SUSFS_TRY_UMOUNT=y$' "$CFG"; then
+                echo "::notice::CONFIG_KSU_SUSFS_TRY_UMOUNT=y is enabled even though susfs_r25_compat=Off. Leaving it, but this was not requested."
+              else
+                echo "✅ kernel-r25 TRY_UMOUNT compatibility not requested; skipping final .config requirement."
+              fi
             fi
           fi
 
