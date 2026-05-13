@@ -58,11 +58,38 @@ on:
         options: [sukisu, external]
 
       cctv18_susfs_branch:
-        description: "CCTV18 susfs4oki branch for external SUSFS. Dev is latest Android 15 / 6.6 source; stable is safer fallback."
+        description: "CCTV18/susfs4oki branch. Stable is recommended for COS C.89; dev is available for testing."
         type: choice
         required: true
-        default: oki-android15-6.6-dev
-        options: [oki-android15-6.6-dev, oki-android15-6.6]
+        default: oki-android15-6.6
+        options: [oki-android15-6.6, oki-android15-6.6-dev]
+
+      target_stock_uts:
+        description: "Expected stock uname -r for OP13 CN COS 16.0.7.201/C.89"
+        type: string
+        required: false
+        default: "6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k"
+
+      enforce_uts_match:
+        description: "Fail build if UTS_RELEASE does not match target_stock_uts"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+
+      susfs_r25_compat:
+        description: "Enable experimental SUSFS kernel-r25 try_umount source hook"
+        type: choice
+        required: true
+        default: "Off"
+        options: ["On", "Off"]
+
+      susfs_path_loop:
+        description: "Enable optional SUSFS sus_path_loop trigger from kernel_umount.c"
+        type: choice
+        required: true
+        default: "Off"
+        options: ["On", "Off"]
 
       sukisu_ref:
         description: "SukiSU checkout ref. Default pins the old-good builtin branch state from before the LSPosed regression."
@@ -92,10 +119,10 @@ on:
         options: ["On", "Off"]
 
       adios:
-        description: "Enable ADIOS I/O scheduler"
+        description: "Enable ADIOS I/O scheduler (compiled only; not forced as default in stable mode)"
         type: choice
         required: true
-        default: "On"
+        default: "Off"
         options: ["On", "Off"]
 
       rekernel:
@@ -138,33 +165,6 @@ on:
         type: string
         required: false
         default: ""
-
-      target_stock_uts:
-        description: "Expected stock uname -r for current firmware. Leave default for PJZ110 COS16 C.89 / 16.0.7.201, or paste your stock uname -r."
-        type: string
-        required: false
-        default: "6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k"
-
-      allow_uts_mismatch:
-        description: "Allow build artifact even if UTS_RELEASE does not match target_stock_uts. Keep false for bootloop safety."
-        type: choice
-        required: true
-        default: "false"
-        options: ["false", "true"]
-
-      cos201_safe_mode:
-        description: "COS 16.0.7.201 safe mode: avoid module/vermagic-sensitive ZRAM module and risky default scheduler changes."
-        type: choice
-        required: true
-        default: "On"
-        options: ["On", "Off"]
-
-      c89_preserve_stock_kmi:
-        description: "C.89 first-boot test: preserve stock-sensitive ZRAM/LZ4 config and avoid module ABI/KMI drift."
-        type: choice
-        required: true
-        default: "On"
-        options: ["On", "Off"]
 
       BUILD_TIME:
         description: "Custom build time string (Enter F to use current UTC)"
@@ -465,9 +465,6 @@ jobs:
           echo "Kernel source relpath: $SRC_REL"
 
           SUSFS_SRC_BRANCH="${{ github.event.inputs.cctv18_susfs_branch }}"
-          if [[ -z "$SUSFS_SRC_BRANCH" ]]; then
-            SUSFS_SRC_BRANCH="oki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
-          fi
           SUSFS_PATCH_TAG="gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}"
           echo "Using susfs4oki clone branch: $SUSFS_SRC_BRANCH"
           echo "Using SUSFS patch tag: $SUSFS_PATCH_TAG"
@@ -484,7 +481,8 @@ jobs:
 
           echo "→ Cloning $repo ($SUSFS_SRC_BRANCH)"
           git clone --depth 1 --no-tags -b "$SUSFS_SRC_BRANCH" "$repo" "$SUSFS_FOLDER"
-          echo "→ susfs4oki checkout: $(git -C "$SUSFS_FOLDER" rev-parse --short=12 HEAD)"
+          echo "susfs4oki commit:"
+          git -C "$SUSFS_FOLDER" log -1 --oneline || true
 
           echo "::group::Copy SUSFS source/header files (if present)"
           # Some SUSFS branches ship extra files outside the main patch.
@@ -797,13 +795,17 @@ jobs:
             echo "drivers/kernelsu/supercalls.[ch] not found; skipping repair."
           fi
           echo "::endgroup::"
-      - name: "SukiSU SUSFS kernel-r25 compat (TRY_UMOUNT)"
+      - name: "Optional SukiSU SUSFS kernel-r25 compat (TRY_UMOUNT)"
         shell: bash
         run: |
           set -euo pipefail
 
           if [[ "${{ github.event.inputs.SUSFS }}" != "On" ]]; then
             echo "SUSFS Off → skipping SUSFS r25 compat patch."
+            exit 0
+          fi
+          if [[ "${{ github.event.inputs.susfs_r25_compat }}" != "On" ]]; then
+            echo "susfs_r25_compat is Off → keeping kernel-r25 try_umount source hook disabled for stable C.89 build."
             exit 0
           fi
 
@@ -890,6 +892,46 @@ jobs:
 
 
 
+      - name: "Guard optional SUSFS sus_path_loop trigger"
+        if: ${{ github.event.inputs.SUSFS == 'On' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
+          KSU_UMOUNT="$KDIR/drivers/kernelsu/kernel_umount.c"
+
+          if [[ ! -f "$KSU_UMOUNT" ]]; then
+            echo "kernel_umount.c not found, skipping sus_path_loop guard."
+            exit 0
+          fi
+
+          if [[ "${{ github.event.inputs.susfs_path_loop }}" == "On" ]]; then
+            echo "susfs_path_loop is On → leaving susfs_run_sus_path_loop() trigger untouched."
+            echo "If build fails with missing susfs_run_sus_path_loop, use susfs_path_loop=Off or update the matching SUSFS source branch."
+            exit 0
+          fi
+
+          if grep -q 'susfs_run_sus_path_loop[[:space:]]*(' "$KSU_UMOUNT"; then
+            python3 - "$KSU_UMOUNT" <<'PY'
+          from pathlib import Path
+          import re, sys
+          p = Path(sys.argv[1])
+          t = p.read_text()
+          t2 = re.sub(r'^[ \t]*susfs_run_sus_path_loop\s*\(\s*\)\s*;\s*$',
+                      '\t/* OP13 C.89 stable: optional SUSFS sus_path_loop trigger disabled by workflow. */',
+                      t,
+                      flags=re.M)
+          if t2 != t:
+              p.write_text(t2)
+              print('Disabled optional susfs_run_sus_path_loop() trigger in kernel_umount.c')
+          else:
+              print('No standalone susfs_run_sus_path_loop() call was replaced')
+          PY
+          else
+            echo "No susfs_run_sus_path_loop() call found."
+          fi
+
+
       - name: "Repair SukiSU 2aba6b8 + CCTV18 SUSFS symbol compatibility"
         if: ${{ github.event.inputs.SUSFS == 'On' }}
         shell: bash
@@ -928,24 +970,10 @@ jobs:
            */
           DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);
           DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);
-
-          /* Some CCTV18/SukiSU source combinations reference this helper from
-           * drivers/kernelsu/kernel_umount.c while fs/susfs.c only builds it
-           * when SUS_PATH_LOOP internals are enabled. Provide a weak fallback
-           * so final vmlinux links; a real fs/susfs.c implementation wins when present.
-           */
-          __attribute__((weak)) void susfs_run_sus_path_loop(void) { }
           MANUALKEYS
-            echo "✅ Added manual_hook_keys_compat.c with SUS path-loop weak fallback"
+            echo "✅ Added manual_hook_keys_compat.c"
           else
-            cat > "$KSU_DIR/manual_hook_keys_compat.c" <<'MANUALKEYS'
-          /* OP13 SukiSU/CCTV18 compatibility object.
-           * Static keys already exist elsewhere, so only provide the weak
-           * SUS path-loop fallback used by kernel_umount.c when needed.
-           */
-          __attribute__((weak)) void susfs_run_sus_path_loop(void) { }
-          MANUALKEYS
-            echo "✅ Manual-hook static key definitions already present; added SUS path-loop weak fallback"
+            echo "✅ Manual-hook static key definitions already present"
           fi
 
           # Link manual_hook_keys_compat.o in the least invasive way:
@@ -1070,114 +1098,8 @@ jobs:
 
           echo "SukiSU/KSU symbol scan:"
           grep -RnsE 'manual_hook_keys_compat|ksu_is_input_hook_enabled|ksu_is_init_rc_hook_enabled' "$KSU_DIR" 2>/dev/null | head -n 80 || true
-          # C.89 / latest CCTV18 SUSFS compat: some SukiSU/CCTV18 combinations wire
-          # kernel_umount.c to susfs_run_sus_path_loop(), but the external SUSFS
-          # tree may not export that symbol. Prefer a real implementation when
-          # the internal SUS_PATH_LOOP list exists; otherwise add a safe no-op
-          # fallback so vmlinux links instead of failing at final LD.
-          if [[ -f "$SUSFS_C" ]] && ! grep -qE '^[[:space:]]*void[[:space:]]+susfs_run_sus_path_loop[[:space:]]*\(' "$SUSFS_C"; then
-            if grep -q 'LH_SUS_PATH_LOOP' "$SUSFS_C" && grep -q 'susfs_srcu_sus_path_loop' "$SUSFS_C"; then
-              cat >> "$SUSFS_C" <<'SUSPATHLOOPREAL'
-          
-          /* OP13 compatibility for SukiSU kernel_umount.c expecting SUSFS path-loop rerun. */
-          #ifdef CONFIG_KSU_SUSFS_SUS_PATH
-          void susfs_run_sus_path_loop(void)
-          {
-          	struct st_susfs_sus_path_list *cursor = NULL;
-          	struct path path;
-          	struct inode *inode = NULL;
-          #ifdef FUSE_SUPER_MAGIC
-          	struct fuse_inode *fi = NULL;
-          #endif
-          	int srcu_idx = srcu_read_lock(&susfs_srcu_sus_path_loop);
-          
-          	list_for_each_entry_rcu(cursor, &LH_SUS_PATH_LOOP, list) {
-          		if (kern_path(cursor->target_pathname, 0, &path))
-          			continue;
-          
-          		inode = d_backing_inode(path.dentry);
-          		if (!inode || !inode->i_mapping) {
-          			path_put(&path);
-          			continue;
-          		}
-          
-          #ifdef FUSE_SUPER_MAGIC
-          		if (inode->i_sb && inode->i_sb->s_magic == FUSE_SUPER_MAGIC) {
-          			fi = get_fuse_inode(inode);
-          			if (fi && fi->inode.i_mapping)
-          				set_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_mapping->flags);
-          		}
-          #endif
-          		set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
-          		path_put(&path);
-          	}
-          
-          	srcu_read_unlock(&susfs_srcu_sus_path_loop, srcu_idx);
-          }
-          #endif /* CONFIG_KSU_SUSFS_SUS_PATH */
-          SUSPATHLOOPREAL
-              echo "✅ Added real susfs_run_sus_path_loop() compatibility wrapper"
-            else
-              cat >> "$SUSFS_C" <<'SUSPATHLOOPNOOP'
-          
-          /* OP13 compatibility fallback: kernel_umount.c may reference this helper while
-          * this SUSFS source snapshot does not provide the path-loop implementation.
-          * Keep it no-op rather than breaking final vmlinux linkage.
-          */
-          void susfs_run_sus_path_loop(void) { }
-          SUSPATHLOOPNOOP
-              echo "✅ Added no-op susfs_run_sus_path_loop() compatibility fallback"
-            fi
-          else
-            echo "✅ susfs_run_sus_path_loop() already present or fs/susfs.c missing"
-          fi
-
-
-          # Final robust C.89 compatibility guard:
-          # kernel_umount.c can call susfs_run_sus_path_loop(), while the mixed
-          # SukiSU 2aba6b8 + current CCTV18/susfs4oki tree may not actually link
-          # that helper. The safe C.89 route is to disable this optional path-loop
-          # trigger from kernel_umount.c. The rest of SUSFS inline hook remains intact.
-          KUMOUNT_C="$KSU_DIR/kernel_umount.c"
-          if [[ -f "$KUMOUNT_C" ]]; then
-            python3 - "$KUMOUNT_C" <<'KUMOUNTPY'
-          from pathlib import Path
-          import sys, re
-          p = Path(sys.argv[1])
-          t = p.read_text()
-          before = t
-          t = re.sub(
-              r'(?m)^(?P<indent>\s*)susfs_run_sus_path_loop\s*\(\s*\)\s*;\s*$',
-              r'\g<indent>/* OP13 C.89 compat: disabled optional sus_path_loop trigger. */',
-              t,
-          )
-          if t != before:
-              p.write_text(t)
-              print('✅ Disabled optional kernel_umount.c susfs_run_sus_path_loop() trigger')
-          else:
-              print('ℹ️ No direct susfs_run_sus_path_loop() trigger found in kernel_umount.c')
-          KUMOUNTPY
-          fi
-
-          if [[ -f "$SUSFS_H" ]] && ! grep -q 'susfs_run_sus_path_loop' "$SUSFS_H"; then
-            python3 - "$SUSFS_H" <<'SUSPATHLOOPHPY'
-          from pathlib import Path
-          import sys
-          p = Path(sys.argv[1])
-          t = p.read_text()
-          proto = 'void susfs_run_sus_path_loop(void);\n'
-          if 'susfs_run_sus_path_loop' not in t:
-              if '#endif' in t:
-                  t = t.replace('#endif', proto + '#endif', 1)
-              else:
-                  t = t.rstrip() + '\n' + proto
-              p.write_text(t)
-          SUSPATHLOOPHPY
-            echo "✅ Added susfs_run_sus_path_loop() prototype"
-          fi
-
-          echo "SUSFS external-dir/path-loop helper scan:"
-          grep -RnsE 'susfs_set_i_state_on_external_dir|susfs_run_sus_path_loop' "$SUSFS_C" "$SUSFS_H" 2>/dev/null || true
+          echo "SUSFS external-dir helper scan:"
+          grep -Rns 'susfs_set_i_state_on_external_dir' "$SUSFS_C" "$SUSFS_H" 2>/dev/null || true
 
           echo "::endgroup::"
 
@@ -1203,28 +1125,22 @@ jobs:
 
           mkdir -p lib/lz4/lz4armv8
 
-          # COS 16.0.7.201/C.89 safety: respect the workflow toggle and avoid patching
-          # the compression path while diagnosing a bootloop on a new OTA. LZ4 crypto
-          # support can still be enabled in defconfig; this only skips the source patch.
-          if [ "${{ github.event.inputs.lz4_zram_patch }}" = "On" ] && [ "${{ github.event.inputs.cos201_safe_mode }}" != "On" ] && [ "${{ github.event.inputs.c89_preserve_stock_kmi }}" != "On" ]; then
-            P_BASE="https://raw.githubusercontent.com/mrcxlinux/kernel_patches/master/zram"
-            P_MIRROR="https://cdn.jsdelivr.net/gh/mrcxlinux/kernel_patches@master/zram"
+          P_BASE="https://raw.githubusercontent.com/mrcxlinux/kernel_patches/master/zram"
+          P_MIRROR="https://cdn.jsdelivr.net/gh/mrcxlinux/kernel_patches@master/zram"
 
-            curl -fsSL "$P_BASE/001-lz4.patch" -o 001-lz4.patch || curl -fsSL "$P_MIRROR/001-lz4.patch" -o 001-lz4.patch
-            curl -fsSL "$P_BASE/lz4armv8.S" -o lib/lz4/lz4armv8.S || curl -fsSL "$P_MIRROR/lz4armv8.S" -o lib/lz4/lz4armv8.S
-            cp lib/lz4/lz4armv8.S lib/lz4/lz4armv8/lz4armv8.S
+          curl -fsSL "$P_BASE/001-lz4.patch" -o 001-lz4.patch || curl -fsSL "$P_MIRROR/001-lz4.patch" -o 001-lz4.patch
+          curl -fsSL "$P_BASE/lz4armv8.S" -o lib/lz4/lz4armv8.S || curl -fsSL "$P_MIRROR/lz4armv8.S" -o lib/lz4/lz4armv8.S
+          cp lib/lz4/lz4armv8.S lib/lz4/lz4armv8/lz4armv8.S
 
-            echo "📦 Applying 001-lz4.patch (best-effort)..."
-            if patch -p1 --dry-run < 001-lz4.patch >/dev/null 2>&1; then
-              patch -p1 < 001-lz4.patch || true
-            else
-              echo "Patch does not apply cleanly → retrying with fuzz=3"
-              patch -p1 -F 3 < 001-lz4.patch || true
-            fi
-            echo "✅ LZ4 patch step finished (non-fatal if it didn't apply cleanly)."
+          echo "📦 Applying 001-lz4.patch (best-effort)..."
+          if patch -p1 --dry-run < 001-lz4.patch >/dev/null 2>&1; then
+            patch -p1 < 001-lz4.patch || true
           else
-            echo "ℹ️ Skipping ZRAM LZ4 source patch. lz4_zram_patch=${{ github.event.inputs.lz4_zram_patch }}, cos201_safe_mode=${{ github.event.inputs.cos201_safe_mode }}, c89_preserve_stock_kmi=${{ github.event.inputs.c89_preserve_stock_kmi }}"
+            echo "Patch does not apply cleanly → retrying with fuzz=3"
+            patch -p1 -F 3 < 001-lz4.patch || true
           fi
+
+          echo "✅ LZ4 patch step finished (non-fatal if it didn't apply cleanly)."
 
 
       - name: "Enable features via defconfig"
@@ -1254,7 +1170,7 @@ jobs:
             echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "$DEFCONFIG"
-            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=n" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$DEFCONFIG"
@@ -1273,35 +1189,20 @@ jobs:
 
 
           # =========================
-          # LZ4/ZRAM handling
+          # LZ4 support (for ZRAM / fs / crypto) — enable support only (no forcing)
           # =========================
-          # C.89 stock-KMI safe mode: do not force ZRAM/LZ4 config while testing a
-          # new OTA bootloop. The stock defconfig decides CONFIG_ZRAM / compressor.
-          # This avoids changing built-in vs module behaviour and module ABI/KMI expectations.
-          if [ "${{ github.event.inputs.c89_preserve_stock_kmi }}" = "On" ]; then
-            echo "ℹ️ C.89 stock-KMI safe mode: preserving stock ZRAM/LZ4 defconfig."
-          else
-            # LZ4 support (for ZRAM / fs / crypto) — enable support only (no forcing)
-            echo "CONFIG_LZ4_COMPRESS=y" >> "$DEFCONFIG" || true
-            echo "CONFIG_LZ4_DECOMPRESS=y" >> "$DEFCONFIG" || true
-            echo "CONFIG_CRYPTO_LZ4=y" >> "$DEFCONFIG" || true
-            echo "CONFIG_CRYPTO_LZ4HC=y" >> "$DEFCONFIG" || true
+          echo "CONFIG_LZ4_COMPRESS=y" >> "$DEFCONFIG" || true
+          echo "CONFIG_LZ4_DECOMPRESS=y" >> "$DEFCONFIG" || true
+          echo "CONFIG_CRYPTO_LZ4=y" >> "$DEFCONFIG" || true
+          echo "CONFIG_CRYPTO_LZ4HC=y" >> "$DEFCONFIG" || true
 
-            # ZRAM: COS safe mode keeps ZRAM built-in to avoid relying on
-            # a zram.ko/vermagic combination across a new OTA.
-            if [ "${{ github.event.inputs.cos201_safe_mode }}" = "On" ]; then
-              echo "CONFIG_ZRAM=y" >> "$DEFCONFIG" || true
-              echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG" || true
-              echo 'CONFIG_ZRAM_DEF_COMP="lzo-rle"' >> "$DEFCONFIG" || true
-            elif [ "${{ github.event.inputs.zram_module }}" = "On" ]; then
-              echo "CONFIG_ZRAM=m" >> "$DEFCONFIG" || true
-              echo "CONFIG_ZSMALLOC=m" >> "$DEFCONFIG" || true
-              # Prefer LZ4 as the default compressor when module mode is used
-              echo 'CONFIG_ZRAM_DEF_COMP="lz4"' >> "$DEFCONFIG" || true
-            else
-              echo "CONFIG_ZRAM=y" >> "$DEFCONFIG" || true
-              echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG" || true
-            fi
+          # ZRAM: preserve stock C.89 KMI by default. Only force module mode when requested.
+          if [ "${{ github.event.inputs.zram_module }}" = "On" ]; then
+            echo "CONFIG_ZRAM=m" >> "$DEFCONFIG" || true
+            echo "CONFIG_ZSMALLOC=m" >> "$DEFCONFIG" || true
+            echo 'CONFIG_ZRAM_DEF_COMP="lz4"' >> "$DEFCONFIG" || true
+          else
+            echo "zram_module=Off → preserving stock ZRAM/ZSMALLOC/compressor config."
           fi
 
           # SukiSU safety: avoid experimental modes that can destabilize OEM kernels.
@@ -1319,12 +1220,7 @@ jobs:
           if [ "${{ github.event.inputs.bbr }}" = "On" ]; then echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"; fi
           if [ "${{ github.event.inputs.adios }}" = "On" ]; then
             echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> "$DEFCONFIG"
-            if [ "${{ github.event.inputs.cos201_safe_mode }}" = "On" ] || [ "${{ github.event.inputs.c89_preserve_stock_kmi }}" = "On" ]; then
-              # Compile ADIOS but do not force it as the default scheduler on first COS C.89 boot.
-              echo "# CONFIG_MQ_IOSCHED_DEFAULT_ADIOS is not set" >> "$DEFCONFIG"
-            else
-              echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> "$DEFCONFIG"
-            fi
+            echo "ADIOS enabled for availability, but not forced as the default scheduler in this stable C.89 workflow."
           fi
           if [ "${{ github.event.inputs.rekernel }}" = "On" ]; then echo "CONFIG_REKERNEL=y" >> "$DEFCONFIG"; fi
           if [ "${{ github.event.inputs.TTL }}" = "On" ]; then
@@ -1602,22 +1498,34 @@ jobs:
           echo "KERNEL_RELEASE=$REL" >> "$GITHUB_ENV"
           echo "Kernel release: $REL"
 
-          TARGET_UTS="${{ github.event.inputs.target_stock_uts }}"
-          ALLOW_MISMATCH="${{ github.event.inputs.allow_uts_mismatch }}"
-          if [ -n "$TARGET_UTS" ] && [ "$REL" != "$TARGET_UTS" ]; then
-            echo "::error::Built UTS_RELEASE does not match target stock uname -r."
-            echo "::error::Built : $REL"
-            echo "::error::Target: $TARGET_UTS"
-            echo "::error::Flashing a mismatched GKI Image after a new OTA is a common bootloop cause."
-            if [ "$ALLOW_MISMATCH" != "true" ]; then
-              echo "::error::Set allow_uts_mismatch=true only if you have verified the stock kernel ABI/localversion manually."
-              exit 89
-            fi
-            echo "::warning::UTS mismatch allowed by input. Flash at your own risk."
-          else
-            echo "✅ UTS_RELEASE matches target stock uname -r: ${TARGET_UTS:-not set}"
-          fi
 
+
+      - name: "Validate stock-like UTS_RELEASE"
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED="${{ github.event.inputs.target_stock_uts }}"
+          ENFORCE="${{ github.event.inputs.enforce_uts_match }}"
+          KDIR="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+          UTS_FILE=""
+          for f in "$KDIR/out/include/generated/utsrelease.h" "$KDIR/include/generated/utsrelease.h"; do
+            if [[ -f "$f" ]]; then UTS_FILE="$f"; break; fi
+          done
+          if [[ -z "$UTS_FILE" ]]; then
+            echo "::warning::Could not find generated utsrelease.h for validation."
+            exit 0
+          fi
+          ACTUAL="$(sed -n 's/^#define UTS_RELEASE "\(.*\)"/\1/p' "$UTS_FILE" | head -n1)"
+          echo "UTS_RELEASE actual  : $ACTUAL"
+          echo "UTS_RELEASE expected: $EXPECTED"
+          if [[ -n "$EXPECTED" && "$ACTUAL" != "$EXPECTED" ]]; then
+            if [[ "$ENFORCE" == "On" ]]; then
+              echo "::error::UTS_RELEASE mismatch. Refusing to package a kernel that does not mimic stock C.89."
+              exit 1
+            else
+              echo "::warning::UTS_RELEASE mismatch, but enforce_uts_match=Off."
+            fi
+          fi
 
       - name: Verify final config (SukiSU Ultra / SUSFS)
         shell: bash
@@ -1798,7 +1706,7 @@ jobs:
           ====================================================
           EOF
 
-          OUT="OP13_C89FIX_${{ env.ANDROID_VERSION }}_${{ env.KERNEL_VERSION }}_${{ env.SUFFIX }}_${{ env.PROFILE_TAG }}_${{ github.run_number }}_${MODE_TAG}_FLASH_THIS.zip"
+          OUT="OP13_${{ env.ANDROID_VERSION }}_${{ env.KERNEL_VERSION }}_${{ env.SUFFIX }}_${{ env.PROFILE_TAG }}_${{ github.run_number }}_${MODE_TAG}_FLASH_THIS.zip"
           rm -f "$OUT" || true
           (cd AnyKernel3 && zip -r9 "../$OUT" . -x "*.git*" -x "*README*" -x "*.md" >/dev/null)
           echo "OUT_ZIP=$OUT" >> "$GITHUB_ENV"
@@ -1814,7 +1722,7 @@ jobs:
 
 
       - name: "Build flashable ZRAM module (replace zram.ko)"
-        if: ${{ github.event.inputs.zram_module == 'On' && github.event.inputs.c89_preserve_stock_kmi != 'On' }}
+        if: ${{ github.event.inputs.zram_module == 'On' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1945,11 +1853,7 @@ jobs:
           echo "| Profile | \`${{ inputs.profile }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Kernel suffix | \`${{ inputs.kernel_suffix }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build time input | \`${{ inputs.BUILD_TIME }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| COS 16.0.7.201 safe mode | \`${{ inputs.cos201_safe_mode }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| C.89 stock-KMI safe mode | \`${{ inputs.c89_preserve_stock_kmi }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Target stock UTS | \`${{ inputs.target_stock_uts }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Allow UTS mismatch | \`${{ inputs.allow_uts_mismatch }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Create Release | \`false\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Create Release | `false` |" >> "$GITHUB_STEP_SUMMARY"
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### 🔧 Feature Selection (Selected vs Detected)" >> "$GITHUB_STEP_SUMMARY"
@@ -2050,7 +1954,7 @@ jobs:
             echo ""
             echo "### Note about Downloads"
             echo "• **Actions Artifact**: downloads as a wrapper ZIP. Extract it and flash **${{ env.OUT_ZIP }}**."
-            if [[ "false" == "true" ]]; then
+            if false; then
               echo "• **Release asset**: direct download (no wrapper ZIP)."
             else
               echo "• **Release asset**: not created in this run (create_release=false)."
