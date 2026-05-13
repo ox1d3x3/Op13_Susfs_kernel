@@ -328,27 +328,43 @@ jobs:
           set -euo pipefail
           mkdir -p kernel_workspace
           cd kernel_workspace
+
           # Manifest repo: only zh branch contains manifest.xml
           MANIFEST_REPO="https://github.com/mrcxlinux/actions_oplus_sm8750.git"
           MANIFEST_BRANCH="zh"
           MANIFEST_FILE="manifest.xml"
           echo "Using manifest: $MANIFEST_REPO ($MANIFEST_BRANCH/$MANIFEST_FILE)"
           curl -fsSL "https://raw.githubusercontent.com/mrcxlinux/actions_oplus_sm8750/${MANIFEST_BRANCH}/${MANIFEST_FILE}" >/dev/null
+
+          # Network hardening for CodeLinaro/Gitaly. These do not fix a server-side outage,
+          # but they reduce flaky HTTP/2 sessions and make sync resume cleaner.
           git config --global http.version HTTP/1.1
           git config --global http.lowSpeedLimit 1000
-          git config --global http.lowSpeedTime 600
-          git config --global fetch.parallel 2
-          repo init -u "$MANIFEST_REPO" -b "$MANIFEST_BRANCH" -m "$MANIFEST_FILE" --depth=1
+          git config --global http.lowSpeedTime 900
+          git config --global http.postBuffer 524288000
+          git config --global fetch.parallel 1
+          git config --global pack.threads 1
+          export GIT_HTTP_MAX_REQUESTS=2
 
-          repo_sync_try() {
+          INIT_ARGS=( -u "$MANIFEST_REPO" -b "$MANIFEST_BRANCH" -m "$MANIFEST_FILE" --depth=1 )
+          if repo init -h 2>&1 | grep -q -- '--partial-clone'; then
+            INIT_ARGS+=(--partial-clone --clone-filter=blob:none)
+            echo "repo init: partial clone enabled to reduce initial transfer size."
+          else
+            echo "repo init: partial clone not supported by this repo tool."
+          fi
+          repo init "${INIT_ARGS[@]}"
+
+          repo_sync_once() {
             local jobs="$1"
             local net_jobs="$2"
             local label="$3"
-            shift 3 || true
+            local failfast="${4:-0}"
             local sync_args=( -c --no-tags --no-clone-bundle --force-sync --optimized-fetch --prune -j"$jobs" )
-            if repo sync -h 2>&1 | grep -q -- '--retry-fetches'; then sync_args+=(--retry-fetches=8); fi
+            if repo sync -h 2>&1 | grep -q -- '--retry-fetches'; then sync_args+=(--retry-fetches=12); fi
             if repo sync -h 2>&1 | grep -q -- '--jobs-network'; then sync_args+=(--jobs-network="$net_jobs"); fi
-            if [[ "${1:-}" == "failfast" ]]; then sync_args+=(--fail-fast); fi
+            if [[ "$failfast" == "1" ]]; then sync_args+=(--fail-fast); fi
+
             echo "::group::repo sync attempt: $label"
             echo "repo sync ${sync_args[*]}"
             set +e
@@ -359,18 +375,40 @@ jobs:
             return "$rc"
           }
 
-          if repo_sync_try 8 4 "balanced"; then
-            echo "✅ repo sync completed."
-          else
-            echo "::warning::repo sync failed; retrying with lower network parallelism."
-            sleep 30
-            if repo_sync_try 4 2 "reduced"; then
-              echo "✅ repo sync completed on reduced retry."
-            else
-              echo "::warning::repo sync failed again; retrying serial fail-fast."
-              sleep 45
-              repo_sync_try 1 1 "serial" failfast
+          # CodeLinaro sometimes returns transient 502/Gitaly unavailable for clang/rust prebuilts.
+          # The important part is to keep the same workspace and resume after waiting.
+          attempts=(
+            "8 4 balanced 0 0"
+            "8 2 balanced-resume 0 45"
+            "4 2 reduced 0 75"
+            "2 1 gentle 0 120"
+            "1 1 serial 1 180"
+            "1 1 serial-resume 1 240"
+          )
+
+          ok=0
+          for spec in "${attempts[@]}"; do
+            set -- $spec
+            jobs="$1"; net="$2"; label="$3"; failfast="$4"; wait_s="$5"
+            if [[ "$wait_s" != "0" ]]; then
+              echo "Waiting ${wait_s}s before retry to let CodeLinaro/Gitaly recover..."
+              sleep "$wait_s"
             fi
+            if repo_sync_once "$jobs" "$net" "$label" "$failfast"; then
+              ok=1
+              echo "✅ repo sync completed on attempt: $label"
+              break
+            fi
+            echo "::warning::repo sync attempt '$label' failed. This is usually a transient CodeLinaro/Gitaly network issue, not a kernel source error."
+          done
+
+          if [[ "$ok" != "1" ]]; then
+            echo "::error::repo sync failed after all retry/backoff attempts."
+            echo "Most likely cause: CodeLinaro/Gitaly is temporarily unavailable for one or more large prebuilts, commonly clang or rust."
+            echo "Failed projects summary from repo:"
+            repo status 2>/dev/null || true
+            echo "Tip: rerun the same workflow later. No kernel changes are needed for this class of failure."
+            exit 1
           fi
 
           rm -f kernel_platform/common/android/abi_gki_protected_exports_* || true
