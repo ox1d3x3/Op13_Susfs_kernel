@@ -1037,24 +1037,45 @@ jobs:
           echo "::group::Repair SukiSU + CCTV18 SUSFS symbol compatibility"
 
           KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
-          KSU_DIR="$KDIR/drivers/kernelsu"
           SUSFS_C="$KDIR/fs/susfs.c"
           SUSFS_H="$KDIR/include/linux/susfs.h"
 
-          if [[ ! -d "$KSU_DIR" ]]; then
-            echo "::error::KernelSU/SukiSU source dir not found: $KSU_DIR"
-            find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -maxdepth 6 -type f -path '*/drivers/kernelsu/Kbuild' -print | head -n 20 || true
+          # SukiSU setup layout differs between refs:
+          #   old pinned lane: common/drivers/kernelsu/Kbuild
+          #   builtin/latest:  common/drivers/kernelsu -> ../KernelSU/kernel
+          # Some refs use the real KernelSU/kernel path directly. Resolve the real source dir
+          # instead of assuming the symlink path contains Kbuild.
+          KSU_DIR=""
+          KSU_KBUILD=""
+          for candidate in             "$KDIR/drivers/kernelsu"             "$KDIR/KernelSU/kernel"             "$KDIR/KernelSU-Next/kernel"; do
+            real="$(readlink -f "$candidate" 2>/dev/null || true)"
+            if [[ -n "$real" && -f "$real/Kbuild" ]]; then
+              KSU_DIR="$real"
+              KSU_KBUILD="$real/Kbuild"
+              break
+            fi
+          done
+
+          if [[ -z "$KSU_KBUILD" ]]; then
+            KSU_KBUILD="$(find "$KDIR" -maxdepth 8 -type f \( -path '*/drivers/kernelsu/Kbuild' -o -path '*/KernelSU/kernel/Kbuild' -o -path '*/KernelSU-Next/kernel/Kbuild' \) 2>/dev/null | head -n 1 || true)"
+            if [[ -n "$KSU_KBUILD" ]]; then
+              KSU_DIR="$(dirname "$KSU_KBUILD")"
+            fi
+          fi
+
+          if [[ -z "$KSU_DIR" || -z "$KSU_KBUILD" || ! -f "$KSU_KBUILD" ]]; then
+            echo "::error::KernelSU/SukiSU Kbuild not found. drivers/kernelsu may be a symlink without a resolved Kbuild."
+            echo "Kernel dir: $KDIR"
+            echo "drivers/kernelsu listing:"
+            ls -la "$KDIR/drivers/kernelsu" || true
+            echo "KernelSU candidates:"
+            find "$KDIR" -maxdepth 8 \( -type f -name Kbuild -o -type l -name kernelsu -o -type d -iname '*KernelSU*' \) -print 2>/dev/null | head -n 80 || true
             exit 1
           fi
 
-          if [[ ! -f "$KSU_DIR/Kbuild" ]]; then
-            echo "::error::KernelSU/SukiSU Kbuild not found: $KSU_DIR/Kbuild"
-            ls -la "$KSU_DIR" || true
-            exit 1
-          fi
-
-          echo "Kernel dir : $KDIR"
-          echo "SukiSU dir : $KSU_DIR"
+          echo "Kernel dir     : $KDIR"
+          echo "SukiSU dir     : $KSU_DIR"
+          echo "SukiSU Kbuild  : $KSU_KBUILD"
 
           if ! grep -RqsE '^[[:space:]]*DEFINE_STATIC_KEY_FALSE[[:space:]]*\([[:space:]]*ksu_is_input_hook_enabled[[:space:]]*\)' "$KSU_DIR" 2>/dev/null; then
             cat > "$KSU_DIR/manual_hook_keys_compat.c" <<'MANUALKEYS'
@@ -1077,7 +1098,7 @@ jobs:
           # 2) Fall back to ksu_obj-y only if Kbuild still uses that live variable.
           # 3) Final fallback: obj-$(CONFIG_KSU), only when no aggregate target exists.
           # This avoids the old ignored ksu_obj-y append while staying closer to the #90 working layout.
-          python3 - "$KSU_DIR/Kbuild" <<'KBUILDPY'
+          python3 - "$KSU_KBUILD" <<'KBUILDPY'
           from pathlib import Path
           import re, sys
           p = Path(sys.argv[1])
@@ -1119,7 +1140,7 @@ jobs:
           KBUILDPY
 
           echo "manual_hook_keys_compat Kbuild wiring:"
-          grep -n 'manual_hook_keys_compat.o' "$KSU_DIR/Kbuild" || true
+          grep -n 'manual_hook_keys_compat.o' "$KSU_KBUILD" || true
 
           if [[ -f "$SUSFS_C" ]] && ! grep -q 'susfs_set_i_state_on_external_dir' "$SUSFS_C"; then
             cat >> "$SUSFS_C" <<'SUSFSCOMPAT'
