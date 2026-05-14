@@ -867,15 +867,28 @@ jobs:
           python3 - "$EVENT_C" <<'PY2'
           from pathlib import Path
           import sys
+
           p = Path(sys.argv[1])
           t = p.read_text(errors='ignore')
-          old = 'ksu_sulog_capture(KSU_SULOG_EVENT_IOCTL_GRANT_ROOT, NULL, USER_ARG_NULL, gfp)'
-          new = 'ksu_sulog_capture(KSU_SULOG_EVENT_IOCTL_GRANT_ROOT, NULL, &((struct user_arg_ptr){ 0 }), gfp)'
-          if old in t:
-          p.write_text(t.replace(old, new))
-          print('Patched USER_ARG_NULL call to pass struct user_arg_ptr pointer')
+
+          replacements = {
+              'ksu_sulog_capture(KSU_SULOG_EVENT_IOCTL_GRANT_ROOT, NULL, USER_ARG_NULL, gfp)':
+                  'ksu_sulog_capture(KSU_SULOG_EVENT_IOCTL_GRANT_ROOT, NULL, &((struct user_arg_ptr){ 0 }), gfp)',
+              'ksu_sulog_capture(KSU_SULOG_EVENT_IOCTL_GRANT_ROOT, NULL, ((struct user_arg_ptr){ 0 }), gfp)':
+                  'ksu_sulog_capture(KSU_SULOG_EVENT_IOCTL_GRANT_ROOT, NULL, &((struct user_arg_ptr){ 0 }), gfp)',
+          }
+
+          changed = False
+          for old, new in replacements.items():
+              if old in t:
+                  t = t.replace(old, new)
+                  changed = True
+
+          if changed:
+              p.write_text(t)
+              print('Patched USER_ARG_NULL call to pass struct user_arg_ptr pointer.')
           else:
-          print('USER_ARG_NULL pointer patch not needed')
+              print('USER_ARG_NULL pointer patch not needed.')
           PY2
 
       - name: "Optional SukiSU SUSFS kernel-r25 compat (TRY_UMOUNT)"
