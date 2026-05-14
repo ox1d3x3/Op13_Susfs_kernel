@@ -11,6 +11,13 @@ env:
   GIT_TERMINAL_PROMPT: "0"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
+# Design goals for this scratch rebuild:
+# - OP13 CN C.89 / Android 15 / 6.6 GKI daily-driver baseline.
+# - SukiSU Ultra + CCTV18 SUSFS external patch, with old-good inline-hook default.
+# - Stock-like UTS suffix by default.
+# - Strict final validation, but hook-model aware: legacy NONE_HOOK and current builtin MANUAL_HOOK are both handled.
+# - Advanced features compiled when safe; runtime-aggressive hooks stay Off by default.
+
 on:
   workflow_dispatch:
     inputs:
@@ -58,11 +65,11 @@ on:
         options: [sukisu, external]
 
       cctv18_susfs_branch:
-        description: "CCTV18/susfs4oki branch. dev = latest Android 15/6.6 branch; stable remains selectable."
+        description: "CCTV18/susfs4oki branch. stable is default for daily driver; dev remains selectable for testing."
         type: choice
         required: true
-        default: oki-android15-6.6-dev
-        options: [oki-android15-6.6-dev, oki-android15-6.6]
+        default: oki-android15-6.6
+        options: [oki-android15-6.6, oki-android15-6.6-dev]
 
       target_stock_uts:
         description: "Expected stock uname -r for OP13 CN COS 16.0.7.201/C.89"
@@ -92,10 +99,10 @@ on:
         options: ["On", "Off"]
 
       sukisu_ref:
-        description: "SukiSU checkout ref. Default uses the latest builtin branch. You can also type main, latest, a tag, or a commit."
+        description: "SukiSU checkout ref. Daily-stable default pins old-good inline-hook lane; use builtin only for latest testing."
         type: string
         required: false
-        default: "builtin"
+        default: "2aba6b8"
 
       ksunext_multimanager:
         description: "Apply multi-manager patch (best-effort)"
@@ -187,7 +194,7 @@ on:
 
 jobs:
   build:
-    name: "OP13 C89 Legendary Hybrid v4 | SUSFS=${{ github.event.inputs.SUSFS }} | ${{ github.event.inputs.toolchain }}"
+    name: "OP13 Advanced-Stable Daily | SukiSU=${{ github.event.inputs.sukisu_ref }} | SUSFS=${{ github.event.inputs.SUSFS }} | ${{ github.event.inputs.toolchain }}"
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -1345,14 +1352,43 @@ jobs:
           echo "CONFIG_KSU=y" >> "$DEFCONFIG" || true
 
           # SukiSU hook selection:
-          # For SukiSU builtin, SUSFS inline mode is selected by CONFIG_KSU_NONE_HOOK=y
-          # together with CONFIG_KSU_SUSFS=y. If NONE_HOOK is disabled, Kconfig can fall
-          # back to syscall/tracepoint mode, which is exactly what broke HMA/Edge X Pro.
+          # Older pinned SukiSU revisions expose CONFIG_KSU_NONE_HOOK and use it with
+          # CONFIG_KSU_SUSFS for SUSFS_INLINE_HOOK. Current floating builtin SukiSU no
+          # longer exposes KSU_NONE_HOOK; it exposes CONFIG_KSU_MANUAL_HOOK as an
+          # always-on dummy/stub. Do not force-disable that dummy symbol or the final
+          # .config becomes misleading and the workflow fails for the wrong reason.
+          KSU_KCONFIG=""
+          for f in \
+            "./common/drivers/kernelsu/Kconfig" \
+            "./common/KernelSU/kernel/Kconfig" \
+            "./common/KernelSU-Next/kernel/Kconfig"; do
+            if [[ -f "$f" ]]; then KSU_KCONFIG="$f"; break; fi
+          done
+          if [[ -z "$KSU_KCONFIG" ]]; then
+            KSU_KCONFIG="$(find ./common -maxdepth 8 -type f \( -path '*/drivers/kernelsu/Kconfig' -o -path '*/KernelSU/kernel/Kconfig' -o -path '*/KernelSU-Next/kernel/Kconfig' \) 2>/dev/null | head -n 1 || true)"
+          fi
+          echo "SukiSU Kconfig for hook detection: ${KSU_KCONFIG:-not found yet}"
+
           if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
             echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
-            echo "CONFIG_KSU_NONE_HOOK=y" >> "$DEFCONFIG"
-            echo "# CONFIG_KSU_MANUAL_HOOK is not set" >> "$DEFCONFIG"
-            echo "# CONFIG_KSU_SYSCALL_HOOK is not set" >> "$DEFCONFIG"
+
+            if [[ -n "$KSU_KCONFIG" ]] && grep -q '^config KSU_NONE_HOOK' "$KSU_KCONFIG"; then
+              echo "Hook model: legacy/pinned SukiSU NONE_HOOK -> SUSFS_INLINE_HOOK"
+              echo "CONFIG_KSU_NONE_HOOK=y" >> "$DEFCONFIG"
+              echo "# CONFIG_KSU_MANUAL_HOOK is not set" >> "$DEFCONFIG"
+              echo "# CONFIG_KSU_SYSCALL_HOOK is not set" >> "$DEFCONFIG"
+              echo "# CONFIG_KSU_TRACEPOINT_HOOK is not set" >> "$DEFCONFIG"
+            elif [[ -n "$KSU_KCONFIG" ]] && grep -q '^config KSU_MANUAL_HOOK' "$KSU_KCONFIG"; then
+              echo "Hook model: current SukiSU builtin MANUAL_HOOK dummy/stub; KSU_NONE_HOOK does not exist"
+              echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$DEFCONFIG"
+              echo "# CONFIG_KSU_SYSCALL_HOOK is not set" >> "$DEFCONFIG"
+              echo "# CONFIG_KSU_TRACEPOINT_HOOK is not set" >> "$DEFCONFIG"
+            else
+              echo "::warning::Could not detect SukiSU hook Kconfig model yet; enabling SUSFS and disabling syscall/tracepoint hooks only."
+              echo "# CONFIG_KSU_SYSCALL_HOOK is not set" >> "$DEFCONFIG"
+              echo "# CONFIG_KSU_TRACEPOINT_HOOK is not set" >> "$DEFCONFIG"
+            fi
+
             echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$DEFCONFIG"
             echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$DEFCONFIG"
@@ -1372,6 +1408,7 @@ jobs:
             echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$DEFCONFIG"
             echo "# CONFIG_KSU_NONE_HOOK is not set" >> "$DEFCONFIG"
             echo "# CONFIG_KSU_SYSCALL_HOOK is not set" >> "$DEFCONFIG"
+            echo "# CONFIG_KSU_TRACEPOINT_HOOK is not set" >> "$DEFCONFIG"
           fi
 
           # Support Mountify-style tmpfs xattrs (as in your base workflow)
@@ -1397,8 +1434,8 @@ jobs:
           fi
 
           # SukiSU safety: avoid experimental modes that can destabilize OEM kernels.
-          # Do NOT disable CONFIG_KSU_NONE_HOOK when SUSFS is On; SukiSU uses
-          # NONE_HOOK + KSU_SUSFS as the SUSFS_INLINE_HOOK mode.
+          # Important: do not disable KSU_MANUAL_HOOK blindly. In current SukiSU builtin
+          # this is a harmless required stub, not the old runtime manual-hook selector.
           echo "# CONFIG_KSU_MANUAL_SU is not set" >> "$DEFCONFIG" || true
           if [ "${{ github.event.inputs.SUSFS }}" != "On" ]; then
             echo "# CONFIG_KSU_NONE_HOOK is not set" >> "$DEFCONFIG" || true
@@ -1486,26 +1523,37 @@ jobs:
         run: |
           set -euo pipefail
           DEFCONFIG="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/arch/arm64/configs/gki_defconfig"
+          KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
+          KSU_KCONFIG="$(find "$KDIR" -maxdepth 8 -type f \( -path '*/drivers/kernelsu/Kconfig' -o -path '*/KernelSU/kernel/Kconfig' -o -path '*/KernelSU-Next/kernel/Kconfig' \) 2>/dev/null | head -n 1 || true)"
+
           echo "SukiSU/SUSFS hook config lines in defconfig:"
-          grep -nE 'CONFIG_KSU_(SUSFS|NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK)' "$DEFCONFIG" || true
+          grep -nE 'CONFIG_KSU_(SUSFS|NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK|TRACEPOINT_HOOK)' "$DEFCONFIG" || true
+          echo "SukiSU Kconfig: ${KSU_KCONFIG:-not found}"
 
           if ! grep -q '^CONFIG_KSU_SUSFS=y' "$DEFCONFIG"; then
             echo "::error::CONFIG_KSU_SUSFS=y is missing. SUSFS will not be compiled."
             exit 1
           fi
-          if ! grep -q '^CONFIG_KSU_NONE_HOOK=y' "$DEFCONFIG"; then
-            echo "::error::CONFIG_KSU_NONE_HOOK=y is missing. SukiSU will not use SUSFS_INLINE_HOOK."
+          if grep -q '^CONFIG_KSU_SYSCALL_HOOK=y' "$DEFCONFIG" || grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y' "$DEFCONFIG"; then
+            echo "::error::Syscall/tracepoint hook was explicitly enabled. Keep this disabled for the stable OP13 SUSFS build."
             exit 1
           fi
-          if grep -q '^CONFIG_KSU_SYSCALL_HOOK=y' "$DEFCONFIG"; then
-            echo "::error::CONFIG_KSU_SYSCALL_HOOK=y is enabled. This causes Tracepoint syscall redirect instead of SUSFS_INLINE_HOOK."
-            exit 1
+
+          if [[ -n "$KSU_KCONFIG" ]] && grep -q '^config KSU_NONE_HOOK' "$KSU_KCONFIG"; then
+            if ! grep -q '^CONFIG_KSU_NONE_HOOK=y' "$DEFCONFIG"; then
+              echo "::error::This SukiSU revision exposes KSU_NONE_HOOK, but defconfig did not enable it."
+              exit 1
+            fi
+            echo "✅ Hook config model: legacy/pinned SukiSU NONE_HOOK + SUSFS."
+          elif [[ -n "$KSU_KCONFIG" ]] && grep -q '^config KSU_MANUAL_HOOK' "$KSU_KCONFIG"; then
+            if ! grep -q '^CONFIG_KSU_MANUAL_HOOK=y' "$DEFCONFIG"; then
+              echo "::error::Current SukiSU builtin exposes KSU_MANUAL_HOOK as a required dummy/stub, but defconfig disabled it."
+              exit 1
+            fi
+            echo "✅ Hook config model: current SukiSU builtin manual-hook dummy/stub + SUSFS. KSU_NONE_HOOK is not expected."
+          else
+            echo "::warning::Could not detect the SukiSU hook Kconfig model before build; final .config validation will re-check."
           fi
-          if grep -q '^CONFIG_KSU_MANUAL_HOOK=y' "$DEFCONFIG"; then
-            echo "::error::CONFIG_KSU_MANUAL_HOOK=y is enabled while SUSFS is On. Expected CONFIG_KSU_NONE_HOOK=y for inline SUSFS."
-            exit 1
-          fi
-          echo "✅ Hook config expects SukiSU build log: KernelSU: SUSFS_INLINE_HOOK"
 
 
       - name: "Set kernel version suffix (LOCALVERSION)"
@@ -1681,16 +1729,29 @@ jobs:
             -e PROBE_EVENTS_BTF_ARGS \
             -d DEBUG_INFO_REDUCED || true
 
-          # 3) Force-enable SUSFS module (kernel-r25) options if SUSFS is On.
-          # SukiSU builtin selects SUSFS_INLINE_HOOK through KSU_NONE_HOOK + KSU_SUSFS.
-          # If KSU_SYSCALL_HOOK survives here, the manager reports "Tracepoint syscall redirect".
+          # 3) Force-enable SUSFS options if SUSFS is On.
+          # Hook handling is Kconfig-model aware:
+          #   - older/pinned SukiSU: KSU_NONE_HOOK + KSU_SUSFS
+          #   - current builtin SukiSU: KSU_MANUAL_HOOK is a required dummy/stub;
+          #     KSU_NONE_HOOK does not exist and must not be required in final .config.
           if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
+            KSU_KCONFIG="$(find . -maxdepth 8 -type f \( -path '*/drivers/kernelsu/Kconfig' -o -path '*/KernelSU/kernel/Kconfig' -o -path '*/KernelSU-Next/kernel/Kconfig' \) 2>/dev/null | head -n 1 || true)"
+            HOOK_ARGS=()
+            if [[ -n "$KSU_KCONFIG" ]] && grep -q '^config KSU_NONE_HOOK' "$KSU_KCONFIG"; then
+              echo "Applying hook config: legacy/pinned SukiSU KSU_NONE_HOOK"
+              HOOK_ARGS+=( -e KSU_NONE_HOOK -d KSU_MANUAL_HOOK -d KSU_SYSCALL_HOOK -d KSU_TRACEPOINT_HOOK )
+            elif [[ -n "$KSU_KCONFIG" ]] && grep -q '^config KSU_MANUAL_HOOK' "$KSU_KCONFIG"; then
+              echo "Applying hook config: current SukiSU builtin KSU_MANUAL_HOOK dummy/stub"
+              HOOK_ARGS+=( -e KSU_MANUAL_HOOK -d KSU_SYSCALL_HOOK -d KSU_TRACEPOINT_HOOK )
+            else
+              echo "::warning::Unknown SukiSU hook model; enabling SUSFS and disabling syscall/tracepoint hook symbols only."
+              HOOK_ARGS+=( -d KSU_SYSCALL_HOOK -d KSU_TRACEPOINT_HOOK )
+            fi
+
             ./scripts/config --file "$CFG" \
               -e KSU \
               -e KSU_SUSFS \
-              -e KSU_NONE_HOOK \
-              -d KSU_MANUAL_HOOK \
-              -d KSU_SYSCALL_HOOK \
+              "${HOOK_ARGS[@]}" \
               -e KSU_SUSFS_SUS_PATH \
               -e KSU_SUSFS_SUS_MOUNT \
               -e KSU_SUSFS_SUS_KSTAT \
@@ -1712,8 +1773,8 @@ jobs:
 
           echo "::group::Key options in final .config"
           grep -nE '^(CONFIG_DEBUG_INFO_BTF=|CONFIG_DEBUG_INFO_BTF_MODULES=|CONFIG_MODULE_ALLOW_BTF_MISMATCH=|CONFIG_PROBE_EVENTS_BTF_ARGS=|CONFIG_CC_OPTIMIZE_FOR_)=|^# CONFIG_CC_OPTIMIZE_FOR_SIZE is not set|^# CONFIG_DEBUG_INFO_REDUCED is not set' "$CFG" || true
-          grep -nE '^(CONFIG_KSU_(SUSFS|NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK)|CONFIG_KSU_SUSFS_SPOOF_UNAME|CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG|CONFIG_KSU_SUSFS_TRY_UMOUNT)=' "$CFG" || true
-          grep -nE '^# CONFIG_KSU_(NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK|SUSFS_TRY_UMOUNT) is not set' "$CFG" || true
+          grep -nE '^(CONFIG_KSU_(SUSFS|NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK|TRACEPOINT_HOOK)|CONFIG_KSU_SUSFS_SPOOF_UNAME|CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG|CONFIG_KSU_SUSFS_TRY_UMOUNT)=' "$CFG" || true
+          grep -nE '^# CONFIG_KSU_(NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK|TRACEPOINT_HOOK|SUSFS_TRY_UMOUNT) is not set' "$CFG" || true
           echo "::endgroup::"
 
           # 4) Build
@@ -1757,9 +1818,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CFG="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/out/.config"
+          KDIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
+          CFG="$KDIR/out/.config"
           if [[ ! -f "$CFG" ]]; then
-            echo "::error::.config not found: $CFG"
+            echo "::warning::.config not found at detected KERNEL_DIR: $CFG"
+            CFG="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/out/.config"
+          fi
+          if [[ ! -f "$CFG" ]]; then
+            echo "::error::.config not found in detected or fallback location."
+            echo "Detected KDIR: $KDIR"
+            find "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -path '*/out/.config' -print 2>/dev/null | head -n 20 || true
             exit 1
           fi
           echo "Checking $CFG ..."
@@ -1780,25 +1848,42 @@ jobs:
               exit 1
             fi
 
-          # SukiSU inline SUSFS hook validation. Without this, apps show
-          # "Tracepoint syscall redirect" and SUSFS-backed hiding breaks.
+          # SukiSU hook validation. Do not hard-code KSU_NONE_HOOK for all builds:
+          # latest builtin SukiSU removed that symbol and uses KSU_MANUAL_HOOK as a
+          # required dummy/stub, while older pinned revisions still use NONE_HOOK.
           if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
-            if ! grep -q '^CONFIG_KSU_NONE_HOOK=y$' "$CFG"; then
-              echo "::error::CONFIG_KSU_NONE_HOOK=y expected. Final kernel will not be SUSFS_INLINE_HOOK."
-              grep -nE 'CONFIG_KSU_(NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK|SUSFS)' "$CFG" || true
+            KSU_KCONFIG="$(find "$KDIR" -maxdepth 8 -type f \( -path '*/drivers/kernelsu/Kconfig' -o -path '*/KernelSU/kernel/Kconfig' -o -path '*/KernelSU-Next/kernel/Kconfig' \) 2>/dev/null | head -n 1 || true)"
+            echo "SukiSU hook Kconfig: ${KSU_KCONFIG:-not found}"
+
+            if grep -q '^CONFIG_KSU_SYSCALL_HOOK=y$' "$CFG" || grep -q '^CONFIG_KSU_TRACEPOINT_HOOK=y$' "$CFG"; then
+              echo "::error::Syscall/tracepoint hook is enabled. This is not the stable SUSFS build we want."
+              grep -nE 'CONFIG_KSU_(NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK|TRACEPOINT_HOOK|SUSFS)' "$CFG" || true
               exit 1
             fi
-            if grep -q '^CONFIG_KSU_SYSCALL_HOOK=y$' "$CFG"; then
-              echo "::error::CONFIG_KSU_SYSCALL_HOOK=y detected. This is the Tracepoint syscall redirect build, not inline SUSFS."
-              grep -nE 'CONFIG_KSU_(NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK|SUSFS)' "$CFG" || true
-              exit 1
+
+            if [[ -n "$KSU_KCONFIG" ]] && grep -q '^config KSU_NONE_HOOK' "$KSU_KCONFIG"; then
+              if ! grep -q '^CONFIG_KSU_NONE_HOOK=y$' "$CFG"; then
+                echo "::error::This SukiSU revision exposes KSU_NONE_HOOK, but final .config did not enable it."
+                grep -nE 'CONFIG_KSU_(NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK|TRACEPOINT_HOOK|SUSFS)' "$CFG" || true
+                exit 1
+              fi
+              if grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$CFG"; then
+                echo "::error::Legacy NONE_HOOK model detected, but CONFIG_KSU_MANUAL_HOOK=y also survived."
+                grep -nE 'CONFIG_KSU_(NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK|TRACEPOINT_HOOK|SUSFS)' "$CFG" || true
+                exit 1
+              fi
+              echo "✅ Final hook model: legacy/pinned KSU_NONE_HOOK=y + KSU_SUSFS=y."
+            elif [[ -n "$KSU_KCONFIG" ]] && grep -q '^config KSU_MANUAL_HOOK' "$KSU_KCONFIG"; then
+              if ! grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$CFG"; then
+                echo "::error::Current SukiSU builtin requires CONFIG_KSU_MANUAL_HOOK dummy/stub, but final .config disabled it."
+                grep -nE 'CONFIG_KSU_(NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK|TRACEPOINT_HOOK|SUSFS)' "$CFG" || true
+                exit 1
+              fi
+              echo "✅ Final hook model: current SukiSU builtin MANUAL_HOOK dummy/stub + KSU_SUSFS=y. KSU_NONE_HOOK is not expected."
+            else
+              echo "::warning::KSU_NONE_HOOK not present and hook Kconfig model could not be identified. Passing because SUSFS is enabled and syscall/tracepoint hooks are disabled."
+              grep -nE 'CONFIG_KSU_(NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK|TRACEPOINT_HOOK|SUSFS)' "$CFG" || true
             fi
-            if grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' "$CFG"; then
-              echo "::error::CONFIG_KSU_MANUAL_HOOK=y detected while SUSFS is On. Expected KSU_NONE_HOOK inline SUSFS."
-              grep -nE 'CONFIG_KSU_(NONE_HOOK|MANUAL_HOOK|SYSCALL_HOOK|SUSFS)' "$CFG" || true
-              exit 1
-            fi
-            echo "✅ Final .config hook mode: CONFIG_KSU_NONE_HOOK=y + CONFIG_KSU_SUSFS=y → SUSFS_INLINE_HOOK"
           fi
 
 
