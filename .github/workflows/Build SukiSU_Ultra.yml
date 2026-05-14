@@ -1083,21 +1083,78 @@ jobs:
           echo "SukiSU dir          : $KSU_DIR"
           echo "SukiSU build file   : $KSU_BUILD_FILE"
 
-          if ! grep -RqsE '^[[:space:]]*DEFINE_STATIC_KEY_FALSE[[:space:]]*\([[:space:]]*ksu_is_input_hook_enabled[[:space:]]*\)' "$KSU_DIR" 2>/dev/null; then
-            cat > "$KSU_DIR/manual_hook_keys_compat.c" <<'MANUALKEYS'
+          # Build one compatibility object that works with both old pinned SukiSU
+          # and latest/builtin SukiSU layouts. Latest builtin uses newer static-key
+          # names (ksu_input_hook_key / ksu_init_rc_hook_key), while older CCTV18
+          # patches can reference ksu_is_* names. Also provide weak SELinux-hide
+          # compatibility symbols so builtin SukiSU can link even when its selinuxfs
+          # patch is present but the matching backend symbols are not exported.
+          cat > "$KSU_DIR/manual_hook_keys_compat.c" <<'MANUALKEYS_HEAD'
           #include <linux/jump_label.h>
+          #include <linux/types.h>
+          #include <linux/gfp.h>
+          #include <linux/errno.h>
+          #include <linux/stddef.h>
 
-          /* OP13 SukiSU + CCTV18/susfs4oki compatibility.
-           * Defines static keys referenced by CCTV18 Android 15/6.6 SUSFS hooks.
-           * Keep this inside kernelsu.o when possible, matching the old-good #90 lane.
+          /* OP13 SukiSU + CCTV18/susfs4oki compatibility object. */
+          MANUALKEYS_HEAD
+
+          add_static_key_if_missing() {
+            local sym="$1"
+            if ! grep -RqsE "^[[:space:]]*DEFINE_STATIC_KEY_FALSE[[:space:]]*\\([[:space:]]*${sym}[[:space:]]*\\)" "$KSU_DIR" --exclude='manual_hook_keys_compat.c' 2>/dev/null; then
+              echo "DEFINE_STATIC_KEY_FALSE(${sym});" >> "$KSU_DIR/manual_hook_keys_compat.c"
+              echo "  + static key: ${sym}"
+            else
+              echo "  = static key already present: ${sym}"
+            fi
+          }
+
+          add_static_key_if_missing ksu_is_input_hook_enabled
+          add_static_key_if_missing ksu_is_init_rc_hook_enabled
+          add_static_key_if_missing ksu_input_hook_key
+          add_static_key_if_missing ksu_init_rc_hook_key
+
+          cat >> "$KSU_DIR/manual_hook_keys_compat.c" <<'MANUALKEYS_TAIL'
+
+          /*
+           * Latest SukiSU builtin can patch security/selinux/selinuxfs.c for
+           * SELinux-hide query redirection. Some GKI trees do not provide the
+           * matching backend exports. These weak fallbacks are link-safety only;
+           * real SukiSU implementations, if present, override them.
            */
-          DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);
-          DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);
-          MANUALKEYS
-            echo "✅ Added manual_hook_keys_compat.c"
-          else
-            echo "✅ Manual-hook static key definitions already present"
-          fi
+          __attribute__((weak)) bool ksu_selinux_hide_running;
+          __attribute__((weak)) void *backup_sepolicy;
+
+          __attribute__((weak)) int security_context_to_sid_with_policy(void *policy,
+          　　　　const char *scontext, u32 scontext_len, u32 *sid, u32 def_sid, gfp_t gfp)
+          {
+          　　　　return -EINVAL;
+          }
+
+          __attribute__((weak)) int security_sid_to_context_with_policy(void *policy,
+          　　　　u32 sid, char **scontext, u32 *scontext_len)
+          {
+          　　　　return -EINVAL;
+          }
+
+          __attribute__((weak)) int security_compute_av_user_with_policy(void *policy,
+          　　　　u32 ssid, u32 tsid, u16 tclass, void *avd)
+          {
+          　　　　return 0;
+          }
+          MANUALKEYS_TAIL
+
+          # Normalize accidental full-width whitespace introduced by copy/paste.
+          python3 - "$KSU_DIR/manual_hook_keys_compat.c" <<'CLEANCOMPATPY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          t = p.read_text()
+          t = t.replace('\u3000', '\t')
+          p.write_text(t)
+          CLEANCOMPATPY
+
+          echo "✅ Added/updated manual_hook_keys_compat.c for old/new SukiSU symbols"
 
           # Link manual_hook_keys_compat.o in the least invasive way:
           # 1) Prefer kernelsu-objs / kernelsu-y so it is folded into kernelsu.o.
