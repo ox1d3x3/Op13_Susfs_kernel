@@ -1085,7 +1085,9 @@ jobs:
 
           # Build one compatibility object that works with both old pinned SukiSU
           # and latest/builtin SukiSU layouts. Latest builtin uses newer static-key
-          # names (ksu_input_hook_key / ksu_init_rc_hook_key), while older CCTV18
+          # names (ksu_input_hook_key / ksu_init_rc_hook_key), and on some
+          # static_key_interface variants references the generated *_false symbol
+          # names directly. Older CCTV18
           # patches can reference ksu_is_* names. Also provide weak SELinux-hide
           # compatibility symbols so builtin SukiSU can link even when its selinuxfs
           # patch is present but the matching backend symbols are not exported.
@@ -1113,6 +1115,11 @@ jobs:
           add_static_key_if_missing ksu_is_init_rc_hook_enabled
           add_static_key_if_missing ksu_input_hook_key
           add_static_key_if_missing ksu_init_rc_hook_key
+          # Latest builtin SukiSU's static_key_interface can reference the
+          # generated *_false symbol names directly. Define those exact symbols
+          # too when the tree does not provide them.
+          add_static_key_if_missing ksu_input_hook_key_false
+          add_static_key_if_missing ksu_init_rc_hook_key_false
 
           cat >> "$KSU_DIR/manual_hook_keys_compat.c" <<'MANUALKEYS_TAIL'
 
