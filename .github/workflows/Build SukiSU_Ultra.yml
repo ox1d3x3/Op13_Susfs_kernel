@@ -1,4 +1,27 @@
-name: OP13 SukiSU Ultra
+name: OP13 SukiSU Ultra Build
+
+env:
+  TZ: Asia/Shanghai
+  ANDROID_VERSION: android15
+  KERNEL_VERSION: "6.6"
+  OP_MODEL: OP13
+  OP_SOC: sun
+  OP_OS_VERSION: OOS16
+  OP_EXPECTED_UTS: "6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k"
+  OP_STOCK_LOCALVERSION: "-android15-8-g7e1f3c083cc6-abogki467167594-4k"
+  WILD_MANIFEST_REPO: "https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git"
+  WILD_MANIFEST_BRANCH: "main"
+  WILD_MANIFEST_FILE: "manifests/oos16/oneplus_13_w.xml"
+  WILD_CLANG_REL: "kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin"
+  SUSFS_REPO: "https://gitlab.com/simonpunk/susfs4ksu.git"
+  SUSFS_DEFAULT_COMMIT: "85bcfac5edc8ba7808581e8d0a3ca9c7deca78e4"
+  CCACHE_COMPRESS: "true"
+  CCACHE_COMPRESSLEVEL: "6"
+  CCACHE_MAXSIZE: "5G"
+  GIT_TERMINAL_PROMPT: "0"
+  KBUILD_BUILD_USER: OnePlus
+  KBUILD_BUILD_HOST: ubuntu-build
+  KBUILD_BUILD_VERSION: "1"
 
 permissions:
   contents: read
@@ -7,259 +30,583 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
-      backend:
-        description: "Root backend. KSUN is known-good from WildKernels release; SukiSU is intentionally blocked in this workflow until the KSUN baseline is confirmed."
+      feature_profile:
+        description: "Preset: battery_daily = stable/battery default, wild_daily = closer to Wild features, minimal_debug = root+susfs only"
         type: choice
         required: true
-        default: ksun_known_good
-        options:
-          - ksun_known_good
-          - sukisu_builtin_blocked
-      feature_set:
-        description: "Feature preset"
-        type: choice
-        required: true
-        default: daily
-        options:
-          - daily
-          - minimal
-          - wild_full
-      clean_build:
-        description: "Clean build without ccache"
-        type: boolean
-        required: true
-        default: false
-      build_timestamp:
-        description: "Stock-like uname timestamp. Leave this default for OP13 OOS16/PJZ110 6.6.89 mimic."
+        default: battery_daily
+        options: [battery_daily, wild_daily, minimal_debug]
+      sukisu_ref:
+        description: "SukiSU-Ultra branch/ref for setup.sh"
         type: string
         required: false
-        default: "Mon Dec  8 04:00:43 UTC 2025"
-      ksun_commit:
-        description: "KernelSU Next commit. Default mirrors WildKernels v2.1.0-r2 working OP13 release."
-        type: string
-        required: false
-        default: "551ad80473f60e052917aec08abf5323b6ab2f7c"
+        default: builtin
       susfs_commit:
-        description: "SUSFS android15-6.6 commit. Default mirrors WildKernels v2.1.0-r2."
+        description: "SUSFS android15-6.6 ref/commit. Default mirrors WildKernels v2.1.0-r2 mapping."
         type: string
         required: false
         default: "85bcfac5edc8ba7808581e8d0a3ca9c7deca78e4"
+      toolchain:
+        description: "Toolchain. aosp_prebuilt is the only safe default for OP13 OOS16."
+        type: choice
+        required: true
+        default: aosp_prebuilt
+        options: [aosp_prebuilt]
+      bbr:
+        description: "Enable BBR congestion control"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+      bbg:
+        description: "Enable Baseband Guard if supported by tree"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+      ttl_ipset:
+        description: "Enable TTL/IP_SET/IPv6 NAT netfilter support"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+      ntsync:
+        description: "Enable NTSYNC if supported by tree"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+      hmbird:
+        description: "Enable HMBIRD/Fengchi only for Wild-like testing. Off is safer for daily driver."
+        type: choice
+        required: true
+        default: "Off"
+        options: ["On", "Off"]
+      lto:
+        description: "LTO mode. Wild OP13 config uses thin."
+        type: choice
+        required: true
+        default: thin
+        options: [thin, none]
+      build_timestamp:
+        description: "Stock-like uname timestamp. Leave as default for PJZ110 current stock mimic."
+        type: string
+        required: false
+        default: "Mon Dec  8 04:00:43 UTC 2025"
+      clean_build:
+        description: "Disable ccache and force a clean compile"
+        type: boolean
+        required: true
+        default: false
+      enforce_stock_suffix:
+        description: "Fail if UTS_RELEASE does not match stock OP13 suffix"
+        type: boolean
+        required: true
+        default: true
+      debug_artifacts:
+        description: "Upload final .config, UTS, image string and patch rejects"
+        type: boolean
+        required: true
+        default: true
 
 concurrency:
-  group: op13-wildbase-daily-${{ github.ref }}
+  group: op13-sukisu-wildbase-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  OP_MODEL: OP13
-  OP_SOC: sun
-  OP_OS_VERSION: OOS16
-  OP_ANDROID_VERSION: android15
-  OP_KERNEL_VERSION: "6.6"
-  OP_EXPECTED_UTS: "6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k"
-  OP_STOCK_LOCALVERSION: "-android15-8-g7e1f3c083cc6-abogki467167594-4k"
-  OP_MANIFEST_FILE: oneplus_13_w.xml
-  WILD_REPO: WildKernels/OnePlus_KernelSU_SUSFS
-  WILD_REF: main
-
 jobs:
-  guard:
-    name: Guardrails
-    runs-on: ubuntu-latest
-    outputs:
-      hmbird: ${{ steps.preset.outputs.hmbird }}
-      susfs: ${{ steps.preset.outputs.susfs }}
-      ds: ${{ steps.preset.outputs.ds }}
-      bbg: ${{ steps.preset.outputs.bbg }}
-      bbr: ${{ steps.preset.outputs.bbr }}
-      ttl: ${{ steps.preset.outputs.ttl }}
-      ip_set: ${{ steps.preset.outputs.ip_set }}
-      unicode: ${{ steps.preset.outputs.unicode }}
-      ntsync: ${{ steps.preset.outputs.ntsync }}
-    steps:
-      - name: Validate backend choice
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${{ inputs.backend }}" = "sukisu_builtin_blocked" ]; then
-            cat <<'EOF' >&2
-          SukiSU builtin is intentionally blocked in this WildBase workflow.
-
-          Reason:
-          - The user-tested working OP13 OOS16 android15-6.6.89 release is:
-            AK3_OP13_OOS16_android15-6.6.89_KSUN_33129_SuSFS_v2.1.0.zip
-          - The previous SukiSU/SUSFS-Off tests still bootlooped.
-          - For a stable daily-driver baseline, first reproduce the known-good KSUN + Wild SUSFS stack.
-
-          After this KSUN build boots, porting SukiSU builtin should be done as a separate controlled workflow.
-          EOF
-            exit 1
-          fi
-
-      - name: Resolve feature preset
-        id: preset
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "${{ inputs.feature_set }}" in
-            minimal)
-              HMBIRD=false; SUSFS=true; DS=false; BBG=false; BBR=false; TTL=false; IP_SET=false; UNICODE=false; NTSYNC=false ;;
-            daily)
-              HMBIRD=true;  SUSFS=true; DS=true;  BBG=true;  BBR=true;  TTL=true;  IP_SET=true;  UNICODE=true;  NTSYNC=true ;;
-            wild_full)
-              HMBIRD=true;  SUSFS=true; DS=true;  BBG=true;  BBR=true;  TTL=true;  IP_SET=true;  UNICODE=true;  NTSYNC=true ;;
-            *) echo "Unknown feature_set" >&2; exit 1 ;;
-          esac
-          {
-            echo "hmbird=$HMBIRD"
-            echo "susfs=$SUSFS"
-            echo "ds=$DS"
-            echo "bbg=$BBG"
-            echo "bbr=$BBR"
-            echo "ttl=$TTL"
-            echo "ip_set=$IP_SET"
-            echo "unicode=$UNICODE"
-            echo "ntsync=$NTSYNC"
-          } >> "$GITHUB_OUTPUT"
-
   build:
-    name: Build OP13 OOS16 WildBase KSUN/SUSFS
-    needs: guard
-    runs-on: ubuntu-latest
+    name: "${{ github.event.inputs.feature_profile }} | SukiSU=${{ github.event.inputs.sukisu_ref }} | Wild SUSFS"
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache-op13-sukisu-wildbase
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
     steps:
-      - name: Checkout your repo
+      - name: "Runner disk preflight"
+        id: disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Memory and swap:"
+          free -h || true
+          echo ""
+          echo "Swap devices:"
+          swapon --show || true
+          echo ""
+          echo "Block devices:"
+          lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS || true
+          echo ""
+          echo "Disk usage:"
+          df -hT || true
+          echo ""
+          use_maximize=false
+          if findmnt -n /mnt >/dev/null 2>&1; then
+            SRC="$(findmnt -n -o SOURCE /mnt || true)"
+            echo "/mnt is a mount point from: $SRC"
+            MNT_FREE_MB="$(df -Pm /mnt | awk 'NR==2 {print $4}' || true)"
+            echo "/mnt free MB: ${MNT_FREE_MB:-unknown}"
+            if [[ "$SRC" == /dev/* && "$MNT_FREE_MB" =~ ^[0-9]+$ && "$MNT_FREE_MB" -gt 20000 ]]; then
+              use_maximize=true
+            fi
+          else
+            echo "/mnt is not a separate mount point on this runner."
+          fi
+          echo "use_maximize=$use_maximize" >> "$GITHUB_OUTPUT"
+
+      - name: "Maximize build space if runner has /mnt temp disk"
+        if: steps.disk.outputs.use_maximize == 'true'
+        uses: easimon/maximize-build-space@v10
+        with:
+          root-reserve-mb: 2048
+          temp-reserve-mb: 1024
+          swap-size-mb: 2048
+          remove-dotnet: "true"
+          remove-android: "true"
+          remove-haskell: "true"
+          remove-codeql: "true"
+
+      - name: "Extra disk cleanup"
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost /usr/local/share/powershell /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get clean || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+          sudo docker image prune -a -f || true
+          sudo docker system prune -af || true
+          df -hT
+
+      - name: "Checkout workflow repo"
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Checkout WildKernels build action and manifests
-        uses: actions/checkout@v4
+      - name: "Git auth and network hardening"
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config --global credential.helper store
+          git config --global core.askPass true
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git config --global http.version HTTP/1.1
+          git config --global http.lowSpeedLimit 1000
+          git config --global http.lowSpeedTime 900
+          git config --global fetch.parallel 1
+          git config --global pack.threads 1
+
+      - name: "Setup ccache directory"
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CCACHE_DIR"
+          echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
+
+      - name: "Restore ccache"
+        if: ${{ inputs.clean_build != true }}
+        uses: actions/cache@v4
         with:
-          repository: ${{ env.WILD_REPO }}
-          ref: ${{ env.WILD_REF }}
-          path: wild
-          fetch-depth: 1
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-op13-sukisu-wildbase-${{ github.event.inputs.feature_profile }}-${{ github.ref_name }}
+          restore-keys: |
+            ccache-${{ runner.os }}-op13-sukisu-wildbase-${{ github.event.inputs.feature_profile }}-
+            ccache-${{ runner.os }}-op13-sukisu-wildbase-
 
-      - name: Prepare Wild manifest/config in current workspace
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p manifests/oos16 configs/oos16
-          cp wild/manifests/oos16/${OP_MANIFEST_FILE} manifests/oos16/${OP_MANIFEST_FILE}
-          cat > configs/oos16/OP13.json <<EOF
-          {
-            "model": "OP13",
-            "soc": "sun",
-            "branch": "wild/sm8750",
-            "manifest": "oneplus_13_w.xml",
-            "android_version": "android15",
-            "kernel_version": "6.6",
-            "os_version": "OOS16",
-            "lto": "thin",
-            "zyc_compiler": "https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240723-release/Clang-19.0.0git-20240723.tar.gz",
-            "c_compiler": "kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin",
-            "rust_compiler": "",
-            "bindgen": "",
-            "rust_build": false,
-            "disk_cleanup": false,
-            "hmbird": ${{ needs.guard.outputs.hmbird }},
-            "susfs": ${{ needs.guard.outputs.susfs }},
-            "ds": ${{ needs.guard.outputs.ds }},
-            "bbg": ${{ needs.guard.outputs.bbg }},
-            "bbr": ${{ needs.guard.outputs.bbr }},
-            "ttl": ${{ needs.guard.outputs.ttl }},
-            "ip_set": ${{ needs.guard.outputs.ip_set }},
-            "unicode": ${{ needs.guard.outputs.unicode }},
-            "ntsync": ${{ needs.guard.outputs.ntsync }},
-            "uname": "OP-WILD"
-          }
-          EOF
-          echo "Using OP13 config:"
-          jq . configs/oos16/OP13.json
-          echo "Using manifest:"
-          sed -n '1,120p' manifests/oos16/${OP_MANIFEST_FILE}
-
-      - name: Prepare op_config_json
-        id: opconfig
-        shell: bash
-        run: |
-          set -euo pipefail
-          cfg="$(jq -c . configs/oos16/OP13.json)"
-          echo "config_json=$cfg" >> "$GITHUB_OUTPUT"
-          echo "$cfg" | jq .
-
-      - name: Install minimal dependencies
+      - name: "Install build dependencies and repo"
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get -o Acquire::Retries=3 update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            git curl ca-certificates build-essential clang lld flex bison \
-            libelf-dev libssl-dev libncurses-dev zlib1g-dev liblz4-tool \
-            libxml2-utils rsync unzip zip dwarves file python3 ccache jq bc dos2unix kmod libdw-dev elfutils
+            python3 python3-pip git curl wget ca-certificates rsync unzip zip file \
+            build-essential flex bison bc gawk ccache clang lld llvm dwarves \
+            libssl-dev libncurses-dev libelf-dev libdw-dev zlib1g-dev liblz4-tool \
+            libxml2-utils dos2unix jq kmod elfutils patch xz-utils
           sudo apt-get clean
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > /tmp/repo
+          chmod a+x /tmp/repo
+          sudo mv /tmp/repo /usr/local/bin/repo
+          repo --version
+          ccache -M "${{ env.CCACHE_MAXSIZE }}"
+          ccache -s || true
 
-      - name: Build with WildKernels action, known-good KSUN 33129 + SUSFS v2.1.0 baseline
-        id: build
-        uses: ./wild
-        with:
-          op_config_json: ${{ steps.opconfig.outputs.config_json }}
-          ksu_type: KSUN
-          ksu_branch_or_hash: ${{ inputs.ksun_commit }}
-          susfs_commit_hash_or_branch: ${{ inputs.susfs_commit }}
-          optimize_level: O2
-          build_timestamp: ${{ inputs.build_timestamp }}
-          clean: ${{ inputs.clean_build }}
-
-      - name: Collect and verify outputs
-        id: collect
+      - name: "Sync WildKernels OP13 OOS16 source base"
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p out_artifacts/debug
+          mkdir -p kernel_workspace
+          cd kernel_workspace
+          echo "Using Wild manifest: $WILD_MANIFEST_REPO ($WILD_MANIFEST_BRANCH/$WILD_MANIFEST_FILE)"
+          repo init -u "$WILD_MANIFEST_REPO" -b "$WILD_MANIFEST_BRANCH" -m "$WILD_MANIFEST_FILE" --repo-rev=v2.16 --depth=1 --no-clone-bundle --no-tags
+          ok=0
+          for spec in "8 4" "4 2" "2 1" "1 1"; do
+            set -- $spec
+            echo "repo sync attempt: -j$1 --jobs-network=$2"
+            if repo sync -c --no-clone-bundle --no-tags --optimized-fetch --fail-fast -j"$1" --jobs-network="$2"; then
+              ok=1
+              break
+            fi
+            echo "repo sync failed, retrying with gentler jobs..."
+            sleep 45
+          done
+          [ "$ok" = 1 ] || { echo "::error::repo sync failed"; exit 1; }
 
-          echo "Kernel version output: ${{ steps.build.outputs.kernel_version }}" | tee out_artifacts/debug/build_outputs.txt
-          echo "KSU version output   : ${{ steps.build.outputs.ksu_version }}" | tee -a out_artifacts/debug/build_outputs.txt
-          echo "SUSFS version output : ${{ steps.build.outputs.susfs_version }}" | tee -a out_artifacts/debug/build_outputs.txt
-          echo "Image SHA256 output  : ${{ steps.build.outputs.image_sha256 }}" | tee -a out_artifacts/debug/build_outputs.txt
+          rm -f kernel_platform/common/android/abi_gki_protected_exports_* || true
+          rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || true
+          sed -i 's/ -dirty//g' kernel_platform/common/scripts/setlocalversion || true
+          sed -i 's/ -dirty//g' kernel_platform/msm-kernel/scripts/setlocalversion || true
+          sed -i 's/ -dirty//g' kernel_platform/external/dtc/scripts/setlocalversion || true
 
-          # Locate generated flashable ZIP(s). Wild action normally creates AK3_*.zip artifacts.
-          mapfile -t zips < <(find "$GITHUB_WORKSPACE" -type f -name '*.zip' \
-            ! -path '*/.git/*' ! -path '*/wild/.git/*' | sort)
+      - name: "Select exact Wild/AOSP clang toolchain"
+        shell: bash
+        run: |
+          set -euo pipefail
+          KP="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+          CLANG_BIN="$GITHUB_WORKSPACE/kernel_workspace/$WILD_CLANG_REL"
+          if [ ! -x "$CLANG_BIN/clang" ]; then
+            echo "::error::Expected Wild OP13 clang not found: $CLANG_BIN/clang"
+            find "$KP/prebuilts/clang" -path '*/bin/clang' -type f 2>/dev/null | sort || true
+            exit 1
+          fi
+          REAL_CLANG="$CLANG_BIN/clang"
+          REAL_LD_LLD="$CLANG_BIN/ld.lld"
+          [ -x "$REAL_LD_LLD" ] || REAL_LD_LLD="$(command -v ld.lld || true)"
+          [ -n "$REAL_LD_LLD" ] || { echo "::error::ld.lld not found"; exit 1; }
 
-          if [ "${#zips[@]}" -eq 0 ]; then
-            echo "::error::No flashable ZIP found after build. Searching workspace for clues..."
-            find "$GITHUB_WORKSPACE" -maxdepth 5 -type f | sort | sed -n '1,300p'
+          echo "$CLANG_BIN" >> "$GITHUB_PATH"
+          for p in "$KP/prebuilts/kernel-build-tools/linux-x86/bin" "$KP/prebuilts/kernel-build-tools/linux_musl-x86/bin"; do
+            [ -d "$p" ] && echo "$p" >> "$GITHUB_PATH"
+          done
+          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+          echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
+          echo "REAL_CLANG=$REAL_CLANG" >> "$GITHUB_ENV"
+          echo "REAL_LD_LLD=$REAL_LD_LLD" >> "$GITHUB_ENV"
+          echo "Toolchain check:"
+          "$REAL_CLANG" --version
+          "$REAL_LD_LLD" --version || true
+          if "$REAL_CLANG" --version | grep -qi 'ubuntu'; then
+            echo "::error::Refusing to build OP13 boot image with Ubuntu clang. Expected Android/AOSP clang-r510928."
             exit 1
           fi
 
-          echo "Found ZIPs:"
-          printf '%s\n' "${zips[@]}"
-
-          for z in "${zips[@]}"; do
-            cp "$z" out_artifacts/
+      - name: "Detect kernel source root"
+        shell: bash
+        run: |
+          set -euo pipefail
+          KP="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+          for c in "$KP/common" "$KP/common/common" "$KP"; do
+            if [[ -f "$c/Makefile" && -d "$c/arch" && -d "$c/drivers" && -d "$c/fs" ]]; then
+              echo "KERNEL_DIR=$c" >> "$GITHUB_ENV"
+              echo "Kernel source root: $c"
+              exit 0
+            fi
           done
-          sha256sum out_artifacts/*.zip | tee out_artifacts/SHA256SUMS.txt
+          echo "::error::Could not detect kernel source root"
+          find "$KP" -maxdepth 3 -type f \( -name Makefile -o -name Kconfig \) | head -n 100 || true
+          exit 1
 
-          # Debug bundle: final configs, kernel release, image version string if available.
-          find "$GITHUB_WORKSPACE" -path '*/out/.config' -type f -print -exec cp {} out_artifacts/debug/final.config \; || true
-          find "$GITHUB_WORKSPACE" -path '*/include/generated/utsrelease.h' -type f -print -exec cp {} out_artifacts/debug/utsrelease.h \; || true
-          find "$GITHUB_WORKSPACE" -path '*/out/include/generated/utsrelease.h' -type f -print -exec cp {} out_artifacts/debug/utsrelease_out.h \; || true
-          find "$GITHUB_WORKSPACE" -type f -name Image -print | tee out_artifacts/debug/images_found.txt || true
+      - name: "Integrate SukiSU Ultra builtin"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$KERNEL_DIR"
+          REF="${{ inputs.sukisu_ref }}"
+          [ -n "$REF" ] || REF="builtin"
+          SETUP_URL="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${REF}/kernel/setup.sh"
+          echo "Fetching SukiSU setup.sh: $SETUP_URL"
+          echo "Running setup arg: $REF"
+          curl -fLSs "$SETUP_URL" | bash -s "$REF"
 
-          IMAGE="$(find "$GITHUB_WORKSPACE" -type f -name Image | head -n1 || true)"
-          if [ -n "$IMAGE" ]; then
-            strings "$IMAGE" | grep -m1 -E 'Linux version 6\.6\.89|Android clang|Ubuntu clang|clang version' | tee out_artifacts/debug/image_version_string.txt || true
+          echo "SukiSU layout:"
+          find . -maxdepth 5 \( -path '*KernelSU*' -o -path '*kernelsu*' \) -print | head -n 120 || true
+          if [ ! -e "drivers/kernelsu" ]; then
+            echo "::error::drivers/kernelsu missing after SukiSU setup"
+            exit 1
           fi
 
-          # Guardrail: final package should be for OP13/OOS16 android15-6.6.89 and KSUN/SuSFS.
-          ls -lah out_artifacts
-          echo "artifact_dir=out_artifacts" >> "$GITHUB_OUTPUT"
+          # Compatibility for some SukiSU revisions when SUSFS is disabled by a debug preset.
+          if [[ -f drivers/kernelsu/supercalls.c ]] && grep -q 'ksu_mark_running_process();' drivers/kernelsu/supercalls.c; then
+            python3 - <<'PY'
+          from pathlib import Path
+          p = Path('drivers/kernelsu/supercalls.c')
+          s = p.read_text(encoding='utf-8', errors='replace')
+          old = 'ksu_mark_running_process();'
+          new = '#if !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_MANUAL_HOOK)\n\tksu_mark_running_process();\n#endif'
+          if old in s and 'defined(CONFIG_KSU_MANUAL_HOOK)' not in s:
+              p.write_text(s.replace(old, new), encoding='utf-8')
+          PY
+          fi
 
-      - name: Upload flash ZIP and debug bundle
+      - name: "Apply Wild/SUSFS v2.1.0 source and patches"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rm -rf susfs4ksu
+          SUS_REF="${{ inputs.susfs_commit }}"
+          [ -n "$SUS_REF" ] || SUS_REF="$SUSFS_DEFAULT_COMMIT"
+          echo "Cloning SUSFS from $SUSFS_REPO"
+          git clone --no-tags "$SUSFS_REPO" susfs4ksu
+          cd susfs4ksu
+          git checkout "$SUS_REF"
+          SUSVER="$(grep '#define SUSFS_VERSION' kernel_patches/include/linux/susfs.h | awk -F'\"' '{print $2}' || true)"
+          [ -n "$SUSVER" ] || SUSVER="unknown"
+          echo "SUSFS version: $SUSVER"
+          echo "SUSVER=$SUSVER" >> "$GITHUB_ENV"
+          cd "$GITHUB_WORKSPACE"
+
+          KDIR="$KERNEL_DIR"
+          mkdir -p "$KDIR/fs" "$KDIR/include/linux"
+          cp -a susfs4ksu/kernel_patches/fs/. "$KDIR/fs/"
+          cp -a susfs4ksu/kernel_patches/include/linux/. "$KDIR/include/linux/"
+
+          PATCH="$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch"
+          [ -f "$PATCH" ] || { echo "::error::Missing SUSFS patch: $PATCH"; ls -la susfs4ksu/kernel_patches; exit 1; }
+          cd "$KDIR"
+          if patch -p1 --dry-run -R < "$PATCH" >/dev/null 2>&1; then
+            echo "SUSFS kernel patch already applied."
+          elif patch -p1 --dry-run --forward < "$PATCH" >/dev/null 2>&1; then
+            patch -p1 --forward < "$PATCH"
+          else
+            echo "Patch does not apply cleanly, retrying with fuzz=3."
+            if ! patch -p1 --forward -F 3 < "$PATCH"; then
+              echo "::error::SUSFS main patch failed. Rejects:"
+              find . -name '*.rej' -print -exec sed -n '1,180p' {} \; || true
+              exit 1
+            fi
+          fi
+
+          if ! grep -Rqs 'config KSU_SUSFS' drivers/kernelsu KernelSU 2>/dev/null; then
+            echo "SukiSU tree does not expose KSU_SUSFS yet; trying generic SUSFS KernelSU glue patch."
+            GLUE="$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+            if [ -f "$GLUE" ] && [ -d drivers/kernelsu ]; then
+              (cd drivers/kernelsu && patch -p1 --forward -F 3 < "$GLUE") || true
+            fi
+          fi
+
+          echo "Post-SUSFS symbol check:"
+          grep -Rns 'KSU_SUSFS\|SUSFS_VERSION' drivers fs include 2>/dev/null | head -n 80 || true
+          [ -f include/linux/susfs.h ] || { echo "::error::include/linux/susfs.h missing after SUSFS integration"; exit 1; }
+
+      - name: "Apply OP13 stable daily config"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$KERNEL_DIR"
+          DEFCONFIG="arch/arm64/configs/gki_defconfig"
+          [ -f "$DEFCONFIG" ] || { echo "::error::gki_defconfig not found"; exit 1; }
+          PROFILE="${{ inputs.feature_profile }}"
+          BBR_IN="${{ inputs.bbr }}"
+          BBG_IN="${{ inputs.bbg }}"
+          TTL_IPSET_IN="${{ inputs.ttl_ipset }}"
+          NTSYNC_IN="${{ inputs.ntsync }}"
+          HMBIRD_IN="${{ inputs.hmbird }}"
+          if [ "$PROFILE" = "minimal_debug" ]; then
+            BBR_IN="Off"; BBG_IN="Off"; TTL_IPSET_IN="Off"; NTSYNC_IN="Off"; HMBIRD_IN="Off"
+          elif [ "$PROFILE" = "wild_daily" ]; then
+            HMBIRD_IN="On"
+          fi
+
+          cat >> "$DEFCONFIG" <<EOF
+          CONFIG_LOCALVERSION_AUTO=n
+          CONFIG_KSU=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          # CONFIG_KSU_SUSFS_ENABLE_LOG is not set
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_TMPFS_XATTR=y
+          CONFIG_TMPFS_POSIX_ACL=y
+          EOF
+
+          if [ "$BBR_IN" = "On" ]; then
+            cat >> "$DEFCONFIG" <<'EOF'
+          CONFIG_TCP_CONG_BBR=y
+          CONFIG_DEFAULT_TCP_CONG="bbr"
+          EOF
+          fi
+          if [ "$TTL_IPSET_IN" = "On" ]; then
+            cat >> "$DEFCONFIG" <<'EOF'
+          CONFIG_NETFILTER_XT_TARGET_TTL=y
+          CONFIG_NETFILTER_XT_MATCH_TTL=y
+          CONFIG_IP_SET=y
+          CONFIG_IP_SET_MAX=256
+          CONFIG_IP_SET_HASH_IP=y
+          CONFIG_IP_SET_HASH_IPPORT=y
+          CONFIG_IP_SET_HASH_NETPORTNET=y
+          CONFIG_NF_NAT_IPV6=y
+          EOF
+          fi
+          if [ "$NTSYNC_IN" = "On" ]; then
+            echo "CONFIG_NTSYNC=y" >> "$DEFCONFIG"
+          fi
+          if [ "$BBG_IN" = "On" ]; then
+            echo "CONFIG_BBG=y" >> "$DEFCONFIG"
+          fi
+          if [ "$HMBIRD_IN" = "On" ]; then
+            # Best-effort: exact symbol depends on the synced tree.
+            grep -Rqs '^config HMBIRD\|^config FENGCHI' . && {
+              echo "CONFIG_HMBIRD=y" >> "$DEFCONFIG"
+              echo "CONFIG_FENGCHI=y" >> "$DEFCONFIG"
+            } || true
+          fi
+          if [ "${{ inputs.lto }}" = "thin" ]; then
+            cat >> "$DEFCONFIG" <<'EOF'
+          CONFIG_LTO_CLANG=y
+          CONFIG_LTO_CLANG_THIN=y
+          # CONFIG_LTO_CLANG_FULL is not set
+          EOF
+          else
+            cat >> "$DEFCONFIG" <<'EOF'
+          # CONFIG_LTO_CLANG is not set
+          EOF
+          fi
+
+      - name: "Build kernel and validate final config"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$KERNEL_DIR"
+          export PATH="$CLANG_BIN:$PATH"
+          export KBUILD_BUILD_TIMESTAMP="${{ inputs.build_timestamp }}"
+          export LOCALVERSION="$OP_STOCK_LOCALVERSION"
+          MAKE_ARGS=(LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache $REAL_CLANG" LD="$REAL_LD_LLD" HOSTLD="$REAL_LD_LLD" O=out LOCALVERSION="$LOCALVERSION")
+          if [ "${{ inputs.clean_build }}" = "true" ]; then
+            export CCACHE_DISABLE=1
+          fi
+
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" gki_defconfig
+
+          # Enforce critical options after initial defconfig expansion.
+          ./scripts/config --file out/.config -d LOCALVERSION_AUTO -e KSU -e KSU_SUSFS \
+            -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT \
+            -e KSU_SUSFS_SPOOF_UNAME -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            -e KSU_SUSFS_OPEN_REDIRECT -e KSU_SUSFS_SUS_MAP -d KSU_SUSFS_ENABLE_LOG \
+            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -e TMPFS_XATTR -e TMPFS_POSIX_ACL || true
+
+          # SukiSU hook model changed across refs. Old refs expose KSU_NONE_HOOK; current builtin may not.
+          if grep -Rqs '^config KSU_NONE_HOOK' drivers/kernelsu KernelSU 2>/dev/null; then
+            ./scripts/config --file out/.config -e KSU_NONE_HOOK -d KSU_MANUAL_HOOK -d KSU_SYSCALL_HOOK || true
+          else
+            ./scripts/config --file out/.config -d KSU_SYSCALL_HOOK || true
+          fi
+
+          if [ "${{ inputs.feature_profile }}" != "minimal_debug" ]; then
+            if [ "${{ inputs.bbr }}" = "On" ]; then
+              ./scripts/config --file out/.config -e TCP_CONG_BBR --set-str DEFAULT_TCP_CONG bbr || true
+            fi
+            if [ "${{ inputs.ttl_ipset }}" = "On" ]; then
+              ./scripts/config --file out/.config -e NETFILTER_XT_TARGET_TTL -e NETFILTER_XT_MATCH_TTL -e IP_SET -e IP_SET_HASH_IP -e IP_SET_HASH_IPPORT -e IP_SET_HASH_NETPORTNET -e NF_NAT_IPV6 || true
+            fi
+            [ "${{ inputs.ntsync }}" = "On" ] && ./scripts/config --file out/.config -e NTSYNC || true
+            [ "${{ inputs.bbg }}" = "On" ] && ./scripts/config --file out/.config -e BBG || true
+          fi
+          if [ "${{ inputs.lto }}" = "thin" ]; then
+            ./scripts/config --file out/.config -e LTO_CLANG -e LTO_CLANG_THIN -d LTO_CLANG_FULL || true
+          fi
+
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" olddefconfig
+
+          echo "Final config highlights:"
+          grep -nE 'CONFIG_LOCALVERSION|CONFIG_KSU|CONFIG_BBG|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_TCP_CONG|CONFIG_IP_SET|CONFIG_NETFILTER_XT|CONFIG_NTSYNC|CONFIG_LTO' out/.config || true
+
+          if ! grep -q '^CONFIG_KSU=y' out/.config; then echo "::error::CONFIG_KSU=y missing"; exit 1; fi
+          if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then echo "::error::CONFIG_KSU_SUSFS=y missing"; exit 1; fi
+          if grep -q '^CONFIG_KSU_SYSCALL_HOOK=y' out/.config; then echo "::error::CONFIG_KSU_SYSCALL_HOOK=y detected; refusing unstable hook mode"; exit 1; fi
+
+          make -j"$(nproc)" "${MAKE_ARGS[@]}" all
+          REL="$(cat out/include/config/kernel.release 2>/dev/null || true)"
+          echo "KERNEL_RELEASE=$REL" >> "$GITHUB_ENV"
+          echo "Kernel release: $REL"
+          if [ "${{ inputs.enforce_stock_suffix }}" = "true" ] && [ "$REL" != "$OP_EXPECTED_UTS" ]; then
+            echo "::error::UTS_RELEASE mismatch. Expected '$OP_EXPECTED_UTS' but got '$REL'"
+            exit 1
+          fi
+
+          IMAGE="$(find out -type f -path '*/arch/arm64/boot/Image' -o -type f -name Image | head -n 1 || true)"
+          [ -n "$IMAGE" ] && [ -f "$IMAGE" ] || { echo "::error::Kernel Image not found"; find out -type f -name 'Image*' | head -n 50 || true; exit 1; }
+          echo "KERNEL_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "Image: $IMAGE"
+          strings "$IMAGE" | grep -m1 -E 'Linux version|Android clang|Ubuntu clang|clang version' || true
+          if strings "$IMAGE" | grep -m1 -E 'Linux version|clang version' | grep -qi 'Ubuntu clang'; then
+            echo "::error::Final Image was built with Ubuntu clang; refusing to package."
+            exit 1
+          fi
+
+      - name: "Package AnyKernel3"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          rm -rf out_artifacts package_AK3
+          mkdir -p out_artifacts/debug
+          if [ -d kernel_workspace/AnyKernel3 ]; then
+            cp -a kernel_workspace/AnyKernel3 package_AK3
+          else
+            git clone --depth=1 -b gki-2.0 https://github.com/TheWildJames/AnyKernel3.git package_AK3
+          fi
+          rm -rf package_AK3/.git
+          cp "$KERNEL_IMAGE" package_AK3/Image
+          if [ -f package_AK3/anykernel.sh ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path('package_AK3/anykernel.sh')
+          s = p.read_text(errors='replace')
+          s = re.sub(r'^\s*kernel\.string=.*$', 'kernel.string=OP13 OOS16 SukiSU builtin + Wild SUSFS stable daily', s, flags=re.M)
+          if 'block=boot' not in s:
+              s = s.replace('block=auto', 'block=boot') if 'block=auto' in s else s + '\nblock=boot\n'
+          p.write_text(s)
+          PY
+          fi
+          ZIP="AK3_OP13_OOS16_android15-6.6.89_SukiSU_builtin_WildSuSFS_${SUSVER:-v2.1.0}_${{ github.run_number }}.zip"
+          (cd package_AK3 && zip -r9 "../out_artifacts/$ZIP" . -x '*.git*' -x '*README*' -x '*.md' >/dev/null)
+          sha256sum out_artifacts/*.zip | tee out_artifacts/SHA256SUMS.txt
+
+          if [ "${{ inputs.debug_artifacts }}" = "true" ]; then
+            cp "$KERNEL_DIR/out/.config" out_artifacts/debug/final.config || true
+            cp "$KERNEL_DIR/out/include/generated/utsrelease.h" out_artifacts/debug/utsrelease.h || true
+            cp "$KERNEL_DIR/out/include/config/kernel.release" out_artifacts/debug/kernel.release || true
+            strings "$KERNEL_IMAGE" | grep -m1 -E 'Linux version|Android clang|Ubuntu clang|clang version' > out_artifacts/debug/image_version_string.txt || true
+            find "$KERNEL_DIR" -name '*.rej' -print -exec sed -n '1,180p' {} \; > out_artifacts/debug/patch_rejects.txt || true
+          fi
+
+      - name: "Build summary"
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## OP13 SukiSU WildBase build"
+            echo ""
+            echo "| Item | Value |"
+            echo "|---|---|"
+            echo "| Model | $OP_MODEL / $OP_SOC / $OP_OS_VERSION |"
+            echo "| Feature profile | ${{ inputs.feature_profile }} |"
+            echo "| SukiSU ref | ${{ inputs.sukisu_ref }} |"
+            echo "| SUSFS ref | ${{ inputs.susfs_commit }} |"
+            echo "| Kernel release | ${KERNEL_RELEASE:-unknown} |"
+            echo "| Expected stock UTS | $OP_EXPECTED_UTS |"
+            echo "| HMBIRD | ${{ inputs.hmbird }} |"
+            echo "| BBR | ${{ inputs.bbr }} |"
+            echo "| BBG | ${{ inputs.bbg }} |"
+            echo "| TTL/IP_SET | ${{ inputs.ttl_ipset }} |"
+            echo "| NTSYNC | ${{ inputs.ntsync }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          ccache -s || true
+          df -hT || true
+
+      - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-WildBase-Daily-KSUN-SuSFS-v2.1.0-${{ github.run_number }}
+          name: OP13-SukiSU-WildBase-Stable-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
