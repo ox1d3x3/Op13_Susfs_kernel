@@ -194,7 +194,7 @@ on:
 
 jobs:
   build:
-    name: "OP13 Advanced-Stable Daily | SukiSU=${{ github.event.inputs.sukisu_ref }} | SUSFS=${{ github.event.inputs.SUSFS }} | ${{ github.event.inputs.toolchain }}"
+    name: "OP13 Advanced-Stable Daily v9 Toolchain-Locked | SukiSU=${{ github.event.inputs.sukisu_ref }} | SUSFS=${{ github.event.inputs.SUSFS }} | ${{ github.event.inputs.toolchain }}"
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -430,46 +430,74 @@ jobs:
         run: |
           set -euo pipefail
           echo "Selected toolchain: ${{ github.event.inputs.toolchain }}"
+
+          KERNEL_PLATFORM="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+          TOOLCHAIN_BIN=""
+
           if [ "${{ github.event.inputs.toolchain }}" = "neutron_clang" ]; then
             mkdir -p "$HOME/toolchains"
             cd "$HOME/toolchains"
             git clone --depth=1 https://github.com/Neutron-Toolchains/antman.git antman
             cd antman
             bash antman -S
-            echo "$HOME/toolchains/neutron-clang/bin" >> "$GITHUB_PATH"
+            TOOLCHAIN_BIN="$HOME/toolchains/neutron-clang/bin"
           else
             cd "$GITHUB_WORKSPACE/kernel_workspace"
-            CANDIDATE="$(find . -type f -path '*prebuilts/clang/host/linux-x86/*/bin/clang' | head -n 1 || true)"
+            # Prefer the real AOSP/Android clang prebuilt from the synced OP kernel tree.
+            # Do not rely on PATH + /usr/lib/ccache, because that can silently fall back to Ubuntu clang.
+            CANDIDATE="$(find . -type f -path '*prebuilts/clang/host/linux-x86/*/bin/clang' | sort | tail -n 1 || true)"
             if [ -z "$CANDIDATE" ]; then
-              echo "Error: clang prebuilts not found under kernel_workspace."
+              echo "::error::AOSP clang prebuilt not found under kernel_workspace. Refusing to build with host Ubuntu clang."
               exit 1
             fi
-            echo "$(dirname "$CANDIDATE")" >> "$GITHUB_PATH"
+            TOOLCHAIN_BIN="$(cd "$(dirname "$CANDIDATE")" && pwd)"
           fi
-          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
 
-          # Add AOSP kernel build tools (contains ld.lld, llvm-ar, etc.) to PATH
-          KERNEL_PLATFORM="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
-          ADD_PATHS=()
-          for p in "$KERNEL_PLATFORM/prebuilts/kernel-build-tools/linux-x86/bin" \
-                    "$KERNEL_PLATFORM/prebuilts/kernel-build-tools/linux_musl-x86/bin"; do
+          REAL_CLANG="$TOOLCHAIN_BIN/clang"
+          if [ ! -x "$REAL_CLANG" ]; then
+            echo "::error::Selected clang is not executable: $REAL_CLANG"
+            exit 1
+          fi
+
+          # Add AOSP kernel build tools, but also export absolute ld.lld.
+          KBT_BIN=""
+          for p in "$KERNEL_PLATFORM/prebuilts/kernel-build-tools/linux-x86/bin"                     "$KERNEL_PLATFORM/prebuilts/kernel-build-tools/linux_musl-x86/bin"; do
             if [ -d "$p" ]; then
-              echo "$p" >> "$GITHUB_PATH"
-              ADD_PATHS+=("$p")
+              KBT_BIN="$p"
+              break
             fi
           done
 
-          # Also export for THIS step so we can verify tools now
-          if [ "${#ADD_PATHS[@]}" -gt 0 ]; then
-            export PATH="$(IFS=:; echo "${ADD_PATHS[*]}"):$PATH"
+          if [ -n "$KBT_BIN" ] && [ -x "$KBT_BIN/ld.lld" ]; then
+            REAL_LD_LLD="$KBT_BIN/ld.lld"
+          elif [ -x "$TOOLCHAIN_BIN/ld.lld" ]; then
+            REAL_LD_LLD="$TOOLCHAIN_BIN/ld.lld"
+          else
+            echo "::error::ld.lld not found in kernel build tools or selected clang bin."
+            exit 1
           fi
 
-          echo "Toolchain check:"
-          echo "  clang:  $(command -v clang || true)"
-          echo "  ld.lld: $(command -v ld.lld || true)"
-          clang --version || true
-          ld.lld --version || true
+          {
+            echo "TOOLCHAIN_BIN=$TOOLCHAIN_BIN"
+            echo "REAL_CLANG=$REAL_CLANG"
+            echo "REAL_LD_LLD=$REAL_LD_LLD"
+          } >> "$GITHUB_ENV"
 
+          # PATH is still useful for llvm-* helpers, but the build step uses absolute compiler paths.
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
+          [ -n "$KBT_BIN" ] && echo "$KBT_BIN" >> "$GITHUB_PATH"
+          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+
+          echo "Toolchain check:"
+          echo "  selected clang:  $REAL_CLANG"
+          echo "  selected ld.lld: $REAL_LD_LLD"
+          "$REAL_CLANG" --version
+          "$REAL_LD_LLD" --version || true
+
+          if [ "${{ github.event.inputs.toolchain }}" = "aosp_prebuilt" ] && "$REAL_CLANG" --version | grep -qi 'Ubuntu'; then
+            echo "::error::aosp_prebuilt selected but clang resolves to Ubuntu clang. This build would likely bootloop."
+            exit 1
+          fi
       - name: "Apply SUSFS"
         shell: bash
         run: |
@@ -1699,15 +1727,28 @@ jobs:
 
           cd "${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
 
-          command -v ld.lld >/dev/null 2>&1 || {
-            echo "::error::ld.lld not found in PATH"
-            echo "PATH=$PATH"
-            ls -la "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/kernel-build-tools/linux-x86/bin" 2>/dev/null || true
+          REAL_CLANG="${REAL_CLANG:-}"
+          REAL_LD_LLD="${REAL_LD_LLD:-}"
+          if [ -z "$REAL_CLANG" ] || [ ! -x "$REAL_CLANG" ]; then
+            echo "::error::REAL_CLANG is not set or not executable: ${REAL_CLANG:-unset}"
             exit 1
-          }
+          fi
+          if [ -z "$REAL_LD_LLD" ] || [ ! -x "$REAL_LD_LLD" ]; then
+            echo "::error::REAL_LD_LLD is not set or not executable: ${REAL_LD_LLD:-unset}"
+            exit 1
+          fi
+
+          echo "Build compiler: $REAL_CLANG"
+          "$REAL_CLANG" --version
+          if [ "${{ github.event.inputs.toolchain }}" = "aosp_prebuilt" ] && "$REAL_CLANG" --version | grep -qi 'Ubuntu'; then
+            echo "::error::Refusing to build OP13 kernel with Ubuntu clang while aosp_prebuilt is selected."
+            exit 1
+          fi
+
+          MAKE_BASE=(LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache $REAL_CLANG" LD="$REAL_LD_LLD" HOSTLD="$REAL_LD_LLD" O=out LOCALVERSION=${LOCALVERSION:-})
 
           # 1) Generate config first
-          make -j"$(nproc)" LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache clang" LD=ld.lld HOSTLD=ld.lld O=out LOCALVERSION=${LOCALVERSION:-} gki_defconfig
+          make -j"$(nproc)" "${MAKE_BASE[@]}" gki_defconfig
 
           CFG="out/.config"
           if [[ ! -f "$CFG" ]]; then
@@ -1769,7 +1810,7 @@ jobs:
           fi
 
           # Re-resolve dependencies once
-          make -j"$(nproc)" LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache clang" LD=ld.lld HOSTLD=ld.lld O=out LOCALVERSION=${LOCALVERSION:-} olddefconfig
+          make -j"$(nproc)" "${MAKE_BASE[@]}" olddefconfig
 
           echo "::group::Key options in final .config"
           grep -nE '^(CONFIG_DEBUG_INFO_BTF=|CONFIG_DEBUG_INFO_BTF_MODULES=|CONFIG_MODULE_ALLOW_BTF_MISMATCH=|CONFIG_PROBE_EVENTS_BTF_ARGS=|CONFIG_CC_OPTIMIZE_FOR_)=|^# CONFIG_CC_OPTIMIZE_FOR_SIZE is not set|^# CONFIG_DEBUG_INFO_REDUCED is not set' "$CFG" || true
@@ -1778,7 +1819,7 @@ jobs:
           echo "::endgroup::"
 
           # 4) Build
-          make -j"$(nproc)" LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache clang" LD=ld.lld HOSTLD=ld.lld O=out LOCALVERSION=${LOCALVERSION:-} all
+          make -j"$(nproc)" "${MAKE_BASE[@]}" all
 
           REL="$(cat out/include/config/kernel.release 2>/dev/null || true)"
           if [ -z "$REL" ]; then REL="$(make -s O=out LOCALVERSION=${LOCALVERSION:-} kernelrelease 2>/dev/null || true)"; fi
@@ -1955,6 +1996,13 @@ jobs:
             exit 1
           fi
           cp "$IMAGE_PATH" "AnyKernel3/Image"
+
+          LINUX_VERSION_STRING="$(strings -a "AnyKernel3/Image" | grep -m1 '^Linux version ' || true)"
+          echo "Image compiler string: $LINUX_VERSION_STRING"
+          if [ "${{ github.event.inputs.toolchain }}" = "aosp_prebuilt" ] && echo "$LINUX_VERSION_STRING" | grep -qi 'Ubuntu clang'; then
+            echo "::error::Built Image was compiled with Ubuntu clang despite aosp_prebuilt selection. Refusing to package a likely-bootloop kernel."
+            exit 1
+          fi
 
           # Patch anykernel.sh safely: keep properties() intact; update strings + inject our info block after ak3-core is sourced.
           python3 - <<'PY'
