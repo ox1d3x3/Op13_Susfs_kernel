@@ -28,6 +28,13 @@ on:
         default: aosp_prebuilt
         options: [aosp_prebuilt, neutron_clang]
 
+      kernel_mode:
+        description: "Triage lane: stock_base proves source/toolchain/vendor compatibility; sukisu_only proves SukiSU; sukisu_susfs is daily feature lane."
+        type: choice
+        required: true
+        default: stock_base
+        options: [stock_base, sukisu_only, sukisu_susfs]
+
       profile:
         description: "Build profile (safe presets)"
         type: choice
@@ -194,7 +201,7 @@ on:
 
 jobs:
   build:
-    name: "OP13 Advanced-Stable Daily v10 Toolchain-Locked + No-SUSFS Fix | SukiSU=${{ github.event.inputs.sukisu_ref }} | SUSFS=${{ github.event.inputs.SUSFS }} | ${{ github.event.inputs.toolchain }}"
+    name: "OP13 Triage v11 | mode=${{ github.event.inputs.kernel_mode }} | SukiSU=${{ github.event.inputs.sukisu_ref }} | SUSFS=${{ github.event.inputs.SUSFS }} | ${{ github.event.inputs.toolchain }}"
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -306,10 +313,10 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-op13-sukisuultra-${{ github.event.inputs.toolchain }}-${{ github.event.inputs.SUSFS }}-${{ github.ref_name }}
+          key: ccache-${{ runner.os }}-op13-v11-${{ github.event.inputs.kernel_mode }}-${{ github.event.inputs.toolchain }}-${{ github.event.inputs.SUSFS }}-${{ github.ref_name }}
           restore-keys: |
-            ccache-${{ runner.os }}-op13-sukisuultra-${{ github.event.inputs.toolchain }}-${{ github.event.inputs.SUSFS }}-
-            ccache-${{ runner.os }}-op13-sukisuultra-
+            ccache-${{ runner.os }}-op13-v11-${{ github.event.inputs.kernel_mode }}-${{ github.event.inputs.toolchain }}-${{ github.event.inputs.SUSFS }}-
+            ccache-${{ runner.os }}-op13-v11-
 
       - name: "Install build dependencies"
         shell: bash
@@ -499,6 +506,7 @@ jobs:
             exit 1
           fi
       - name: "Apply SUSFS"
+        if: ${{ github.event.inputs.kernel_mode == 'sukisu_susfs' && github.event.inputs.SUSFS == 'On' }}
         shell: bash
         run: |
           SUSFS_IN="${{ inputs.SUSFS }}"
@@ -713,6 +721,7 @@ jobs:
           echo "✅ SUSFS patching complete."
 
       - name: "Integrate SukiSU Ultra (builtin, official setup.sh)"
+        if: ${{ github.event.inputs.kernel_mode != 'stock_base' }}
         shell: bash
         run: |
           SUSFS_IN="${{ inputs.SUSFS }}"
@@ -890,6 +899,7 @@ jobs:
           echo "::endgroup::"
 
       - name: "Repair SukiSU no-SUSFS manual-hook build compatibility"
+        if: ${{ github.event.inputs.kernel_mode != 'stock_base' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -941,6 +951,7 @@ jobs:
           echo "Post-patch ksu_mark_running_process references:"
           grep -n "ksu_mark_running_process" "$SUPER_C" || true
       - name: "Repair SukiSU sulog USER_ARG_NULL pointer compatibility"
+        if: ${{ github.event.inputs.kernel_mode != 'stock_base' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -979,6 +990,7 @@ jobs:
           PY2
 
       - name: "Optional SukiSU SUSFS kernel-r25 compat (TRY_UMOUNT)"
+        if: ${{ github.event.inputs.kernel_mode == 'sukisu_susfs' && github.event.inputs.SUSFS == 'On' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1076,7 +1088,7 @@ jobs:
 
 
       - name: "Guard optional SUSFS sus_path_loop trigger"
-        if: ${{ github.event.inputs.SUSFS == 'On' }}
+        if: ${{ github.event.inputs.kernel_mode == 'sukisu_susfs' && github.event.inputs.SUSFS == 'On' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1116,7 +1128,7 @@ jobs:
 
 
       - name: "Repair SukiSU + CCTV18 SUSFS symbol compatibility"
-        if: ${{ github.event.inputs.SUSFS == 'On' }}
+        if: ${{ github.event.inputs.kernel_mode == 'sukisu_susfs' && github.event.inputs.SUSFS == 'On' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1391,7 +1403,7 @@ jobs:
 
 
       - name: "Optional: Apply ZRAM LZ4 perf patch (best-effort)"
-        if: ${{ github.event.inputs.lz4_zram_patch == 'On' }}
+        if: ${{ github.event.inputs.kernel_mode != 'stock_base' && github.event.inputs.lz4_zram_patch == 'On' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1428,6 +1440,14 @@ jobs:
           # Keep localversion deterministic (we set LOCALVERSION ourselves later)
           echo "CONFIG_LOCALVERSION_AUTO=n" >> "$DEFCONFIG"
 
+          if [ "${{ github.event.inputs.kernel_mode }}" = "stock_base" ]; then
+            echo "kernel_mode=stock_base → pure rebuilt stock/GKI baseline."
+            echo "No KSU/SukiSU, no SUSFS, no ADIOS/BBG/BBR/TTL/IP_SET/proxy, no ZRAM edits."
+            echo "This build is only to prove whether the current ColorOS vendor_boot/vendor_dlkm stack can boot this rebuilt Image."
+            sed -i 's/check_defconfig//' ./common/build.config.gki || true
+            exit 0
+          fi
+
           # KernelSU base
           echo "CONFIG_KSU=y" >> "$DEFCONFIG" || true
 
@@ -1449,7 +1469,7 @@ jobs:
           fi
           echo "SukiSU Kconfig for hook detection: ${KSU_KCONFIG:-not found yet}"
 
-          if [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
+          if [ "${{ github.event.inputs.kernel_mode }}" = "sukisu_susfs" ] && [ "${{ github.event.inputs.SUSFS }}" = "On" ]; then
             echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
 
             if [[ -n "$KSU_KCONFIG" ]] && grep -q '^config KSU_NONE_HOOK' "$KSU_KCONFIG"; then
@@ -1598,7 +1618,7 @@ jobs:
 
 
       - name: "Verify SukiSU hook config before build"
-        if: ${{ github.event.inputs.SUSFS == 'On' }}
+        if: ${{ github.event.inputs.kernel_mode == 'sukisu_susfs' && github.event.inputs.SUSFS == 'On' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1925,6 +1945,16 @@ jobs:
           fi
           echo "Checking $CFG ..."
           echo "Profile : ${{ env.PROFILE_LABEL }} (${{ env.PROFILE_TAG }})"
+          if [[ "${{ github.event.inputs.kernel_mode }}" == "stock_base" ]]; then
+            echo "kernel_mode=stock_base → verifying that SukiSU/SUSFS symbols are absent."
+            if grep -qE '^CONFIG_KSU=|^CONFIG_KSU_SUSFS=' "$CFG"; then
+              echo "::error::stock_base build unexpectedly contains KSU/SUSFS config."
+              grep -nE 'CONFIG_KSU|KSU_SUSFS' "$CFG" || true
+              exit 1
+            fi
+            echo "✅ stock_base config is clean: no KSU/SUSFS."
+            exit 0
+          fi
           if [[ "${{ github.event.inputs.SUSFS }}" == "On" ]]; then
             if ! grep -Eq '^CONFIG_KSU_SUSFS=(y|m)$' "$CFG"; then
               echo "::error::CONFIG_KSU_SUSFS not enabled (expected y or m) in final .config"
@@ -2032,6 +2062,7 @@ jobs:
       - name: "Package AnyKernel3 (single zip, banner, no breakage)"
         env:
           SUSFS_MODE: ${{ github.event.inputs.SUSFS }}
+          KERNEL_MODE: ${{ github.event.inputs.kernel_mode }}
         shell: bash
         run: |
           set -euo pipefail
@@ -2066,7 +2097,14 @@ jobs:
           
           # Clean english kernel.string (include profile label)
           profile_label = os.environ.get("PROFILE_LABEL", "Balanced")
-          s = re.sub(r'^\s*kernel\.string=.*$', f'kernel.string=PJZ110 | SukiSU Ultra (builtin) [{profile_label}] (OP-OX)', s, flags=re.M)
+          mode = os.environ.get('KERNEL_MODE', 'sukisu_susfs')
+          if mode == 'stock_base':
+              kstr = f'kernel.string=PJZ110 | STOCK-BASE TRIAGE [{profile_label}] (OP-OX)'
+          elif mode == 'sukisu_only':
+              kstr = f'kernel.string=PJZ110 | SukiSU Ultra ONLY [{profile_label}] (OP-OX)'
+          else:
+              kstr = f'kernel.string=PJZ110 | SukiSU Ultra + SUSFS [{profile_label}] (OP-OX)'
+          s = re.sub(r'^\s*kernel\.string=.*$', kstr, s, flags=re.M)
           
           # Remove previous custom injection (idempotent)
           s = re.sub(r'\n# --- OX1D3X3 CUSTOM START ---.*?# --- OX1D3X3 CUSTOM END ---\n', '\n', s, flags=re.S)
@@ -2116,18 +2154,25 @@ jobs:
 
           # Plain-text banner shown early by update-binary (optional)
           SUSFS_MODE="${SUSFS_MODE:-On}"
-          if [ "$SUSFS_MODE" = "On" ]; then
-            MODE_BANNER="SUSFS"
+          KERNEL_MODE="${KERNEL_MODE:-sukisu_susfs}"
+          if [ "$KERNEL_MODE" = "stock_base" ]; then
+            MODE_BANNER="STOCK-BASE TRIAGE - no root/no SUSFS"
+            MODE_TAG="STOCK_BASE"
+          elif [ "$KERNEL_MODE" = "sukisu_only" ]; then
+            MODE_BANNER="SukiSU Ultra ONLY - no SUSFS"
+            MODE_TAG="SUKISU_ONLY"
+          elif [ "$SUSFS_MODE" = "On" ]; then
+            MODE_BANNER="SukiSU Ultra + SUSFS"
             MODE_TAG="SUSFS"
           else
-            MODE_BANNER="MANUAL_HOOK"
+            MODE_BANNER="SukiSU Ultra MANUAL_HOOK - no SUSFS"
             MODE_TAG="NO_SUSFS"
           fi
 
           cat > AnyKernel3/banner <<EOF
           ====================================================
                          Ox1d3x3 OP13 Kernel
-          SukiSU Ultra (builtin) [${PROFILE_LABEL}] + ${MODE_BANNER}
+          ${MODE_BANNER} [${PROFILE_LABEL}]
           ====================================================
           EOF
 
@@ -2147,7 +2192,7 @@ jobs:
 
 
       - name: "Build flashable ZRAM module (replace zram.ko)"
-        if: ${{ github.event.inputs.zram_module == 'On' }}
+        if: ${{ github.event.inputs.kernel_mode != 'stock_base' && github.event.inputs.zram_module == 'On' }}
         shell: bash
         run: |
           set -euo pipefail
