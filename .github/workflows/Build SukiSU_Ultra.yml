@@ -194,7 +194,7 @@ on:
 
 jobs:
   build:
-    name: "OP13 Advanced-Stable Daily v9 Toolchain-Locked | SukiSU=${{ github.event.inputs.sukisu_ref }} | SUSFS=${{ github.event.inputs.SUSFS }} | ${{ github.event.inputs.toolchain }}"
+    name: "OP13 Advanced-Stable Daily v10 Toolchain-Locked + No-SUSFS Fix | SukiSU=${{ github.event.inputs.sukisu_ref }} | SUSFS=${{ github.event.inputs.SUSFS }} | ${{ github.event.inputs.toolchain }}"
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -888,6 +888,58 @@ jobs:
             echo "drivers/kernelsu/supercalls.[ch] not found; skipping repair."
           fi
           echo "::endgroup::"
+
+      - name: "Repair SukiSU no-SUSFS manual-hook build compatibility"
+        shell: bash
+        run: |
+          set -euo pipefail
+          KERNEL_DIR="${KERNEL_DIR:-$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common}"
+          SUPER_C="$(find "$KERNEL_DIR" \( -path '*/drivers/kernelsu/supercalls.c' -o -path '*/KernelSU/kernel/supercalls.c' \) 2>/dev/null | head -n 1 || true)"
+          if [[ -z "$SUPER_C" || ! -f "$SUPER_C" ]]; then
+            echo "SukiSU supercalls.c not found; skipping no-SUSFS manual-hook compatibility patch."
+            exit 0
+          fi
+
+          echo "Checking SukiSU supercalls file: $SUPER_C"
+          python3 - "$SUPER_C" <<'PY3'
+          from pathlib import Path
+          import sys
+
+          p = Path(sys.argv[1])
+          t = p.read_text(errors='ignore')
+          original = t
+
+          # SukiSU v4.1.2 / 2aba6b8 can compile in CONFIG_KSU_MANUAL_HOOK mode when
+          # SUSFS is disabled. In that mode supercalls.c may still call
+          # ksu_mark_running_process(), but the implementation is not linked, causing:
+          #   ld.lld: undefined symbol: ksu_mark_running_process
+          # Manual-hook builds do not use the syscall-process mark refresh path, so guard it.
+          t = t.replace(
+              '#ifndef CONFIG_KSU_SUSFS\n\t\tksu_mark_running_process();\n#endif',
+              '#if !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_MANUAL_HOOK)\n\t\tksu_mark_running_process();\n#endif'
+          )
+          t = t.replace(
+              '#ifndef CONFIG_KSU_SUSFS\n        ksu_mark_running_process();\n#endif',
+              '#if !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_MANUAL_HOOK)\n        ksu_mark_running_process();\n#endif'
+          )
+          t = t.replace(
+              '#ifndef CONFIG_KSU_SUSFS\n\t\t\tksu_mark_running_process();\n\t\t\tpr_info("manage_mark: refreshed running processes\\n");\n#else',
+              '#if !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_MANUAL_HOOK)\n\t\t\tksu_mark_running_process();\n\t\t\tpr_info("manage_mark: refreshed running processes\\n");\n#else'
+          )
+          t = t.replace(
+              '#ifndef CONFIG_KSU_SUSFS\n            ksu_mark_running_process();\n            pr_info("manage_mark: refreshed running processes\\n");\n#else',
+              '#if !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_MANUAL_HOOK)\n            ksu_mark_running_process();\n            pr_info("manage_mark: refreshed running processes\\n");\n#else'
+          )
+
+          if t != original:
+              p.write_text(t)
+              print('Patched ksu_mark_running_process() calls for no-SUSFS CONFIG_KSU_MANUAL_HOOK builds.')
+          else:
+              print('No ksu_mark_running_process() manual-hook patch pattern found or already patched.')
+          PY3
+
+          echo "Post-patch ksu_mark_running_process references:"
+          grep -n "ksu_mark_running_process" "$SUPER_C" || true
       - name: "Repair SukiSU sulog USER_ARG_NULL pointer compatibility"
         shell: bash
         run: |
