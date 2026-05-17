@@ -1,4 +1,4 @@
-name: OP13 SukiSU Ultra Build
+name: OP13 SukiSU Ultra
 
 env:
   TZ: Asia/Shanghai
@@ -13,8 +13,8 @@ env:
   WILD_MANIFEST_BRANCH: "main"
   WILD_MANIFEST_FILE: "manifests/oos16/oneplus_13_w.xml"
   WILD_CLANG_REL: "kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin"
-  SUSFS_REPO: "https://gitlab.com/simonpunk/susfs4ksu.git"
-  SUSFS_DEFAULT_COMMIT: "85bcfac5edc8ba7808581e8d0a3ca9c7deca78e4"
+  SUSFS_REPO: "https://github.com/cctv18/susfs4oki.git"
+  SUSFS_DEFAULT_REF: "oki-android15-6.6"
   CCACHE_COMPRESS: "true"
   CCACHE_COMPRESSLEVEL: "6"
   CCACHE_MAXSIZE: "5G"
@@ -37,13 +37,13 @@ on:
         default: battery_daily
         options: [battery_daily, wild_daily, minimal_debug, experimental_max]
       sukisu_channel:
-        description: "SukiSU integration channel. main_latest uses the latest main/LKM integration script; builtin_latest keeps builtin available for comparison."
+        description: "SukiSU Ultra channel only. No KSUN backend. builtin_latest is the safest first CCTV18 SUSFS test; main_latest is available for testing."
         type: choice
         required: true
-        default: main_latest
-        options: [main_latest, builtin_latest, custom_ref]
+        default: builtin_latest
+        options: [builtin_latest, main_latest, custom_ref]
       sukisu_custom_ref:
-        description: "Only used when sukisu_channel=custom_ref. Example: builtin, main, a commit hash, or a tag/ref that contains kernel/setup.sh."
+        description: "Only used when sukisu_channel=custom_ref. Example: builtin, main, dev, or a SukiSU branch/tag/commit."
         type: string
         required: false
         default: ""
@@ -53,11 +53,11 @@ on:
         required: true
         default: "On"
         options: ["On", "Off"]
-      susfs_commit:
-        description: "SUSFS android15-6.6 ref/commit. Used only when susfs=On. Default mirrors WildKernels v2.1.0-r2 mapping."
+      susfs_ref:
+        description: "CCTV18 susfs4oki ref/branch. Default is oki-android15-6.6 for OP13 OOS16/android15-6.6."
         type: string
         required: false
-        default: "85bcfac5edc8ba7808581e8d0a3ca9c7deca78e4"
+        default: "oki-android15-6.6"
       toolchain:
         description: "Toolchain. aosp_prebuilt is the only safe default for OP13 OOS16."
         type: choice
@@ -156,16 +156,16 @@ on:
         default: true
 
 concurrency:
-  group: op13-sukisu-wildbase-${{ github.ref }}
+  group: op13-wildbase-adv-stable-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
-    name: "${{ github.event.inputs.feature_profile }} | SukiSU=${{ github.event.inputs.sukisu_channel }} | SUSFS=${{ github.event.inputs.susfs }}"
+    name: "${{ github.event.inputs.feature_profile }} | Root=${{ github.event.inputs.sukisu_channel }} | SUSFS=${{ github.event.inputs.susfs }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache-op13-sukisu-wildbase
+      CCACHE_DIR: ${{ github.workspace }}/.ccache-op13-wildbase-adv-stable
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
@@ -256,10 +256,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-op13-sukisu-wildbase-${{ github.event.inputs.feature_profile }}-${{ github.ref_name }}
+          key: ccache-${{ runner.os }}-op13-wildbase-adv-stable-${{ github.event.inputs.feature_profile }}-${{ github.ref_name }}
           restore-keys: |
-            ccache-${{ runner.os }}-op13-sukisu-wildbase-${{ github.event.inputs.feature_profile }}-
-            ccache-${{ runner.os }}-op13-sukisu-wildbase-
+            ccache-${{ runner.os }}-op13-wildbase-adv-stable-${{ github.event.inputs.feature_profile }}-
+            ccache-${{ runner.os }}-op13-wildbase-adv-stable-
 
       - name: "Install build dependencies and repo"
         shell: bash
@@ -354,37 +354,51 @@ jobs:
           find "$KP" -maxdepth 3 -type f \( -name Makefile -o -name Kconfig \) | head -n 100 || true
           exit 1
 
-      - name: "Resolve SukiSU channel and build identity"
+      - name: "Resolve SukiSU Ultra channel and build identity"
         shell: bash
         run: |
           set -euo pipefail
 
           CHANNEL="${{ inputs.sukisu_channel }}"
           CUSTOM_REF="${{ inputs.sukisu_custom_ref }}"
+
+          ROOT_BACKEND="$CHANNEL"
+          SETUP_OWNER="SukiSU-Ultra"
+          SETUP_REPO="SukiSU-Ultra"
+          SETUP_BRANCH="main"
+          SETUP_ARG=""
+          LABEL=""
+
           case "$CHANNEL" in
-            main_latest)
-              SETUP_BRANCH="main"
-              SETUP_ARG="main"
-              LABEL="SukiSU_main_latest"
-              ;;
             builtin_latest)
-              # Official SukiSU docs use setup.sh from main and pass builtin as the integration mode.
-              SETUP_BRANCH="main"
+              # SukiSU Ultra builtin channel. This is the safest first path for CCTV18 susfs4oki.
               SETUP_ARG="builtin"
-              LABEL="SukiSU_builtin_latest"
+              LABEL="SukiSUUltra_builtin"
+              ;;
+            main_latest)
+              # SukiSU Ultra main channel. Useful for testing newer non-builtin integration.
+              SETUP_ARG="main"
+              LABEL="SukiSUUltra_main"
               ;;
             custom_ref)
               [ -n "$CUSTOM_REF" ] || { echo "::error::sukisu_custom_ref is required when sukisu_channel=custom_ref"; exit 1; }
-              SETUP_BRANCH="$CUSTOM_REF"
               SETUP_ARG="$CUSTOM_REF"
               SAFE_REF="$(printf '%s' "$CUSTOM_REF" | tr -c 'A-Za-z0-9._-' '_' | sed 's/_\{2,\}/_/g')"
-              LABEL="SukiSU_${SAFE_REF}"
+              LABEL="SukiSUUltra_${SAFE_REF}"
               ;;
             *)
-              echo "::error::Unknown sukisu_channel: $CHANNEL"
+              echo "::error::Unknown SukiSU channel: $CHANNEL"
               exit 1
               ;;
           esac
+
+          echo "ROOT_BACKEND=$ROOT_BACKEND" >> "$GITHUB_ENV"
+          echo "ROOT_SETUP_OWNER=$SETUP_OWNER" >> "$GITHUB_ENV"
+          echo "ROOT_SETUP_REPO=$SETUP_REPO" >> "$GITHUB_ENV"
+          echo "ROOT_SETUP_BRANCH=$SETUP_BRANCH" >> "$GITHUB_ENV"
+          echo "ROOT_SETUP_ARG=$SETUP_ARG" >> "$GITHUB_ENV"
+          echo "ROOT_PACKAGE_LABEL=$LABEL" >> "$GITHUB_ENV"
+          # Backward-compatible names used later by package scripts.
           echo "SUKISU_SETUP_BRANCH=$SETUP_BRANCH" >> "$GITHUB_ENV"
           echo "SUKISU_SETUP_ARG=$SETUP_ARG" >> "$GITHUB_ENV"
           echo "SUKISU_PACKAGE_LABEL=$LABEL" >> "$GITHUB_ENV"
@@ -401,9 +415,12 @@ jobs:
           echo "KBUILD_BUILD_HOST=${{ inputs.BUILD_HOST }}" >> "$GITHUB_ENV"
           echo "KBUILD_BUILD_VERSION=1" >> "$GITHUB_ENV"
 
-          echo "SukiSU channel      : $CHANNEL"
-          echo "SukiSU setup branch : $SETUP_BRANCH"
-          echo "SukiSU setup arg    : $SETUP_ARG"
+          echo "SukiSU channel        : SukiSU Ultra only"
+          echo "SukiSU channel      : $ROOT_BACKEND"
+          echo "Setup repo          : $SETUP_OWNER/$SETUP_REPO"
+          echo "Setup script branch : $SETUP_BRANCH"
+          echo "Setup arg/ref       : $SETUP_ARG"
+          echo "SUSFS source        : CCTV18 susfs4oki"
           echo "SUSFS_ENABLED=${{ inputs.susfs }}" >> "$GITHUB_ENV"
           echo "Build timestamp     : $DATESTR"
           echo "Build user/host     : ${{ inputs.BUILD_USER }}@${{ inputs.BUILD_HOST }}"
@@ -423,24 +440,36 @@ jobs:
             fi
           done
 
-      - name: "Integrate SukiSU Ultra selected channel"
+      - name: "Integrate selected root backend"
         shell: bash
         run: |
           set -euo pipefail
           cd "$KERNEL_DIR"
-          SETUP_URL="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SUKISU_SETUP_BRANCH}/kernel/setup.sh"
-          echo "Fetching SukiSU setup.sh: $SETUP_URL"
-          echo "Running setup arg: $SUKISU_SETUP_ARG"
-          curl -fLSs "$SETUP_URL" | bash -s "$SUKISU_SETUP_ARG"
+          SETUP_URL="https://raw.githubusercontent.com/${ROOT_SETUP_OWNER}/${ROOT_SETUP_REPO}/${ROOT_SETUP_BRANCH}/kernel/setup.sh"
+          echo "Fetching setup.sh: $SETUP_URL"
+          echo "Running setup arg: $ROOT_SETUP_ARG"
+          curl -fLSs "$SETUP_URL" | bash -s "$ROOT_SETUP_ARG"
 
-          echo "SukiSU layout:"
-          find . -maxdepth 5 \( -path '*KernelSU*' -o -path '*kernelsu*' \) -print | head -n 120 || true
+          echo "SukiSU channel layout:"
+          find . -maxdepth 5 \( -path '*KernelSU*' -o -path '*kernelsu*' \) -print | head -n 160 || true
           if [ ! -e "drivers/kernelsu" ]; then
-            echo "::error::drivers/kernelsu missing after SukiSU setup"
+            echo "::error::drivers/kernelsu missing after root backend setup"
             exit 1
           fi
 
-          # Compatibility for some SukiSU revisions when SUSFS is disabled by a debug preset.
+          # Compatibility for SukiSU revisions when SUSFS is disabled by a debug preset.
+          if [[ -f drivers/kernelsu/supercall/dispatch.c ]] && grep -q 'ksu_mark_running_process();' drivers/kernelsu/supercall/dispatch.c; then
+            python3 - <<'PY'
+          from pathlib import Path
+          p = Path('drivers/kernelsu/supercall/dispatch.c')
+          s = p.read_text(encoding='utf-8', errors='replace')
+          old = 'ksu_mark_running_process();'
+          new = '#if !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_MANUAL_HOOK)\n\tksu_mark_running_process();\n#endif'
+          if old in s and 'defined(CONFIG_KSU_MANUAL_HOOK)' not in s:
+              s = s.replace(old, new, 1)
+              p.write_text(s, encoding='utf-8')
+          PY
+          fi
           if [[ -f drivers/kernelsu/supercalls.c ]] && grep -q 'ksu_mark_running_process();' drivers/kernelsu/supercalls.c; then
             python3 - <<'PY'
           from pathlib import Path
@@ -449,106 +478,149 @@ jobs:
           old = 'ksu_mark_running_process();'
           new = '#if !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_MANUAL_HOOK)\n\tksu_mark_running_process();\n#endif'
           if old in s and 'defined(CONFIG_KSU_MANUAL_HOOK)' not in s:
-              p.write_text(s.replace(old, new), encoding='utf-8')
+              s = s.replace(old, new, 1)
+              p.write_text(s, encoding='utf-8')
           PY
           fi
 
-      - name: "Apply Wild/SUSFS v2.1.0 source and patches"
+      - name: "Apply CCTV18 susfs4oki source and patches"
         if: inputs.susfs == 'On'
         shell: bash
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
-          rm -rf susfs4ksu
-          SUS_REF="${{ inputs.susfs_commit }}"
-          [ -n "$SUS_REF" ] || SUS_REF="$SUSFS_DEFAULT_COMMIT"
-          echo "Cloning SUSFS from $SUSFS_REPO"
-          git clone --no-tags "$SUSFS_REPO" susfs4ksu
-          cd susfs4ksu
+          cd "$KERNEL_DIR"
+          rm -rf susfs4oki
+          SUS_REF="${{ inputs.susfs_ref }}"
+          [ -n "$SUS_REF" ] || SUS_REF="$SUSFS_DEFAULT_REF"
+          echo "Cloning CCTV18 SUSFS from $SUSFS_REPO"
+          git clone --no-tags "$SUSFS_REPO" susfs4oki
+          cd susfs4oki
           git checkout "$SUS_REF"
           SUSVER="$(grep '#define SUSFS_VERSION' kernel_patches/include/linux/susfs.h | awk -F'\"' '{print $2}' || true)"
-          [ -n "$SUSVER" ] || SUSVER="unknown"
-          echo "SUSFS version: $SUSVER"
+          [ -n "$SUSVER" ] || SUSVER="$SUS_REF"
           echo "SUSVER=$SUSVER" >> "$GITHUB_ENV"
-          cd "$GITHUB_WORKSPACE"
+          echo "CCTV18 SUSFS version/ref: $SUSVER"
+          cd "$KERNEL_DIR"
 
-          KDIR="$KERNEL_DIR"
-          mkdir -p "$KDIR/fs" "$KDIR/include/linux"
-          cp -a susfs4ksu/kernel_patches/fs/. "$KDIR/fs/"
-          cp -a susfs4ksu/kernel_patches/include/linux/. "$KDIR/include/linux/"
+          mkdir -p fs include/linux
+          cp -a susfs4oki/kernel_patches/fs/. "$KERNEL_DIR/fs/"
+          cp -a susfs4oki/kernel_patches/include/linux/. "$KERNEL_DIR/include/linux/"
 
-          PATCH="$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch"
-          [ -f "$PATCH" ] || { echo "::error::Missing SUSFS patch: $PATCH"; ls -la susfs4ksu/kernel_patches; exit 1; }
-          cd "$KDIR"
-          if patch -p1 --dry-run -R < "$PATCH" >/dev/null 2>&1; then
-            echo "SUSFS kernel patch already applied."
-          elif patch -p1 --dry-run --forward < "$PATCH" >/dev/null 2>&1; then
-            patch -p1 --forward < "$PATCH"
+          PATCH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/susfs4oki/kernel_patches/50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch"
+          if [ ! -f "$PATCH" ]; then
+            PATCH="$KERNEL_DIR/susfs4oki/kernel_patches/50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch"
+          fi
+          [ -f "$PATCH" ] || { echo "::error::Missing CCTV18 SUSFS patch: $PATCH"; find susfs4oki/kernel_patches -maxdepth 2 -type f -print; exit 1; }
+
+          if patch --dry-run -p1 -N < "$PATCH" >/tmp/susfs_kernel_patch_check.log 2>&1; then
+            patch -p1 -N < "$PATCH"
+          elif grep -qi "Reversed\|previously applied" /tmp/susfs_kernel_patch_check.log; then
+            echo "CCTV18 SUSFS kernel patch already applied."
           else
             echo "Patch does not apply cleanly, retrying with fuzz=3."
-            if ! patch -p1 --forward -F 3 < "$PATCH"; then
-              echo "::error::SUSFS main patch failed. Rejects:"
-              find . -name '*.rej' -print -exec sed -n '1,180p' {} \; || true
+            if ! patch -p1 -N --fuzz=3 < "$PATCH"; then
+              echo "::error::CCTV18 SUSFS main patch failed. Rejects:"
+              find . -name '*.rej' -print -exec sed -n '1,160p' {} \; || true
               exit 1
             fi
           fi
 
-          GLUE="$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-          [ -f "$GLUE" ] || { echo "::error::Missing KernelSU SUSFS glue patch: $GLUE"; exit 1; }
+          GLUE="$KERNEL_DIR/susfs4oki/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+          [ -f "$GLUE" ] || { echo "::error::Missing CCTV18 KernelSU/SukiSU glue patch: $GLUE"; exit 1; }
 
-          echo "KernelSU/SukiSU path diagnostics before glue:"
+          echo "SukiSU path diagnostics before CCTV18 glue:"
           ls -la drivers/kernelsu || true
-          if [ -L drivers/kernelsu ]; then
-            echo "drivers/kernelsu -> $(readlink -f drivers/kernelsu)"
-          fi
-          find KernelSU drivers/kernelsu -maxdepth 2 -type f \( -name Kconfig -o -name Kbuild -o -name Makefile \) -print 2>/dev/null || true
+          readlink -f drivers/kernelsu || true
+          find KernelSU drivers/kernelsu -maxdepth 3 -type f \( -name Kconfig -o -name Kbuild -o -name Makefile \) -print 2>/dev/null || true
 
-          # Important: SukiSU setup.sh creates KernelSU/kernel and symlinks drivers/kernelsu to it.
-          # The upstream SUSFS glue patch paths are a/kernel/..., so it must be applied from KernelSU/ with -p1.
           if ! grep -Rqs 'config KSU_SUSFS' drivers/kernelsu KernelSU 2>/dev/null; then
-            echo "SukiSU tree does not expose KSU_SUSFS yet; applying SUSFS glue to KernelSU/SukiSU."
-            if [ -d KernelSU/kernel ] && [ -f KernelSU/kernel/Kconfig ]; then
-              if (cd KernelSU && patch -p1 --dry-run -R < "$GLUE" >/dev/null 2>&1); then
-                echo "SUSFS KernelSU glue patch already applied."
-              elif (cd KernelSU && patch -p1 --dry-run --forward -F 3 < "$GLUE" >/dev/null 2>&1); then
-                (cd KernelSU && patch -p1 --forward -F 3 < "$GLUE")
+            echo "Applying CCTV18 SUSFS glue to SukiSU Ultra."
+            if [ -d KernelSU ]; then
+              cp "$GLUE" KernelSU/10_enable_susfs_for_ksu.patch
+              cd KernelSU
+              if patch --dry-run -p1 -N < 10_enable_susfs_for_ksu.patch >/tmp/susfs_glue_check.log 2>&1; then
+                patch -p1 -N < 10_enable_susfs_for_ksu.patch
+              elif grep -qi "Reversed\|previously applied" /tmp/susfs_glue_check.log; then
+                echo "CCTV18 SUSFS glue already applied in KernelSU."
               else
-                echo "::error::SUSFS KernelSU glue patch does not apply to selected SukiSU ref."
-                echo "Reject preview / relevant files:"
-                (cd KernelSU && patch -p1 --dry-run --forward -F 3 < "$GLUE") || true
-                find KernelSU drivers/kernelsu -name '*.rej' -print -exec sed -n '1,160p' {} \; 2>/dev/null || true
-                exit 1
+                echo "Patch does not apply cleanly to KernelSU, retrying with fuzz=3."
+                if ! patch -p1 -N --fuzz=3 < 10_enable_susfs_for_ksu.patch; then
+                  echo "::error::CCTV18 SUSFS KernelSU/SukiSU glue patch failed. Reject preview:"
+                  cat /tmp/susfs_glue_check.log || true
+                  find . -name '*.rej' -print -exec sed -n '1,160p' {} \; || true
+                  exit 1
+                fi
               fi
-            elif [ -f drivers/kernelsu/Kconfig ]; then
-              # Fallback for non-symlink trees where drivers/kernelsu is the actual root.
-              TMP_GLUE="$GITHUB_WORKSPACE/susfs_ksu_glue_drivers_root.patch"
-              sed 's@ a/kernel/@ a/@g; s@ b/kernel/@ b/@g; s@--- a/kernel/@--- a/@g; s@+++ b/kernel/@+++ b/@g' "$GLUE" > "$TMP_GLUE"
-              if (cd drivers/kernelsu && patch -p1 --dry-run -R < "$TMP_GLUE" >/dev/null 2>&1); then
-                echo "SUSFS KernelSU glue patch already applied to drivers/kernelsu."
-              elif (cd drivers/kernelsu && patch -p1 --dry-run --forward -F 3 < "$TMP_GLUE" >/dev/null 2>&1); then
-                (cd drivers/kernelsu && patch -p1 --forward -F 3 < "$TMP_GLUE")
-              else
-                echo "::error::SUSFS glue patch failed on drivers/kernelsu layout."
-                (cd drivers/kernelsu && patch -p1 --dry-run --forward -F 3 < "$TMP_GLUE") || true
-                exit 1
-              fi
+              cd "$KERNEL_DIR"
             else
-              echo "::error::Cannot locate SukiSU/KernelSU Kconfig for SUSFS glue."
+              echo "::error::KernelSU directory missing after SukiSU setup; cannot apply CCTV18 glue."
               exit 1
             fi
           else
             echo "KSU_SUSFS Kconfig symbol already present before glue patch."
           fi
 
-          echo "Post-SUSFS symbol check:"
-          grep -Rns 'KSU_SUSFS\|SUSFS_VERSION\|susfs_init' drivers KernelSU fs include 2>/dev/null | head -n 140 || true
-          [ -f include/linux/susfs.h ] || { echo "::error::include/linux/susfs.h missing after SUSFS integration"; exit 1; }
+          echo "Apply small SukiSU Ultra + CCTV18 compatibility repairs if needed."
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          # Some SukiSU Ultra revisions call susfs string helpers from adb_root.c without a visible prototype.
+          # CCTV18 susfs4oki provides SUSFS files, but SukiSU's include layout can vary by branch.
+          for p in [Path('drivers/kernelsu/feature/adb_root.c'), Path('KernelSU/kernel/feature/adb_root.c')]:
+              if not p.exists():
+                  continue
+              s = p.read_text(encoding='utf-8', errors='replace')
+              if 'susfs_starts_with' in s or 'susfs_ends_with' in s:
+                  changed = False
+                  if '#include <linux/susfs.h>' not in s:
+                      # Put the include after the last initial include block when possible.
+                      lines = s.splitlines()
+                      idx = 0
+                      for i, line in enumerate(lines[:80]):
+                          if line.startswith('#include'):
+                              idx = i + 1
+                      lines.insert(idx, '#include <linux/types.h>')
+                      lines.insert(idx + 1, '#include <linux/susfs.h>')
+                      s = '\n'.join(lines) + ('\n' if s.endswith('\n') else '')
+                      changed = True
+                  # If the header still does not declare these helpers in some CCTV18/SukiSU combinations,
+                  # explicit extern prototypes avoid C99 implicit-function-declaration hard failures.
+                  if 'SUSFS_STRING_HELPER_PROTOTYPES_FOR_SUKISU' not in s:
+                      proto = ('\n#ifndef SUSFS_STRING_HELPER_PROTOTYPES_FOR_SUKISU\n'
+                               '#define SUSFS_STRING_HELPER_PROTOTYPES_FOR_SUKISU\n'
+                               'extern bool susfs_starts_with(const char *str, const char *prefix);\n'
+                               'extern bool susfs_ends_with(const char *str, const char *suffix);\n'
+                               '#endif\n')
+                      insert_at = s.find('\n', s.find('#include <linux/susfs.h>'))
+                      if insert_at != -1:
+                          s = s[:insert_at+1] + proto + s[insert_at+1:]
+                      else:
+                          s = proto + s
+                      changed = True
+                  if changed:
+                      p.write_text(s, encoding='utf-8')
+                      print(f'Patched SUSFS helper prototypes in {p}')
+          # Fix newer SukiSU sulog signature where ksu_sulog_capture expects struct user_arg_ptr *.
+          for p in [Path('drivers/kernelsu/sulog/event.c'), Path('KernelSU/kernel/sulog/event.c')]:
+              if not p.exists():
+                  continue
+              s = p.read_text(encoding='utf-8', errors='replace')
+              ns = s.replace('KSU_SULOG_EVENT_IOCTL_GRANT_ROOT, NULL, USER_ARG_NULL, gfp)',
+                             'KSU_SULOG_EVENT_IOCTL_GRANT_ROOT, NULL, NULL, gfp)')
+              if ns != s:
+                  p.write_text(ns, encoding='utf-8')
+                  print(f'Patched USER_ARG_NULL pointer compatibility in {p}')
+          PY
+
+          echo "Post-CCTV18 SUSFS symbol check:"
+          grep -Rns 'KSU_SUSFS\|SUSFS_VERSION\|susfs_init\|susfs_starts_with\|susfs_ends_with' drivers KernelSU fs include 2>/dev/null | head -n 180 || true
+          [ -f include/linux/susfs.h ] || { echo "::error::include/linux/susfs.h missing after CCTV18 SUSFS integration"; exit 1; }
           if ! grep -Rqs 'config KSU_SUSFS' drivers/kernelsu KernelSU 2>/dev/null; then
-            echo "::error::KSU_SUSFS Kconfig symbol is still missing after glue patch. Refusing to continue because olddefconfig will drop CONFIG_KSU_SUSFS."
+            echo "::error::KSU_SUSFS Kconfig symbol is still missing after CCTV18 glue."
             exit 1
           fi
           if ! grep -Rqs 'susfs_init' drivers/kernelsu KernelSU 2>/dev/null; then
-            echo "::error::SUSFS init hook is missing from SukiSU/KernelSU after glue patch. Refusing a fake SUSFS build."
+            echo "::error::SUSFS init hook is missing from SukiSU after CCTV18 glue."
             exit 1
           fi
 
@@ -794,7 +866,7 @@ jobs:
           label = os.environ.get('SUKISU_PACKAGE_LABEL', 'SukiSU')
           p = Path('package_AK3/anykernel.sh')
           s = p.read_text(errors='replace')
-          sus_label = 'Wild SUSFS' if os.environ.get('SUSFS_ENABLED','On') == 'On' else 'NoSUSFS Debug'
+          sus_label = 'CCTV18 SUSFS' if os.environ.get('SUSFS_ENABLED','On') == 'On' else 'NoSUSFS Debug'
           s = re.sub(r'^\s*kernel\.string=.*$', f'kernel.string=OP13 OOS16 {label} + {sus_label} Advanced Stable Daily', s, flags=re.M)
           if 'block=boot' not in s:
               s = s.replace('block=auto', 'block=boot') if 'block=auto' in s else s + '\nblock=boot\n'
@@ -802,11 +874,11 @@ jobs:
           PY
           fi
           if [ "${{ inputs.susfs }}" = "On" ]; then
-            SUS_LABEL="WildSuSFS_${SUSVER:-v2.1.0}"
+            SUS_LABEL="CCTV18_SUSFS_${SUSVER:-oki}"
           else
             SUS_LABEL="NoSUSFS_Debug"
           fi
-          ZIP="AK3_OP13_OOS16_android15-6.6.89_${SUKISU_PACKAGE_LABEL:-SukiSU}_${SUS_LABEL}_ADV_STABLE_${{ github.run_number }}.zip"
+          ZIP="AK3_OP13_OOS16_android15-6.6.89_${SUKISU_PACKAGE_LABEL:-SukiSUUltra}_${SUS_LABEL}_ADV_STABLE_${{ github.run_number }}.zip"
           (cd package_AK3 && zip -r9 "../out_artifacts/$ZIP" . -x '*.git*' -x '*README*' -x '*.md' >/dev/null)
           sha256sum out_artifacts/*.zip | tee out_artifacts/SHA256SUMS.txt
 
@@ -823,16 +895,16 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU WildBase Advanced Stable v17 build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v19 build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
             echo "| Model | $OP_MODEL / $OP_SOC / $OP_OS_VERSION |"
             echo "| Feature profile | ${{ inputs.feature_profile }} |"
             echo "| SukiSU channel | ${{ inputs.sukisu_channel }} |"
-            echo "| SukiSU setup | ${SUKISU_SETUP_BRANCH:-unknown} / ${SUKISU_SETUP_ARG:-unknown} |"
+            echo "| Root setup | ${ROOT_SETUP_OWNER:-unknown}/${ROOT_SETUP_REPO:-unknown} @ ${ROOT_SETUP_BRANCH:-unknown} / ${ROOT_SETUP_ARG:-unknown} |"
             echo "| SUSFS enabled | ${{ inputs.susfs }} |"
-            echo "| SUSFS ref | ${{ inputs.susfs_commit }} |"
+            echo "| CCTV18 SUSFS ref | ${{ inputs.susfs_ref }} |"
             echo "| Kernel release | ${KERNEL_RELEASE:-unknown} |"
             echo "| Expected stock UTS | $OP_EXPECTED_UTS |"
             echo "| HMBIRD | ${{ inputs.hmbird }} |"
@@ -854,7 +926,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSU-WildBase-Advanced-Stable-v17-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v19-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
