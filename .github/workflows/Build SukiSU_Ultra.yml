@@ -47,8 +47,14 @@ on:
         type: string
         required: false
         default: ""
+      susfs:
+        description: "Enable SUSFS kernel integration. Keep On for the daily-driver SUSFS build; Off only for SukiSU-only debug."
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
       susfs_commit:
-        description: "SUSFS android15-6.6 ref/commit. Default mirrors WildKernels v2.1.0-r2 mapping."
+        description: "SUSFS android15-6.6 ref/commit. Used only when susfs=On. Default mirrors WildKernels v2.1.0-r2 mapping."
         type: string
         required: false
         default: "85bcfac5edc8ba7808581e8d0a3ca9c7deca78e4"
@@ -155,7 +161,7 @@ concurrency:
 
 jobs:
   build:
-    name: "${{ github.event.inputs.feature_profile }} | SukiSU=${{ github.event.inputs.sukisu_channel }} | Wild SUSFS"
+    name: "${{ github.event.inputs.feature_profile }} | SukiSU=${{ github.event.inputs.sukisu_channel }} | SUSFS=${{ github.event.inputs.susfs }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
@@ -398,6 +404,7 @@ jobs:
           echo "SukiSU channel      : $CHANNEL"
           echo "SukiSU setup branch : $SETUP_BRANCH"
           echo "SukiSU setup arg    : $SETUP_ARG"
+          echo "SUSFS_ENABLED=${{ inputs.susfs }}" >> "$GITHUB_ENV"
           echo "Build timestamp     : $DATESTR"
           echo "Build user/host     : ${{ inputs.BUILD_USER }}@${{ inputs.BUILD_HOST }}"
 
@@ -447,6 +454,7 @@ jobs:
           fi
 
       - name: "Apply Wild/SUSFS v2.1.0 source and patches"
+        if: inputs.susfs == 'On'
         shell: bash
         run: |
           set -euo pipefail
@@ -485,17 +493,64 @@ jobs:
             fi
           fi
 
+          GLUE="$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
+          [ -f "$GLUE" ] || { echo "::error::Missing KernelSU SUSFS glue patch: $GLUE"; exit 1; }
+
+          echo "KernelSU/SukiSU path diagnostics before glue:"
+          ls -la drivers/kernelsu || true
+          if [ -L drivers/kernelsu ]; then
+            echo "drivers/kernelsu -> $(readlink -f drivers/kernelsu)"
+          fi
+          find KernelSU drivers/kernelsu -maxdepth 2 -type f \( -name Kconfig -o -name Kbuild -o -name Makefile \) -print 2>/dev/null || true
+
+          # Important: SukiSU setup.sh creates KernelSU/kernel and symlinks drivers/kernelsu to it.
+          # The upstream SUSFS glue patch paths are a/kernel/..., so it must be applied from KernelSU/ with -p1.
           if ! grep -Rqs 'config KSU_SUSFS' drivers/kernelsu KernelSU 2>/dev/null; then
-            echo "SukiSU tree does not expose KSU_SUSFS yet; trying generic SUSFS KernelSU glue patch."
-            GLUE="$GITHUB_WORKSPACE/susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-            if [ -f "$GLUE" ] && [ -d drivers/kernelsu ]; then
-              (cd drivers/kernelsu && patch -p1 --forward -F 3 < "$GLUE") || true
+            echo "SukiSU tree does not expose KSU_SUSFS yet; applying SUSFS glue to KernelSU/SukiSU."
+            if [ -d KernelSU/kernel ] && [ -f KernelSU/kernel/Kconfig ]; then
+              if (cd KernelSU && patch -p1 --dry-run -R < "$GLUE" >/dev/null 2>&1); then
+                echo "SUSFS KernelSU glue patch already applied."
+              elif (cd KernelSU && patch -p1 --dry-run --forward -F 3 < "$GLUE" >/dev/null 2>&1); then
+                (cd KernelSU && patch -p1 --forward -F 3 < "$GLUE")
+              else
+                echo "::error::SUSFS KernelSU glue patch does not apply to selected SukiSU ref."
+                echo "Reject preview / relevant files:"
+                (cd KernelSU && patch -p1 --dry-run --forward -F 3 < "$GLUE") || true
+                find KernelSU drivers/kernelsu -name '*.rej' -print -exec sed -n '1,160p' {} \; 2>/dev/null || true
+                exit 1
+              fi
+            elif [ -f drivers/kernelsu/Kconfig ]; then
+              # Fallback for non-symlink trees where drivers/kernelsu is the actual root.
+              TMP_GLUE="$GITHUB_WORKSPACE/susfs_ksu_glue_drivers_root.patch"
+              sed 's@ a/kernel/@ a/@g; s@ b/kernel/@ b/@g; s@--- a/kernel/@--- a/@g; s@+++ b/kernel/@+++ b/@g' "$GLUE" > "$TMP_GLUE"
+              if (cd drivers/kernelsu && patch -p1 --dry-run -R < "$TMP_GLUE" >/dev/null 2>&1); then
+                echo "SUSFS KernelSU glue patch already applied to drivers/kernelsu."
+              elif (cd drivers/kernelsu && patch -p1 --dry-run --forward -F 3 < "$TMP_GLUE" >/dev/null 2>&1); then
+                (cd drivers/kernelsu && patch -p1 --forward -F 3 < "$TMP_GLUE")
+              else
+                echo "::error::SUSFS glue patch failed on drivers/kernelsu layout."
+                (cd drivers/kernelsu && patch -p1 --dry-run --forward -F 3 < "$TMP_GLUE") || true
+                exit 1
+              fi
+            else
+              echo "::error::Cannot locate SukiSU/KernelSU Kconfig for SUSFS glue."
+              exit 1
             fi
+          else
+            echo "KSU_SUSFS Kconfig symbol already present before glue patch."
           fi
 
           echo "Post-SUSFS symbol check:"
-          grep -Rns 'KSU_SUSFS\|SUSFS_VERSION' drivers fs include 2>/dev/null | head -n 80 || true
+          grep -Rns 'KSU_SUSFS\|SUSFS_VERSION\|susfs_init' drivers KernelSU fs include 2>/dev/null | head -n 140 || true
           [ -f include/linux/susfs.h ] || { echo "::error::include/linux/susfs.h missing after SUSFS integration"; exit 1; }
+          if ! grep -Rqs 'config KSU_SUSFS' drivers/kernelsu KernelSU 2>/dev/null; then
+            echo "::error::KSU_SUSFS Kconfig symbol is still missing after glue patch. Refusing to continue because olddefconfig will drop CONFIG_KSU_SUSFS."
+            exit 1
+          fi
+          if ! grep -Rqs 'susfs_init' drivers/kernelsu KernelSU 2>/dev/null; then
+            echo "::error::SUSFS init hook is missing from SukiSU/KernelSU after glue patch. Refusing a fake SUSFS build."
+            exit 1
+          fi
 
       - name: "Apply OP13 stable daily config"
         shell: bash
@@ -514,6 +569,7 @@ jobs:
           ADIOS_IN="${{ inputs.adios }}"
           ZRAM_LZ4_IN="${{ inputs.zram_lz4_support }}"
           HMBIRD_IN="${{ inputs.hmbird }}"
+          SUSFS_IN="${{ inputs.susfs }}"
 
           # Safety presets. Defaults are intentionally conservative for SukiSU-on-WildBase.
           if [ "$PROFILE" = "minimal_debug" ]; then
@@ -529,6 +585,12 @@ jobs:
           cat >> "$DEFCONFIG" <<EOF
           CONFIG_LOCALVERSION_AUTO=n
           CONFIG_KSU=y
+          CONFIG_TMPFS_XATTR=y
+          CONFIG_TMPFS_POSIX_ACL=y
+          EOF
+
+          if [ "$SUSFS_IN" = "On" ]; then
+            cat >> "$DEFCONFIG" <<'EOF'
           CONFIG_KSU_SUSFS=y
           CONFIG_KSU_SUSFS_SUS_PATH=y
           CONFIG_KSU_SUSFS_SUS_MOUNT=y
@@ -539,9 +601,12 @@ jobs:
           CONFIG_KSU_SUSFS_SUS_MAP=y
           # CONFIG_KSU_SUSFS_ENABLE_LOG is not set
           CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
-          CONFIG_TMPFS_XATTR=y
-          CONFIG_TMPFS_POSIX_ACL=y
           EOF
+          else
+            cat >> "$DEFCONFIG" <<'EOF'
+          # CONFIG_KSU_SUSFS is not set
+          EOF
+          fi
 
           if [ "$ZRAM_LZ4_IN" = "On" ]; then
             cat >> "$DEFCONFIG" <<'EOF'
@@ -556,6 +621,8 @@ jobs:
           if [ "$BBR_IN" = "On" ]; then
             cat >> "$DEFCONFIG" <<'EOF'
           CONFIG_TCP_CONG_BBR=y
+          CONFIG_DEFAULT_BBR=y
+          # CONFIG_DEFAULT_CUBIC is not set
           CONFIG_DEFAULT_TCP_CONG="bbr"
           EOF
           fi
@@ -630,11 +697,18 @@ jobs:
           make -j"$(nproc)" "${MAKE_ARGS[@]}" gki_defconfig
 
           # Enforce critical options after initial defconfig expansion.
-          ./scripts/config --file out/.config -d LOCALVERSION_AUTO -e KSU -e KSU_SUSFS \
-            -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT \
-            -e KSU_SUSFS_SPOOF_UNAME -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-            -e KSU_SUSFS_OPEN_REDIRECT -e KSU_SUSFS_SUS_MAP -d KSU_SUSFS_ENABLE_LOG \
-            -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -e TMPFS_XATTR -e TMPFS_POSIX_ACL || true
+          ./scripts/config --file out/.config -d LOCALVERSION_AUTO -e KSU -e TMPFS_XATTR -e TMPFS_POSIX_ACL || true
+          if [ "${{ inputs.susfs }}" = "On" ]; then
+            ./scripts/config --file out/.config -e KSU_SUSFS \
+              -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT \
+              -e KSU_SUSFS_SPOOF_UNAME -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+              -e KSU_SUSFS_OPEN_REDIRECT -e KSU_SUSFS_SUS_MAP -d KSU_SUSFS_ENABLE_LOG \
+              -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS || true
+          else
+            ./scripts/config --file out/.config -d KSU_SUSFS -d KSU_SUSFS_SUS_PATH -d KSU_SUSFS_SUS_MOUNT -d KSU_SUSFS_SUS_KSTAT \
+              -d KSU_SUSFS_SPOOF_UNAME -d KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG -d KSU_SUSFS_OPEN_REDIRECT \
+              -d KSU_SUSFS_SUS_MAP -d KSU_SUSFS_ENABLE_LOG -d KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS || true
+          fi
 
           # SukiSU hook model changed across refs. Old refs expose KSU_NONE_HOOK; current builtin may not.
           if grep -Rqs '^config KSU_NONE_HOOK' drivers/kernelsu KernelSU 2>/dev/null; then
@@ -648,7 +722,7 @@ jobs:
               ./scripts/config --file out/.config -e ZRAM -e ZSMALLOC -e LZ4_COMPRESS -e LZ4_DECOMPRESS -e CRYPTO_LZ4 -e CRYPTO_LZ4HC || true
             fi
             if [ "${{ inputs.bbr }}" = "On" ]; then
-              ./scripts/config --file out/.config -e TCP_CONG_BBR --set-str DEFAULT_TCP_CONG bbr || true
+              ./scripts/config --file out/.config -e TCP_CONG_BBR -e DEFAULT_BBR -d DEFAULT_CUBIC --set-str DEFAULT_TCP_CONG bbr || true
             fi
             if [ "${{ inputs.ttl_ipset }}" = "On" ]; then
               ./scripts/config --file out/.config -e NETFILTER_XT_TARGET_TTL -e NETFILTER_XT_MATCH_TTL -e IP_SET -e IP_SET_HASH_IP -e IP_SET_HASH_IPPORT -e IP_SET_HASH_NETPORTNET -e NF_NAT_IPV6 || true
@@ -669,10 +743,14 @@ jobs:
           make -j"$(nproc)" "${MAKE_ARGS[@]}" olddefconfig
 
           echo "Final config highlights:"
-          grep -nE 'CONFIG_LOCALVERSION|CONFIG_KSU|CONFIG_BBG|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_TCP_CONG|CONFIG_IP_SET|CONFIG_NETFILTER_XT|CONFIG_NTSYNC|CONFIG_LTO|CONFIG_MQ_IOSCHED_ADIOS|CONFIG_DROID|CONFIG_UNICODE|CONFIG_ZRAM|CONFIG_LZ4|CONFIG_CRYPTO_LZ4' out/.config || true
+          grep -nE 'CONFIG_LOCALVERSION|CONFIG_KSU|CONFIG_BBG|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_BBR|CONFIG_DEFAULT_CUBIC|CONFIG_DEFAULT_TCP_CONG|CONFIG_IP_SET|CONFIG_NETFILTER_XT|CONFIG_NTSYNC|CONFIG_LTO|CONFIG_MQ_IOSCHED_ADIOS|CONFIG_DROID|CONFIG_UNICODE|CONFIG_ZRAM|CONFIG_LZ4|CONFIG_CRYPTO_LZ4' out/.config || true
 
           if ! grep -q '^CONFIG_KSU=y' out/.config; then echo "::error::CONFIG_KSU=y missing"; exit 1; fi
-          if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then echo "::error::CONFIG_KSU_SUSFS=y missing"; exit 1; fi
+          if [ "${{ inputs.susfs }}" = "On" ]; then
+            if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then echo "::error::CONFIG_KSU_SUSFS=y missing while susfs=On"; exit 1; fi
+          else
+            if grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then echo "::error::CONFIG_KSU_SUSFS=y present while susfs=Off"; exit 1; fi
+          fi
           if grep -q '^CONFIG_KSU_SYSCALL_HOOK=y' out/.config; then echo "::error::CONFIG_KSU_SYSCALL_HOOK=y detected; refusing unstable hook mode"; exit 1; fi
 
           make -j"$(nproc)" "${MAKE_ARGS[@]}" all
@@ -716,13 +794,19 @@ jobs:
           label = os.environ.get('SUKISU_PACKAGE_LABEL', 'SukiSU')
           p = Path('package_AK3/anykernel.sh')
           s = p.read_text(errors='replace')
-          s = re.sub(r'^\s*kernel\.string=.*$', f'kernel.string=OP13 OOS16 {label} + Wild SUSFS Advanced Stable Daily', s, flags=re.M)
+          sus_label = 'Wild SUSFS' if os.environ.get('SUSFS_ENABLED','On') == 'On' else 'NoSUSFS Debug'
+          s = re.sub(r'^\s*kernel\.string=.*$', f'kernel.string=OP13 OOS16 {label} + {sus_label} Advanced Stable Daily', s, flags=re.M)
           if 'block=boot' not in s:
               s = s.replace('block=auto', 'block=boot') if 'block=auto' in s else s + '\nblock=boot\n'
           p.write_text(s)
           PY
           fi
-          ZIP="AK3_OP13_OOS16_android15-6.6.89_${SUKISU_PACKAGE_LABEL:-SukiSU}_WildSuSFS_ADV_STABLE_${SUSVER:-v2.1.0}_${{ github.run_number }}.zip"
+          if [ "${{ inputs.susfs }}" = "On" ]; then
+            SUS_LABEL="WildSuSFS_${SUSVER:-v2.1.0}"
+          else
+            SUS_LABEL="NoSUSFS_Debug"
+          fi
+          ZIP="AK3_OP13_OOS16_android15-6.6.89_${SUKISU_PACKAGE_LABEL:-SukiSU}_${SUS_LABEL}_ADV_STABLE_${{ github.run_number }}.zip"
           (cd package_AK3 && zip -r9 "../out_artifacts/$ZIP" . -x '*.git*' -x '*README*' -x '*.md' >/dev/null)
           sha256sum out_artifacts/*.zip | tee out_artifacts/SHA256SUMS.txt
 
@@ -739,7 +823,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU WildBase Advanced Stable build"
+            echo "## OP13 SukiSU WildBase Advanced Stable v17 build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -747,6 +831,7 @@ jobs:
             echo "| Feature profile | ${{ inputs.feature_profile }} |"
             echo "| SukiSU channel | ${{ inputs.sukisu_channel }} |"
             echo "| SukiSU setup | ${SUKISU_SETUP_BRANCH:-unknown} / ${SUKISU_SETUP_ARG:-unknown} |"
+            echo "| SUSFS enabled | ${{ inputs.susfs }} |"
             echo "| SUSFS ref | ${{ inputs.susfs_commit }} |"
             echo "| Kernel release | ${KERNEL_RELEASE:-unknown} |"
             echo "| Expected stock UTS | $OP_EXPECTED_UTS |"
@@ -769,7 +854,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSU-WildBase-Advanced-Stable-${{ github.run_number }}
+          name: OP13-SukiSU-WildBase-Advanced-Stable-v17-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
