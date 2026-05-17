@@ -1236,20 +1236,59 @@ jobs:
           EOF
 
           AK3_ZIP="$GITHUB_WORKSPACE/out_artifacts/$ZIP"
+          export AK3_ZIP
           rm -f "$AK3_ZIP" "$AK3_ZIP.sha256" || true
-          echo "Creating AnyKernel3 zip: $AK3_ZIP"
-          (cd package_AK3 && zip -qr "$AK3_ZIP" . -x '*.git*' -x '*README*' -x '*.md')
+          rm -f package_AK3/*.zip package_AK3/*.sha256 || true
+          echo "Creating AnyKernel3 zip with deterministic Python packer: $AK3_ZIP"
+          python3 - <<'PYZIP'
+          import os
+          import zipfile
+          from pathlib import Path
+
+          src = Path('package_AK3').resolve()
+          dst = Path(os.environ['AK3_ZIP']).resolve()
+          dst.parent.mkdir(parents=True, exist_ok=True)
+
+          exclude_parts = {'.git', '.github'}
+          exclude_suffixes = {'.md', '.sha256'}
+          exclude_names = {'README', 'README.md', 'README.txt'}
+
+          with zipfile.ZipFile(dst, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+              for path in sorted(src.rglob('*')):
+                  rel = path.relative_to(src)
+                  if path.is_dir():
+                      continue
+                  if any(part in exclude_parts for part in rel.parts):
+                      continue
+                  if path.suffix.lower() in exclude_suffixes:
+                      continue
+                  if path.name in exclude_names:
+                      continue
+                  if path.suffix.lower() == '.zip':
+                      continue
+                  st = path.stat()
+                  info = zipfile.ZipInfo(str(rel).replace('\\', '/'))
+                  info.external_attr = (st.st_mode & 0xFFFF) << 16
+                  zf.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
+          PYZIP
           if [ ! -s "$AK3_ZIP" ]; then
             echo "::error::AnyKernel3 zip was not created or is empty: $AK3_ZIP"
             echo "out_artifacts contents:"
             find out_artifacts -maxdepth 3 -type f -printf '%p %s bytes\n' 2>/dev/null || true
             echo "package_AK3 contents:"
-            find package_AK3 -maxdepth 2 -type f | sed -n '1,120p' || true
+            find package_AK3 -maxdepth 2 -type f | sed -n '1,160p' || true
+            exit 1
+          fi
+          if unzip -l "$AK3_ZIP" | grep -qE '\.zip$'; then
+            echo "::error::Nested zip detected inside AnyKernel package; refusing artifact."
+            unzip -l "$AK3_ZIP" | grep -E '\.zip$' || true
             exit 1
           fi
           sha256sum "$AK3_ZIP" | tee "$AK3_ZIP.sha256" > out_artifacts/SHA256SUMS.txt
           echo "AnyKernel3 zip created successfully:"
           ls -lh "$AK3_ZIP" "$AK3_ZIP.sha256"
+          echo "AnyKernel3 zip preview:"
+          unzip -l "$AK3_ZIP" | sed -n '1,80p'
 
           if [ "${{ inputs.debug_artifacts }}" = "true" ]; then
             cp "$KERNEL_DIR/out/.config" out_artifacts/debug/final.config || true
@@ -1317,7 +1356,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v27 build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v28 build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -1385,7 +1424,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v27-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v28-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
