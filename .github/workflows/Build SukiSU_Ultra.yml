@@ -1235,8 +1235,21 @@ jobs:
           ====================================================
           EOF
 
-          (cd package_AK3 && zip -r9 "../out_artifacts/$ZIP" . -x '*.git*' -x '*README*' -x '*.md' >/dev/null)
-          sha256sum out_artifacts/*.zip | tee out_artifacts/SHA256SUMS.txt
+          AK3_ZIP="$GITHUB_WORKSPACE/out_artifacts/$ZIP"
+          rm -f "$AK3_ZIP" "$AK3_ZIP.sha256" || true
+          echo "Creating AnyKernel3 zip: $AK3_ZIP"
+          (cd package_AK3 && zip -qr "$AK3_ZIP" . -x '*.git*' -x '*README*' -x '*.md')
+          if [ ! -s "$AK3_ZIP" ]; then
+            echo "::error::AnyKernel3 zip was not created or is empty: $AK3_ZIP"
+            echo "out_artifacts contents:"
+            find out_artifacts -maxdepth 3 -type f -printf '%p %s bytes\n' 2>/dev/null || true
+            echo "package_AK3 contents:"
+            find package_AK3 -maxdepth 2 -type f | sed -n '1,120p' || true
+            exit 1
+          fi
+          sha256sum "$AK3_ZIP" | tee "$AK3_ZIP.sha256" > out_artifacts/SHA256SUMS.txt
+          echo "AnyKernel3 zip created successfully:"
+          ls -lh "$AK3_ZIP" "$AK3_ZIP.sha256"
 
           if [ "${{ inputs.debug_artifacts }}" = "true" ]; then
             cp "$KERNEL_DIR/out/.config" out_artifacts/debug/final.config || true
@@ -1296,6 +1309,7 @@ jobs:
           rm -f "$OUT_ZRAM" "$OUT_ZRAM.sha256" || true
           (cd "$WORK" && zip -qr "$OUT_ZRAM" .)
           sha256sum "$OUT_ZRAM" | tee "$OUT_ZRAM.sha256"
+          cat "$OUT_ZRAM.sha256" >> "$GITHUB_WORKSPACE/out_artifacts/SHA256SUMS.txt" 2>/dev/null || true
           echo "ZRAM_ZIP=$OUT_ZRAM" >> "$GITHUB_ENV"
 
       - name: "Build summary"
@@ -1303,7 +1317,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v26 build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v27 build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -1371,7 +1385,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v26-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v27-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
