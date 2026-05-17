@@ -609,57 +609,111 @@ jobs:
             echo "KSU_SUSFS Kconfig symbol already present before glue patch."
           fi
 
-          echo "Apply small SukiSU Ultra + CCTV18 compatibility repairs if needed."
+          echo "Apply SukiSU Ultra + CCTV18 compatibility repairs."
           python3 - <<'PY'
           from pathlib import Path
-          import re
-          # Some SukiSU Ultra revisions call susfs string helpers from adb_root.c without a visible prototype.
-          # CCTV18 susfs4oki provides SUSFS files, but SukiSU's include layout can vary by branch.
-          for p in [Path('drivers/kernelsu/feature/adb_root.c'), Path('KernelSU/kernel/feature/adb_root.c')]:
+          import re, sys
+
+          def patch_adb_root(p: Path):
               if not p.exists():
-                  continue
+                  return False
               s = p.read_text(encoding='utf-8', errors='replace')
-              if 'susfs_starts_with' in s or 'susfs_ends_with' in s:
-                  changed = False
-                  if '#include <linux/susfs.h>' not in s:
-                      # Put the include after the last initial include block when possible.
-                      lines = s.splitlines()
-                      idx = 0
-                      for i, line in enumerate(lines[:80]):
-                          if line.startswith('#include'):
-                              idx = i + 1
-                      lines.insert(idx, '#include <linux/types.h>')
-                      lines.insert(idx + 1, '#include <linux/susfs.h>')
-                      s = '\n'.join(lines) + ('\n' if s.endswith('\n') else '')
-                      changed = True
-                  # If the header still does not declare these helpers in some CCTV18/SukiSU combinations,
-                  # explicit extern prototypes avoid C99 implicit-function-declaration hard failures.
-                  if 'SUSFS_STRING_HELPER_PROTOTYPES_FOR_SUKISU' not in s:
-                      proto = ('\n#ifndef SUSFS_STRING_HELPER_PROTOTYPES_FOR_SUKISU\n'
-                               '#define SUSFS_STRING_HELPER_PROTOTYPES_FOR_SUKISU\n'
-                               'extern bool susfs_starts_with(const char *str, const char *prefix);\n'
-                               'extern bool susfs_ends_with(const char *str, const char *suffix);\n'
-                               '#endif\n')
-                      insert_at = s.find('\n', s.find('#include <linux/susfs.h>'))
-                      if insert_at != -1:
-                          s = s[:insert_at+1] + proto + s[insert_at+1:]
-                      else:
-                          s = proto + s
-                      changed = True
-                  if changed:
-                      p.write_text(s, encoding='utf-8')
-                      print(f'Patched SUSFS helper prototypes in {p}')
-          # Fix newer SukiSU sulog signature where ksu_sulog_capture expects struct user_arg_ptr *.
-          for p in [Path('drivers/kernelsu/sulog/event.c'), Path('KernelSU/kernel/sulog/event.c')]:
+              if 'susfs_starts_with' not in s and 'susfs_ends_with' not in s:
+                  return False
+              orig = s
+
+              # CCTV18's susfs.h does not currently declare these string helpers, and some SukiSU Ultra
+              # revisions call them from adb_root.c. Use local wrappers instead of extern declarations so
+              # the build does not later fail at link time if the global helpers are absent.
+              s = s.replace('susfs_starts_with(', 'ksu_susfs_starts_with(')
+              s = s.replace('susfs_ends_with(', 'ksu_susfs_ends_with(')
+
+              if 'static inline bool ksu_susfs_starts_with' not in s:
+                  lines = s.splitlines()
+                  idx = 0
+                  has_string = any(line.strip() == '#include <linux/string.h>' for line in lines[:100])
+                  for i, line in enumerate(lines[:100]):
+                      if line.startswith('#include'):
+                          idx = i + 1
+                  if not has_string:
+                      lines.insert(idx, '#include <linux/string.h>')
+                      idx += 1
+                  helpers = [
+                      '',
+                      'static inline bool ksu_susfs_starts_with(const char *str, const char *prefix)',
+                      '{',
+                      '\tsize_t len;',
+                      '',
+                      '\tif (!str || !prefix)',
+                      '\t\treturn false;',
+                      '\tlen = strlen(prefix);',
+                      '\treturn strncmp(str, prefix, len) == 0;',
+                      '}',
+                      '',
+                      'static inline bool ksu_susfs_ends_with(const char *str, const char *suffix)',
+                      '{',
+                      '\tsize_t str_len, suffix_len;',
+                      '',
+                      '\tif (!str || !suffix)',
+                      '\t\treturn false;',
+                      '\tstr_len = strlen(str);',
+                      '\tsuffix_len = strlen(suffix);',
+                      '\tif (suffix_len > str_len)',
+                      '\t\treturn false;',
+                      '\treturn strcmp(str + str_len - suffix_len, suffix) == 0;',
+                      '}',
+                      ''
+                  ]
+                  lines[idx:idx] = helpers
+                  s = '\n'.join(lines) + ('\n' if orig.endswith('\n') else '')
+
+              if s != orig:
+                  p.write_text(s, encoding='utf-8')
+                  print(f'Patched local SUSFS adb_root string helpers in {p}')
+              return True
+
+          def patch_sulog(p: Path):
               if not p.exists():
-                  continue
+                  return False
               s = p.read_text(encoding='utf-8', errors='replace')
-              ns = s.replace('KSU_SULOG_EVENT_IOCTL_GRANT_ROOT, NULL, USER_ARG_NULL, gfp)',
-                             'KSU_SULOG_EVENT_IOCTL_GRANT_ROOT, NULL, NULL, gfp)')
-              if ns != s:
-                  p.write_text(ns, encoding='utf-8')
+              orig = s
+              # Newer SukiSU sulog signature expects struct user_arg_ptr *. USER_ARG_NULL is a struct value,
+              # so replace it when used as the capture argv_user argument. This is intentionally broad
+              # inside sulog/event.c because USER_ARG_NULL is only for the null argv marker there.
+              s = re.sub(r',\s*USER_ARG_NULL\s*,\s*gfp\)', ', NULL, gfp)', s)
+              if s != orig:
+                  p.write_text(s, encoding='utf-8')
                   print(f'Patched USER_ARG_NULL pointer compatibility in {p}')
+              return s != orig
+
+          adb_paths = [Path('drivers/kernelsu/feature/adb_root.c'), Path('KernelSU/kernel/feature/adb_root.c')]
+          sulog_paths = [Path('drivers/kernelsu/sulog/event.c'), Path('KernelSU/kernel/sulog/event.c')]
+          patched_adb = any(patch_adb_root(p) for p in adb_paths)
+          patched_sulog = any(patch_sulog(p) for p in sulog_paths)
+
+          # Hard verification: do not let the compile stage fail again with the same preventable errors.
+          for p in adb_paths:
+              if p.exists():
+                  s = p.read_text(encoding='utf-8', errors='replace')
+                  if 'susfs_starts_with(' in s or 'susfs_ends_with(' in s:
+                      print(f'ERROR: unresolved susfs_starts_with/susfs_ends_with call remains in {p}', file=sys.stderr)
+                      sys.exit(1)
+                  if 'ksu_susfs_starts_with(' in s and 'static inline bool ksu_susfs_starts_with' not in s:
+                      print(f'ERROR: ksu_susfs_starts_with wrapper missing in {p}', file=sys.stderr)
+                      sys.exit(1)
+
+          for p in sulog_paths:
+              if p.exists():
+                  s = p.read_text(encoding='utf-8', errors='replace')
+                  if re.search(r',\s*USER_ARG_NULL\s*,\s*gfp\)', s):
+                      print(f'ERROR: USER_ARG_NULL capture argument remains in {p}', file=sys.stderr)
+                      sys.exit(1)
+
+          print(f'Compatibility repair summary: adb_root_patched={patched_adb}, sulog_patched={patched_sulog}')
           PY
+
+          echo "SukiSU/CCTV18 compatibility repair preview:"
+          grep -Rns 'ksu_susfs_starts_with\|ksu_susfs_ends_with\|KSU_SULOG_EVENT_IOCTL_GRANT_ROOT' drivers/kernelsu KernelSU 2>/dev/null | head -n 80 || true
 
           echo "Post-CCTV18 SUSFS symbol check:"
           grep -Rns 'KSU_SUSFS\|SUSFS_VERSION\|susfs_init\|susfs_starts_with\|susfs_ends_with' drivers KernelSU fs include 2>/dev/null | head -n 180 || true
@@ -944,7 +998,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v20 build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v21 build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -975,7 +1029,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v20-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v21-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
