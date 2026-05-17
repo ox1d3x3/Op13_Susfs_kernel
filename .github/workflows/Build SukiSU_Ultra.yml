@@ -857,6 +857,10 @@ jobs:
           fi
 
           cat >> "$DEFCONFIG" <<EOF
+          # Stock OP13 source/defconfig may already carry CONFIG_LOCALVERSION="-4k".
+          # We reset it here because LOCALVERSION env below supplies the full stock suffix.
+          # Without this, UTS_RELEASE becomes 6.6.89-4k-android15-...-4k and boot-safety validation fails.
+          CONFIG_LOCALVERSION=""
           CONFIG_LOCALVERSION_AUTO=n
           CONFIG_KSU=y
           CONFIG_TMPFS_XATTR=y
@@ -970,6 +974,11 @@ jobs:
 
           make -j"$(nproc)" "${MAKE_ARGS[@]}" gki_defconfig
 
+          # Enforce stock suffix correctly: clear CONFIG_LOCALVERSION and let the LOCALVERSION env
+          # provide OP_STOCK_LOCALVERSION exactly once. This avoids the duplicate -4k prefix.
+          ./scripts/config --file out/.config --set-str LOCALVERSION "" -d LOCALVERSION_AUTO || true
+          sed -i 's/^CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION=""/' out/.config || true
+
           # Enforce critical options after initial defconfig expansion.
           ./scripts/config --file out/.config -d LOCALVERSION_AUTO -e KSU -e TMPFS_XATTR -e TMPFS_POSIX_ACL || true
           if [ "${{ inputs.susfs }}" = "On" ]; then
@@ -1015,6 +1024,13 @@ jobs:
           fi
 
           make -j"$(nproc)" "${MAKE_ARGS[@]}" olddefconfig
+
+          # Hard stop before the expensive full compile if CONFIG_LOCALVERSION leaked from stock defconfig.
+          if grep -q '^CONFIG_LOCALVERSION="-4k"' out/.config; then
+            echo "::error::CONFIG_LOCALVERSION leaked as -4k. This would duplicate the OP13 stock suffix."
+            grep -n '^CONFIG_LOCALVERSION' out/.config || true
+            exit 1
+          fi
 
           echo "Final config highlights:"
           grep -nE 'CONFIG_LOCALVERSION|CONFIG_KSU|CONFIG_BBG|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_BBR|CONFIG_DEFAULT_CUBIC|CONFIG_DEFAULT_TCP_CONG|CONFIG_IP_SET|CONFIG_NETFILTER_XT|CONFIG_NTSYNC|CONFIG_LTO|CONFIG_MQ_IOSCHED_ADIOS|CONFIG_DROID|CONFIG_UNICODE|CONFIG_ZRAM|CONFIG_LZ4|CONFIG_CRYPTO_LZ4' out/.config || true
