@@ -36,11 +36,17 @@ on:
         required: true
         default: battery_daily
         options: [battery_daily, wild_daily, minimal_debug, experimental_max]
-      sukisu_ref:
-        description: "SukiSU-Ultra branch/ref for setup.sh"
+      sukisu_channel:
+        description: "SukiSU integration channel. main_latest uses the latest main/LKM integration script; builtin_latest keeps builtin available for comparison."
+        type: choice
+        required: true
+        default: main_latest
+        options: [main_latest, builtin_latest, custom_ref]
+      sukisu_custom_ref:
+        description: "Only used when sukisu_channel=custom_ref. Example: builtin, main, a commit hash, or a tag/ref that contains kernel/setup.sh."
         type: string
         required: false
-        default: builtin
+        default: ""
       susfs_commit:
         description: "SUSFS android15-6.6 ref/commit. Default mirrors WildKernels v2.1.0-r2 mapping."
         type: string
@@ -112,11 +118,21 @@ on:
         required: true
         default: thin
         options: [thin, none]
-      build_timestamp:
-        description: "Stock-like uname timestamp. Leave as default for PJZ110 current stock mimic."
+      BUILD_TIME:
+        description: "Custom uname/build time. Enter F to use current UTC time; enter stock string to mimic stock."
         type: string
         required: false
-        default: "Mon Dec  8 04:00:43 UTC 2025"
+        default: "F"
+      BUILD_USER:
+        description: "KBUILD_BUILD_USER"
+        type: string
+        required: false
+        default: "OnePlus"
+      BUILD_HOST:
+        description: "KBUILD_BUILD_HOST"
+        type: string
+        required: false
+        default: "ubuntu-build"
       clean_build:
         description: "Disable ccache and force a clean compile"
         type: boolean
@@ -139,7 +155,7 @@ concurrency:
 
 jobs:
   build:
-    name: "${{ github.event.inputs.feature_profile }} | SukiSU=${{ github.event.inputs.sukisu_ref }} | Wild SUSFS"
+    name: "${{ github.event.inputs.feature_profile }} | SukiSU=${{ github.event.inputs.sukisu_channel }} | Wild SUSFS"
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
@@ -332,17 +348,83 @@ jobs:
           find "$KP" -maxdepth 3 -type f \( -name Makefile -o -name Kconfig \) | head -n 100 || true
           exit 1
 
-      - name: "Integrate SukiSU Ultra builtin"
+      - name: "Resolve SukiSU channel and build identity"
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CHANNEL="${{ inputs.sukisu_channel }}"
+          CUSTOM_REF="${{ inputs.sukisu_custom_ref }}"
+          case "$CHANNEL" in
+            main_latest)
+              SETUP_BRANCH="main"
+              SETUP_ARG="main"
+              LABEL="SukiSU_main_latest"
+              ;;
+            builtin_latest)
+              # Official SukiSU docs use setup.sh from main and pass builtin as the integration mode.
+              SETUP_BRANCH="main"
+              SETUP_ARG="builtin"
+              LABEL="SukiSU_builtin_latest"
+              ;;
+            custom_ref)
+              [ -n "$CUSTOM_REF" ] || { echo "::error::sukisu_custom_ref is required when sukisu_channel=custom_ref"; exit 1; }
+              SETUP_BRANCH="$CUSTOM_REF"
+              SETUP_ARG="$CUSTOM_REF"
+              SAFE_REF="$(printf '%s' "$CUSTOM_REF" | tr -c 'A-Za-z0-9._-' '_' | sed 's/_\{2,\}/_/g')"
+              LABEL="SukiSU_${SAFE_REF}"
+              ;;
+            *)
+              echo "::error::Unknown sukisu_channel: $CHANNEL"
+              exit 1
+              ;;
+          esac
+          echo "SUKISU_SETUP_BRANCH=$SETUP_BRANCH" >> "$GITHUB_ENV"
+          echo "SUKISU_SETUP_ARG=$SETUP_ARG" >> "$GITHUB_ENV"
+          echo "SUKISU_PACKAGE_LABEL=$LABEL" >> "$GITHUB_ENV"
+
+          INPUT_TIME="${{ inputs.BUILD_TIME }}"
+          if [[ -n "$INPUT_TIME" && "$INPUT_TIME" != "F" && "$INPUT_TIME" != "f" ]]; then
+            DATESTR="$INPUT_TIME"
+          else
+            DATESTR="$(TZ='UTC' date +'%a %b %d %T %Z %Y')"
+          fi
+          echo "BUILD_TIME_RESOLVED=$DATESTR" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_TIMESTAMP=$DATESTR" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_USER=${{ inputs.BUILD_USER }}" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_HOST=${{ inputs.BUILD_HOST }}" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_VERSION=1" >> "$GITHUB_ENV"
+
+          echo "SukiSU channel      : $CHANNEL"
+          echo "SukiSU setup branch : $SETUP_BRANCH"
+          echo "SukiSU setup arg    : $SETUP_ARG"
+          echo "Build timestamp     : $DATESTR"
+          echo "Build user/host     : ${{ inputs.BUILD_USER }}@${{ inputs.BUILD_HOST }}"
+
+      - name: "Patch uname build identity"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
+          DATESTR="${BUILD_TIME_RESOLVED:?BUILD_TIME_RESOLVED missing}"
+          for f in common/scripts/mkcompile_h msm-kernel/scripts/mkcompile_h "$KERNEL_DIR/scripts/mkcompile_h"; do
+            [ -f "$f" ] || continue
+            echo "Patching $f for UTS_VERSION timestamp"
+            if grep -q 'UTS_VERSION=' "$f"; then
+              perl -pi -e "s{UTS_VERSION="\\\$\\\(.*?\\\)"}{UTS_VERSION="#1 SMP PREEMPT $DATESTR"}" "$f" || true
+              perl -pi -e "s{UTS_VERSION="#1 .*?"}{UTS_VERSION="#1 SMP PREEMPT $DATESTR"}" "$f" || true
+            fi
+          done
+
+      - name: "Integrate SukiSU Ultra selected channel"
         shell: bash
         run: |
           set -euo pipefail
           cd "$KERNEL_DIR"
-          REF="${{ inputs.sukisu_ref }}"
-          [ -n "$REF" ] || REF="builtin"
-          SETUP_URL="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${REF}/kernel/setup.sh"
+          SETUP_URL="https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SUKISU_SETUP_BRANCH}/kernel/setup.sh"
           echo "Fetching SukiSU setup.sh: $SETUP_URL"
-          echo "Running setup arg: $REF"
-          curl -fLSs "$SETUP_URL" | bash -s "$REF"
+          echo "Running setup arg: $SUKISU_SETUP_ARG"
+          curl -fLSs "$SETUP_URL" | bash -s "$SUKISU_SETUP_ARG"
 
           echo "SukiSU layout:"
           find . -maxdepth 5 \( -path '*KernelSU*' -o -path '*kernelsu*' \) -print | head -n 120 || true
@@ -538,7 +620,7 @@ jobs:
           set -euo pipefail
           cd "$KERNEL_DIR"
           export PATH="$CLANG_BIN:$PATH"
-          export KBUILD_BUILD_TIMESTAMP="${{ inputs.build_timestamp }}"
+          export KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-${BUILD_TIME_RESOLVED:-}}"
           export LOCALVERSION="$OP_STOCK_LOCALVERSION"
           MAKE_ARGS=(LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache $REAL_CLANG" LD="$REAL_LD_LLD" HOSTLD="$REAL_LD_LLD" O=out LOCALVERSION="$LOCALVERSION")
           if [ "${{ inputs.clean_build }}" = "true" ]; then
@@ -629,16 +711,18 @@ jobs:
           if [ -f package_AK3/anykernel.sh ]; then
             python3 - <<'PY'
           from pathlib import Path
+          import os
           import re
+          label = os.environ.get('SUKISU_PACKAGE_LABEL', 'SukiSU')
           p = Path('package_AK3/anykernel.sh')
           s = p.read_text(errors='replace')
-          s = re.sub(r'^\s*kernel\.string=.*$', 'kernel.string=OP13 OOS16 SukiSU builtin + Wild SUSFS Advanced Stable Daily', s, flags=re.M)
+          s = re.sub(r'^\s*kernel\.string=.*$', f'kernel.string=OP13 OOS16 {label} + Wild SUSFS Advanced Stable Daily', s, flags=re.M)
           if 'block=boot' not in s:
               s = s.replace('block=auto', 'block=boot') if 'block=auto' in s else s + '\nblock=boot\n'
           p.write_text(s)
           PY
           fi
-          ZIP="AK3_OP13_OOS16_android15-6.6.89_SukiSU_builtin_WildSuSFS_ADV_STABLE_${SUSVER:-v2.1.0}_${{ github.run_number }}.zip"
+          ZIP="AK3_OP13_OOS16_android15-6.6.89_${SUKISU_PACKAGE_LABEL:-SukiSU}_WildSuSFS_ADV_STABLE_${SUSVER:-v2.1.0}_${{ github.run_number }}.zip"
           (cd package_AK3 && zip -r9 "../out_artifacts/$ZIP" . -x '*.git*' -x '*README*' -x '*.md' >/dev/null)
           sha256sum out_artifacts/*.zip | tee out_artifacts/SHA256SUMS.txt
 
@@ -661,7 +745,8 @@ jobs:
             echo "|---|---|"
             echo "| Model | $OP_MODEL / $OP_SOC / $OP_OS_VERSION |"
             echo "| Feature profile | ${{ inputs.feature_profile }} |"
-            echo "| SukiSU ref | ${{ inputs.sukisu_ref }} |"
+            echo "| SukiSU channel | ${{ inputs.sukisu_channel }} |"
+            echo "| SukiSU setup | ${SUKISU_SETUP_BRANCH:-unknown} / ${SUKISU_SETUP_ARG:-unknown} |"
             echo "| SUSFS ref | ${{ inputs.susfs_commit }} |"
             echo "| Kernel release | ${KERNEL_RELEASE:-unknown} |"
             echo "| Expected stock UTS | $OP_EXPECTED_UTS |"
@@ -674,6 +759,9 @@ jobs:
             echo "| Droidspaces | ${{ inputs.droidspaces }} |"
             echo "| ADIOS | ${{ inputs.adios }} |"
             echo "| ZRAM/LZ4 support | ${{ inputs.zram_lz4_support }} |"
+            echo "| BUILD_TIME input | ${{ inputs.BUILD_TIME }} |"
+            echo "| Build timestamp resolved | ${BUILD_TIME_RESOLVED:-unknown} |"
+            echo "| Build user/host | ${{ inputs.BUILD_USER }}@${{ inputs.BUILD_HOST }} |"
           } >> "$GITHUB_STEP_SUMMARY"
           ccache -s || true
           df -hT || true
