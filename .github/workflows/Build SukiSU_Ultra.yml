@@ -519,9 +519,58 @@ jobs:
           else
             echo "Patch does not apply cleanly, retrying with fuzz=3."
             if ! patch -p1 -N --fuzz=3 < "$PATCH"; then
-              echo "::error::CCTV18 SUSFS main patch failed. Rejects:"
+              echo "CCTV18 SUSFS main patch did not fully apply. Checking if this is the known OP13/OOS16 task_mmu.c context drift."
               find . -name '*.rej' -print -exec sed -n '1,160p' {} \; || true
-              exit 1
+              mapfile -t REJECTS < <(find . -name '*.rej' -print | sort)
+              if [ "${#REJECTS[@]}" -eq 1 ] && [ "${REJECTS[0]}" = "./fs/proc/task_mmu.c.rej" ]; then
+                echo "Only fs/proc/task_mmu.c hunk failed. Applying controlled SUS_MAP compatibility patch manually."
+                python3 - <<'PYMANUAL'
+          from pathlib import Path
+          import re, sys
+
+          p = Path('fs/proc/task_mmu.c')
+          s = p.read_text(encoding='utf-8', errors='replace')
+          needle = 'SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))'
+          if needle in s:
+              print('task_mmu.c already contains SUSFS SUS_MAP guard; continuing.')
+              sys.exit(0)
+
+          pattern = re.compile(
+              r'(/\*\s*Case 4 above\s*\*/\s*\n)([ \t]*)if \(vma->vm_end > last_vma_end\)\s*\n([ \t]*)smap_gather_stats\(vma, &mss, last_vma_end\);',
+              re.M,
+          )
+          m = pattern.search(s)
+          if not m:
+              print('ERROR: Could not find show_smaps_rollup Case 4 smap_gather_stats pattern for manual SUS_MAP patch.', file=sys.stderr)
+              sys.exit(1)
+
+          indent_if = m.group(2)
+          indent_call = m.group(3)
+          replacement = (
+              m.group(1) +
+              f'{indent_if}if (vma->vm_end > last_vma_end) {{\n' +
+              f'{indent_call}#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n' +
+              f'{indent_call}if (!vma->vm_file || !(SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))) {{\n' +
+              f'{indent_call}\tsmap_gather_stats(vma, &mss, last_vma_end);\n' +
+              f'{indent_call}}}\n' +
+              f'{indent_call}#else\n' +
+              f'{indent_call}smap_gather_stats(vma, &mss, last_vma_end);\n' +
+              f'{indent_call}#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n' +
+              f'{indent_if}}}'
+          )
+
+          s2, n = pattern.subn(replacement, s, count=1)
+          if n != 1:
+              print(f'ERROR: Manual task_mmu patch replacement count was {n}, expected 1.', file=sys.stderr)
+              sys.exit(1)
+          p.write_text(s2, encoding='utf-8')
+          print('Applied manual SUSFS SUS_MAP guard to fs/proc/task_mmu.c')
+          PYMANUAL
+                rm -f ./fs/proc/task_mmu.c.rej
+              else
+                echo "::error::CCTV18 SUSFS main patch failed with unexpected rejects."
+                exit 1
+              fi
             fi
           fi
 
@@ -895,7 +944,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v19 build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v20 build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -926,7 +975,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v19-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v20-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
