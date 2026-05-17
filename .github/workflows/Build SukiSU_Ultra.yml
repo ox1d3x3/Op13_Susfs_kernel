@@ -31,7 +31,7 @@ on:
   workflow_dispatch:
     inputs:
       feature_profile:
-        description: "Preset: battery_daily = safest battery/stability defaults, advanced_daily = more feature-rich daily preset, minimal_debug = root+susfs only, experimental_max = all extras"
+        description: "Preset: battery_daily = stable/battery daily defaults, advanced_daily = battery_daily + advanced extras, minimal_debug = root+susfs only, experimental_max = all extras"
         type: choice
         required: true
         default: battery_daily
@@ -95,25 +95,31 @@ on:
         default: "On"
         options: ["On", "Off"]
       droidspaces:
-        description: "Enable Droidspaces/container support if supported. Off by default for battery_daily."
+        description: "Advanced extra: Droidspaces/container support if supported. Off in battery_daily; profile advanced_daily forces it On."
         type: choice
         required: true
         default: "Off"
         options: ["On", "Off"]
       adios:
-        description: "Enable ADIOS I/O scheduler only if the synced kernel tree already has the symbol. Off by default for stability."
+        description: "Enable ADIOS I/O scheduler if supported. Default On from v26; compiled successfully in the working v24 baseline."
         type: choice
         required: true
-        default: "Off"
+        default: "On"
         options: ["On", "Off"]
       zram_lz4_support:
-        description: "Enable LZ4/ZRAM support only. Does not package/replace zram.ko."
+        description: "Enable LZ4/ZRAM support. If zram_module is On, ZRAM/ZSMALLOC are built as modules for the flashable zram zip."
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+      zram_module:
+        description: "Build flashable zram-module.zip by replacing zram.ko in the known-good template. Default On, matching your older workflow."
         type: choice
         required: true
         default: "On"
         options: ["On", "Off"]
       hmbird:
-        description: "Enable HMBIRD/Fengchi only for experimental scheduler testing. Off is safer for daily driver."
+        description: "Advanced scheduler extra: HMBIRD/Fengchi if supported. Off in battery_daily; profile advanced_daily can force it On for testing."
         type: choice
         required: true
         default: "Off"
@@ -842,18 +848,20 @@ jobs:
           DS_IN="${{ inputs.droidspaces }}"
           ADIOS_IN="${{ inputs.adios }}"
           ZRAM_LZ4_IN="${{ inputs.zram_lz4_support }}"
+          ZRAM_MODULE_IN="${{ inputs.zram_module }}"
           HMBIRD_IN="${{ inputs.hmbird }}"
           SUSFS_IN="${{ inputs.susfs }}"
 
           # Safety presets. Defaults are intentionally conservative for SukiSU Ultra + CCTV18 SUSFS on OP13.
           if [ "$PROFILE" = "minimal_debug" ]; then
-            BBR_IN="Off"; BBG_IN="Off"; TTL_IPSET_IN="Off"; NTSYNC_IN="Off"; UNICODE_IN="Off"; DS_IN="Off"; ADIOS_IN="Off"; ZRAM_LZ4_IN="Off"; HMBIRD_IN="Off"
+            BBR_IN="Off"; BBG_IN="Off"; TTL_IPSET_IN="Off"; NTSYNC_IN="Off"; UNICODE_IN="Off"; DS_IN="Off"; ADIOS_IN="Off"; ZRAM_LZ4_IN="Off"; ZRAM_MODULE_IN="Off"; HMBIRD_IN="Off"
           elif [ "$PROFILE" = "advanced_daily" ]; then
-            # More feature-rich daily preset while still allowing explicit inputs to disable items.
-            [ "${{ inputs.hmbird }}" = "On" ] && HMBIRD_IN="On" || true
-            [ "${{ inputs.droidspaces }}" = "On" ] && DS_IN="On" || true
+            # Advanced daily intentionally adds the optional extras that battery_daily avoids.
+            # You can still turn these Off from the menu if you want a lighter build.
+            DS_IN="On"
+            HMBIRD_IN="On"
           elif [ "$PROFILE" = "experimental_max" ]; then
-            BBR_IN="On"; BBG_IN="On"; TTL_IPSET_IN="On"; NTSYNC_IN="On"; UNICODE_IN="On"; DS_IN="On"; ADIOS_IN="On"; ZRAM_LZ4_IN="On"; HMBIRD_IN="On"
+            BBR_IN="On"; BBG_IN="On"; TTL_IPSET_IN="On"; NTSYNC_IN="On"; UNICODE_IN="On"; DS_IN="On"; ADIOS_IN="On"; ZRAM_LZ4_IN="On"; ZRAM_MODULE_IN="On"; HMBIRD_IN="On"
           fi
 
           cat >> "$DEFCONFIG" <<EOF
@@ -886,8 +894,21 @@ jobs:
           EOF
           fi
 
-          if [ "$ZRAM_LZ4_IN" = "On" ]; then
-            cat >> "$DEFCONFIG" <<'EOF'
+          if [ "$ZRAM_LZ4_IN" = "On" ] || [ "$ZRAM_MODULE_IN" = "On" ]; then
+            if [ "$ZRAM_MODULE_IN" = "On" ]; then
+              cat >> "$DEFCONFIG" <<'EOF'
+          CONFIG_ZRAM=m
+          CONFIG_ZSMALLOC=m
+          CONFIG_ZRAM_DEF_COMP_LZ4=y
+          # CONFIG_ZRAM_DEF_COMP_LZORLE is not set
+          CONFIG_ZRAM_DEF_COMP="lz4"
+          CONFIG_LZ4_COMPRESS=y
+          CONFIG_LZ4_DECOMPRESS=y
+          CONFIG_CRYPTO_LZ4=y
+          CONFIG_CRYPTO_LZ4HC=y
+          EOF
+            else
+              cat >> "$DEFCONFIG" <<'EOF'
           CONFIG_ZRAM=y
           CONFIG_ZSMALLOC=y
           CONFIG_LZ4_COMPRESS=y
@@ -895,6 +916,7 @@ jobs:
           CONFIG_CRYPTO_LZ4=y
           CONFIG_CRYPTO_LZ4HC=y
           EOF
+            fi
           fi
           if [ "$BBR_IN" = "On" ]; then
             cat >> "$DEFCONFIG" <<'EOF'
@@ -1001,8 +1023,13 @@ jobs:
           fi
 
           if [ "${{ inputs.feature_profile }}" != "minimal_debug" ]; then
-            if [ "${{ inputs.zram_lz4_support }}" = "On" ]; then
-              ./scripts/config --file out/.config -e ZRAM -e ZSMALLOC -e LZ4_COMPRESS -e LZ4_DECOMPRESS -e CRYPTO_LZ4 -e CRYPTO_LZ4HC || true
+            if [ "${{ inputs.zram_lz4_support }}" = "On" ] || [ "${{ inputs.zram_module }}" = "On" ]; then
+              if [ "${{ inputs.zram_module }}" = "On" ]; then
+                ./scripts/config --file out/.config -m ZRAM -m ZSMALLOC -e ZRAM_DEF_COMP_LZ4 -d ZRAM_DEF_COMP_LZORLE --set-str ZRAM_DEF_COMP lz4 \
+                  -e LZ4_COMPRESS -e LZ4_DECOMPRESS -e CRYPTO_LZ4 -e CRYPTO_LZ4HC || true
+              else
+                ./scripts/config --file out/.config -e ZRAM -e ZSMALLOC -e LZ4_COMPRESS -e LZ4_DECOMPRESS -e CRYPTO_LZ4 -e CRYPTO_LZ4HC || true
+              fi
             fi
             if [ "${{ inputs.bbr }}" = "On" ]; then
               ./scripts/config --file out/.config -e TCP_CONG_BBR -e DEFAULT_BBR -d DEFAULT_CUBIC --set-str DEFAULT_TCP_CONG bbr || true
@@ -1033,7 +1060,7 @@ jobs:
           fi
 
           echo "Final config highlights:"
-          grep -nE 'CONFIG_LOCALVERSION|CONFIG_KSU|CONFIG_BBG|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_BBR|CONFIG_DEFAULT_CUBIC|CONFIG_DEFAULT_TCP_CONG|CONFIG_IP_SET|CONFIG_NETFILTER_XT|CONFIG_NTSYNC|CONFIG_LTO|CONFIG_MQ_IOSCHED_ADIOS|CONFIG_DROID|CONFIG_UNICODE|CONFIG_ZRAM|CONFIG_LZ4|CONFIG_CRYPTO_LZ4' out/.config || true
+          grep -nE 'CONFIG_LOCALVERSION|CONFIG_KSU|CONFIG_BBG|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_BBR|CONFIG_DEFAULT_CUBIC|CONFIG_DEFAULT_TCP_CONG|CONFIG_IP_SET|CONFIG_NETFILTER_XT|CONFIG_NTSYNC|CONFIG_LTO|CONFIG_MQ_IOSCHED_ADIOS|CONFIG_DROID|CONFIG_UNICODE|CONFIG_ZRAM|CONFIG_ZSMALLOC|CONFIG_LZ4|CONFIG_CRYPTO_LZ4' out/.config || true
 
           if ! grep -q '^CONFIG_KSU=y' out/.config; then echo "::error::CONFIG_KSU=y missing"; exit 1; fi
           if [ "${{ inputs.susfs }}" = "On" ]; then
@@ -1129,8 +1156,9 @@ jobs:
           - battery_daily profile
           - SukiSU Ultra builtin_latest
           - CCTV18 SUSFS On
-          - BBR/BBG/TTL_IP_SET/NTSYNC/Unicode/ZRAM-LZ4 On
-          - HMBIRD/Droidspaces Off
+          - BBR/BBG/ADIOS/TTL_IP_SET/NTSYNC/Unicode/ZRAM-LZ4 On
+          - zram-module.zip On if you want the flashable replacement zip
+          - HMBIRD/Droidspaces Off for battery_daily
           EOF
           cp package_AK3/INSTALL_INFO.txt out_artifacts/INSTALL_INFO.txt
 
@@ -1218,12 +1246,64 @@ jobs:
             find "$KERNEL_DIR" -name '*.rej' -print -exec sed -n '1,180p' {} \; > out_artifacts/debug/patch_rejects.txt || true
           fi
 
+      - name: "Build flashable ZRAM module zip"
+        if: ${{ inputs.zram_module == 'On' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p out_artifacts
+          ZRAM_KO="$(find "$KERNEL_DIR/out" "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -type f -name "zram.ko" 2>/dev/null | head -n 1 || true)"
+          if [ -z "$ZRAM_KO" ] || [ ! -f "$ZRAM_KO" ]; then
+            echo "::error::zram_module=On but zram.ko was not found. Check final config for CONFIG_ZRAM=m and CONFIG_ZSMALLOC=m."
+            grep -E '^CONFIG_ZRAM=|^CONFIG_ZSMALLOC=|^CONFIG_ZRAM_DEF_COMP' "$KERNEL_DIR/out/.config" || true
+            find "$KERNEL_DIR/out" -type f -name "*zram*" -print | head -n 50 || true
+            exit 1
+          fi
+
+          echo "Using freshly built zram.ko: $ZRAM_KO"
+          TMP_ZIP="$RUNNER_TEMP/zram_template.zip"
+          rm -f "$TMP_ZIP" || true
+          URLS=(
+            "https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/refs/heads/main/zram.zip"
+            "https://cdn.jsdelivr.net/gh/cctv18/oppo_oplus_realme_sm8750@main/zram.zip"
+          )
+          ok=0
+          for u in "${URLS[@]}"; do
+            echo "Fetching zram template: $u"
+            if curl -fL --retry 3 --retry-delay 2 "$u" -o "$TMP_ZIP"; then
+              ok=1
+              break
+            fi
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::Failed to download zram.zip template from all mirrors."
+            exit 1
+          fi
+
+          WORK="$RUNNER_TEMP/zram_mod"
+          rm -rf "$WORK" || true
+          mkdir -p "$WORK"
+          unzip -q "$TMP_ZIP" -d "$WORK"
+          if ! find "$WORK" -name "zram.ko" -print -quit | grep -q .; then
+            echo "::error::Template zip does not contain zram.ko placeholder."
+            find "$WORK" -maxdepth 5 -type f | sed -n '1,120p'
+            exit 1
+          fi
+          find "$WORK" -name "zram.ko" -print -exec cp "$ZRAM_KO" {} \;
+
+          OUT_ZRAM="$GITHUB_WORKSPACE/out_artifacts/zram-module.zip"
+          rm -f "$OUT_ZRAM" "$OUT_ZRAM.sha256" || true
+          (cd "$WORK" && zip -qr "$OUT_ZRAM" .)
+          sha256sum "$OUT_ZRAM" | tee "$OUT_ZRAM.sha256"
+          echo "ZRAM_ZIP=$OUT_ZRAM" >> "$GITHUB_ENV"
+
       - name: "Build summary"
         if: always()
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v25 build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v26 build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -1244,6 +1324,7 @@ jobs:
             echo "| Droidspaces | ${{ inputs.droidspaces }} |"
             echo "| ADIOS | ${{ inputs.adios }} |"
             echo "| ZRAM/LZ4 support | ${{ inputs.zram_lz4_support }} |"
+            echo "| Flashable zram-module.zip | ${{ inputs.zram_module }} |"
             echo "| BUILD_TIME input | ${{ inputs.BUILD_TIME }} |"
             echo "| Build timestamp resolved | ${BUILD_TIME_RESOLVED:-unknown} |"
             echo "| Build user/host | ${{ inputs.BUILD_USER }}@${{ inputs.BUILD_HOST }} |"
@@ -1254,22 +1335,35 @@ jobs:
             echo "- Keep a matching stock `boot.img` for the active slot before flashing."
             echo "- If the device bootloops, restore stock `boot.img` first, then collect logs from recovery."
             echo ""
+            echo "### Profile difference: battery_daily vs advanced_daily"
+            echo ""
+            echo "| Feature | battery_daily | advanced_daily | Notes |"
+            echo "|---|---:|---:|---|"
+            echo "| SukiSU Ultra + CCTV18 SUSFS | On | On | Same root/SUSFS base. |"
+            echo "| ADIOS | On | On | Default On from v26. |"
+            echo "| BBR / BBG / TTL_IP_SET / NTSYNC / Unicode | On | On | Same stable daily features. |"
+            echo "| ZRAM/LZ4 + zram-module.zip | On | On | Same ZRAM support and flashable module package. |"
+            echo "| Droidspaces | Off | On | This is the main feature missing from battery_daily. |"
+            echo "| HMBIRD/Fengchi | Off | On | Advanced scheduler testing path, not the safest battery default. |"
+            echo "| Intended use | Daily battery/stability | Feature-rich testing | Start with battery_daily for OP13 CN. |"
+            echo ""
             echo "### Recommended proven daily defaults for OP13 CN/PJZ110"
             echo ""
             echo "| Option | Recommended | Why |"
             echo "|---|---:|---|"
             echo "| feature_profile | battery_daily | Safest profile that already built successfully. |"
-            echo "| sukisu_channel | builtin_latest | This is the channel that compiled cleanly in the successful v24 run. |"
+            echo "| sukisu_channel | builtin_latest | This is the channel that compiled cleanly in the successful v24/v26 baseline. |"
             echo "| susfs | On | Target feature; CCTV18 susfs4oki is now compiling. |"
             echo "| bbr | On | Reasonable network default, low risk. |"
             echo "| bbg | On | Keep enabled because the current successful build used it. |"
             echo "| ttl_ipset | On | Useful advanced netfilter support; current build passed with it. |"
             echo "| ntsync | On | Low-risk modern compatibility feature if present in tree. |"
             echo "| unicode_fix | On | Keep enabled because current build passed with it. |"
-            echo "| zram_lz4_support | On | Support only, not a forced zram.ko replacement. |"
-            echo "| adios | On only if your v24 boot test is stable | It compiled, but verify real battery/idle drain before calling it proven. |"
-            echo "| hmbird | Off | Scheduler changes can affect idle drain and stability. |"
-            echo "| droidspaces | Off | Extra container feature, not needed for daily battery profile. |"
+            echo "| zram_lz4_support | On | Enables LZ4/ZRAM support. |"
+            echo "| zram_module | On | Builds flashable zram-module.zip like your older workflow by replacing zram.ko in the template. |"
+            echo "| adios | On | Default On from v26 because your successful compile used it and it is useful for responsiveness. Monitor idle drain. |"
+            echo "| hmbird | Off for battery_daily | Advanced scheduler path; use advanced_daily only after battery_daily is proven on-device. |"
+            echo "| droidspaces | Off for battery_daily | Extra container feature; advanced_daily turns it On. |"
           } >> "$GITHUB_STEP_SUMMARY"
           ccache -s || true
           df -hT || true
@@ -1277,7 +1371,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v25-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v26-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
