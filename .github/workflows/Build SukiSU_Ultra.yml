@@ -1052,8 +1052,15 @@ jobs:
             exit 1
           fi
 
-          IMAGE="$(find out -type f -path '*/arch/arm64/boot/Image' -o -type f -name Image | head -n 1 || true)"
-          [ -n "$IMAGE" ] && [ -f "$IMAGE" ] || { echo "::error::Kernel Image not found"; find out -type f -name 'Image*' | head -n 50 || true; exit 1; }
+          # Resolve the built Image to an absolute path before leaving $KERNEL_DIR.
+          # The packaging step runs from $GITHUB_WORKSPACE, so a relative value like
+          # out/arch/arm64/boot/Image points to the wrong directory and breaks AnyKernel packaging.
+          IMAGE="$(find "$KERNEL_DIR/out" -type f -path '*/arch/arm64/boot/Image' -print -quit 2>/dev/null || true)"
+          if [ -z "$IMAGE" ]; then
+            IMAGE="$(find "$KERNEL_DIR/out" -type f -name Image -print -quit 2>/dev/null || true)"
+          fi
+          [ -n "$IMAGE" ] && [ -f "$IMAGE" ] || { echo "::error::Kernel Image not found under $KERNEL_DIR/out"; find "$KERNEL_DIR/out" -type f \( -name 'Image*' -o -name 'vmlinux' \) | head -n 80 || true; exit 1; }
+          IMAGE="$(realpath "$IMAGE")"
           echo "KERNEL_IMAGE=$IMAGE" >> "$GITHUB_ENV"
           echo "Image: $IMAGE"
           strings "$IMAGE" | grep -m1 -E 'Linux version|Android clang|Ubuntu clang|clang version' || true
@@ -1075,6 +1082,15 @@ jobs:
             git clone --depth=1 -b gki-2.0 https://github.com/TheWildJames/AnyKernel3.git package_AK3
           fi
           rm -rf package_AK3/.git
+          if [ -z "${KERNEL_IMAGE:-}" ] || [ ! -f "$KERNEL_IMAGE" ]; then
+            echo "KERNEL_IMAGE env was missing or invalid: ${KERNEL_IMAGE:-<empty>}"
+            echo "Searching fallback locations under $KERNEL_DIR/out..."
+            KERNEL_IMAGE="$(find "$KERNEL_DIR/out" -type f -path '*/arch/arm64/boot/Image' -print -quit 2>/dev/null || true)"
+            [ -n "$KERNEL_IMAGE" ] || KERNEL_IMAGE="$(find "$KERNEL_DIR/out" -type f -name Image -print -quit 2>/dev/null || true)"
+            [ -n "$KERNEL_IMAGE" ] && [ -f "$KERNEL_IMAGE" ] || { echo "::error::Cannot locate kernel Image for AnyKernel3 packaging"; find "$KERNEL_DIR/out" -type f \( -name 'Image*' -o -name 'vmlinux' \) | head -n 80 || true; exit 1; }
+            KERNEL_IMAGE="$(realpath "$KERNEL_IMAGE")"
+          fi
+          echo "Packaging Image: $KERNEL_IMAGE"
           cp "$KERNEL_IMAGE" package_AK3/Image
           if [ -f package_AK3/anykernel.sh ]; then
             python3 - <<'PY'
@@ -1113,7 +1129,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v21 build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v24 build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
