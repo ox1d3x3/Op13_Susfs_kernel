@@ -31,11 +31,11 @@ on:
   workflow_dispatch:
     inputs:
       feature_profile:
-        description: "Preset: battery_daily = stable/battery default, wild_daily = closer to Wild features, minimal_debug = root+susfs only"
+        description: "Preset: battery_daily = safest battery/stability defaults, wild_daily = closer to Wild release, minimal_debug = root+susfs only, experimental_max = all extras"
         type: choice
         required: true
         default: battery_daily
-        options: [battery_daily, wild_daily, minimal_debug]
+        options: [battery_daily, wild_daily, minimal_debug, experimental_max]
       sukisu_ref:
         description: "SukiSU-Ultra branch/ref for setup.sh"
         type: string
@@ -72,6 +72,30 @@ on:
         options: ["On", "Off"]
       ntsync:
         description: "Enable NTSYNC if supported by tree"
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+      unicode_fix:
+        description: "Enable Unicode path-hardening symbols if supported. Wild includes this, but it is marked experimental upstream."
+        type: choice
+        required: true
+        default: "On"
+        options: ["On", "Off"]
+      droidspaces:
+        description: "Enable Droidspaces/container support if supported. Off by default for battery_daily."
+        type: choice
+        required: true
+        default: "Off"
+        options: ["On", "Off"]
+      adios:
+        description: "Enable ADIOS I/O scheduler only if the synced kernel tree already has the symbol. Off by default for stability."
+        type: choice
+        required: true
+        default: "Off"
+        options: ["On", "Off"]
+      zram_lz4_support:
+        description: "Enable LZ4/ZRAM support only. Does not package/replace zram.ko."
         type: choice
         required: true
         default: "On"
@@ -403,11 +427,21 @@ jobs:
           BBG_IN="${{ inputs.bbg }}"
           TTL_IPSET_IN="${{ inputs.ttl_ipset }}"
           NTSYNC_IN="${{ inputs.ntsync }}"
+          UNICODE_IN="${{ inputs.unicode_fix }}"
+          DS_IN="${{ inputs.droidspaces }}"
+          ADIOS_IN="${{ inputs.adios }}"
+          ZRAM_LZ4_IN="${{ inputs.zram_lz4_support }}"
           HMBIRD_IN="${{ inputs.hmbird }}"
+
+          # Safety presets. Defaults are intentionally conservative for SukiSU-on-WildBase.
           if [ "$PROFILE" = "minimal_debug" ]; then
-            BBR_IN="Off"; BBG_IN="Off"; TTL_IPSET_IN="Off"; NTSYNC_IN="Off"; HMBIRD_IN="Off"
+            BBR_IN="Off"; BBG_IN="Off"; TTL_IPSET_IN="Off"; NTSYNC_IN="Off"; UNICODE_IN="Off"; DS_IN="Off"; ADIOS_IN="Off"; ZRAM_LZ4_IN="Off"; HMBIRD_IN="Off"
           elif [ "$PROFILE" = "wild_daily" ]; then
-            HMBIRD_IN="On"
+            # Mirrors the working Wild feature list more closely, but still lets explicit inputs disable items.
+            [ "${{ inputs.hmbird }}" = "On" ] && HMBIRD_IN="On" || true
+            [ "${{ inputs.droidspaces }}" = "On" ] && DS_IN="On" || true
+          elif [ "$PROFILE" = "experimental_max" ]; then
+            BBR_IN="On"; BBG_IN="On"; TTL_IPSET_IN="On"; NTSYNC_IN="On"; UNICODE_IN="On"; DS_IN="On"; ADIOS_IN="On"; ZRAM_LZ4_IN="On"; HMBIRD_IN="On"
           fi
 
           cat >> "$DEFCONFIG" <<EOF
@@ -427,6 +461,16 @@ jobs:
           CONFIG_TMPFS_POSIX_ACL=y
           EOF
 
+          if [ "$ZRAM_LZ4_IN" = "On" ]; then
+            cat >> "$DEFCONFIG" <<'EOF'
+          CONFIG_ZRAM=y
+          CONFIG_ZSMALLOC=y
+          CONFIG_LZ4_COMPRESS=y
+          CONFIG_LZ4_DECOMPRESS=y
+          CONFIG_CRYPTO_LZ4=y
+          CONFIG_CRYPTO_LZ4HC=y
+          EOF
+          fi
           if [ "$BBR_IN" = "On" ]; then
             cat >> "$DEFCONFIG" <<'EOF'
           CONFIG_TCP_CONG_BBR=y
@@ -445,8 +489,26 @@ jobs:
           CONFIG_NF_NAT_IPV6=y
           EOF
           fi
+          if [ "$ADIOS_IN" = "On" ]; then
+            cat >> "$DEFCONFIG" <<'EOF'
+          CONFIG_MQ_IOSCHED_ADIOS=y
+          CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y
+          EOF
+          fi
           if [ "$NTSYNC_IN" = "On" ]; then
             echo "CONFIG_NTSYNC=y" >> "$DEFCONFIG"
+          fi
+          if [ "$UNICODE_IN" = "On" ]; then
+            cat >> "$DEFCONFIG" <<'EOF'
+          CONFIG_UNICODE=y
+          CONFIG_UNICODE_UTF8_DATA=y
+          EOF
+          fi
+          if [ "$DS_IN" = "On" ]; then
+            cat >> "$DEFCONFIG" <<'EOF'
+          CONFIG_DROIDSPACE=y
+          CONFIG_DROIDSPACES=y
+          EOF
           fi
           if [ "$BBG_IN" = "On" ]; then
             echo "CONFIG_BBG=y" >> "$DEFCONFIG"
@@ -500,6 +562,9 @@ jobs:
           fi
 
           if [ "${{ inputs.feature_profile }}" != "minimal_debug" ]; then
+            if [ "${{ inputs.zram_lz4_support }}" = "On" ]; then
+              ./scripts/config --file out/.config -e ZRAM -e ZSMALLOC -e LZ4_COMPRESS -e LZ4_DECOMPRESS -e CRYPTO_LZ4 -e CRYPTO_LZ4HC || true
+            fi
             if [ "${{ inputs.bbr }}" = "On" ]; then
               ./scripts/config --file out/.config -e TCP_CONG_BBR --set-str DEFAULT_TCP_CONG bbr || true
             fi
@@ -507,7 +572,13 @@ jobs:
               ./scripts/config --file out/.config -e NETFILTER_XT_TARGET_TTL -e NETFILTER_XT_MATCH_TTL -e IP_SET -e IP_SET_HASH_IP -e IP_SET_HASH_IPPORT -e IP_SET_HASH_NETPORTNET -e NF_NAT_IPV6 || true
             fi
             [ "${{ inputs.ntsync }}" = "On" ] && ./scripts/config --file out/.config -e NTSYNC || true
+            [ "${{ inputs.unicode_fix }}" = "On" ] && ./scripts/config --file out/.config -e UNICODE -e UNICODE_UTF8_DATA || true
+            [ "${{ inputs.droidspaces }}" = "On" ] && ./scripts/config --file out/.config -e DROIDSPACE -e DROIDSPACES || true
             [ "${{ inputs.bbg }}" = "On" ] && ./scripts/config --file out/.config -e BBG || true
+            [ "${{ inputs.adios }}" = "On" ] && ./scripts/config --file out/.config -e MQ_IOSCHED_ADIOS -e MQ_IOSCHED_DEFAULT_ADIOS || true
+          fi
+          if [ "${{ inputs.feature_profile }}" = "experimental_max" ]; then
+            ./scripts/config --file out/.config -e MQ_IOSCHED_ADIOS -e MQ_IOSCHED_DEFAULT_ADIOS -e DROIDSPACE -e DROIDSPACES || true
           fi
           if [ "${{ inputs.lto }}" = "thin" ]; then
             ./scripts/config --file out/.config -e LTO_CLANG -e LTO_CLANG_THIN -d LTO_CLANG_FULL || true
@@ -516,7 +587,7 @@ jobs:
           make -j"$(nproc)" "${MAKE_ARGS[@]}" olddefconfig
 
           echo "Final config highlights:"
-          grep -nE 'CONFIG_LOCALVERSION|CONFIG_KSU|CONFIG_BBG|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_TCP_CONG|CONFIG_IP_SET|CONFIG_NETFILTER_XT|CONFIG_NTSYNC|CONFIG_LTO' out/.config || true
+          grep -nE 'CONFIG_LOCALVERSION|CONFIG_KSU|CONFIG_BBG|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_TCP_CONG|CONFIG_IP_SET|CONFIG_NETFILTER_XT|CONFIG_NTSYNC|CONFIG_LTO|CONFIG_MQ_IOSCHED_ADIOS|CONFIG_DROID|CONFIG_UNICODE|CONFIG_ZRAM|CONFIG_LZ4|CONFIG_CRYPTO_LZ4' out/.config || true
 
           if ! grep -q '^CONFIG_KSU=y' out/.config; then echo "::error::CONFIG_KSU=y missing"; exit 1; fi
           if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then echo "::error::CONFIG_KSU_SUSFS=y missing"; exit 1; fi
@@ -561,13 +632,13 @@ jobs:
           import re
           p = Path('package_AK3/anykernel.sh')
           s = p.read_text(errors='replace')
-          s = re.sub(r'^\s*kernel\.string=.*$', 'kernel.string=OP13 OOS16 SukiSU builtin + Wild SUSFS stable daily', s, flags=re.M)
+          s = re.sub(r'^\s*kernel\.string=.*$', 'kernel.string=OP13 OOS16 SukiSU builtin + Wild SUSFS Advanced Stable Daily', s, flags=re.M)
           if 'block=boot' not in s:
               s = s.replace('block=auto', 'block=boot') if 'block=auto' in s else s + '\nblock=boot\n'
           p.write_text(s)
           PY
           fi
-          ZIP="AK3_OP13_OOS16_android15-6.6.89_SukiSU_builtin_WildSuSFS_${SUSVER:-v2.1.0}_${{ github.run_number }}.zip"
+          ZIP="AK3_OP13_OOS16_android15-6.6.89_SukiSU_builtin_WildSuSFS_ADV_STABLE_${SUSVER:-v2.1.0}_${{ github.run_number }}.zip"
           (cd package_AK3 && zip -r9 "../out_artifacts/$ZIP" . -x '*.git*' -x '*README*' -x '*.md' >/dev/null)
           sha256sum out_artifacts/*.zip | tee out_artifacts/SHA256SUMS.txt
 
@@ -584,7 +655,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU WildBase build"
+            echo "## OP13 SukiSU WildBase Advanced Stable build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -599,6 +670,10 @@ jobs:
             echo "| BBG | ${{ inputs.bbg }} |"
             echo "| TTL/IP_SET | ${{ inputs.ttl_ipset }} |"
             echo "| NTSYNC | ${{ inputs.ntsync }} |"
+            echo "| Unicode fix | ${{ inputs.unicode_fix }} |"
+            echo "| Droidspaces | ${{ inputs.droidspaces }} |"
+            echo "| ADIOS | ${{ inputs.adios }} |"
+            echo "| ZRAM/LZ4 support | ${{ inputs.zram_lz4_support }} |"
           } >> "$GITHUB_STEP_SUMMARY"
           ccache -s || true
           df -hT || true
@@ -606,7 +681,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSU-WildBase-Stable-${{ github.run_number }}
+          name: OP13-SukiSU-WildBase-Advanced-Stable-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
