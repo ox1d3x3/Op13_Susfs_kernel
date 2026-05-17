@@ -9,10 +9,10 @@ env:
   OP_OS_VERSION: OOS16
   OP_EXPECTED_UTS: "6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k"
   OP_STOCK_LOCALVERSION: "-android15-8-g7e1f3c083cc6-abogki467167594-4k"
-  WILD_MANIFEST_REPO: "https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git"
-  WILD_MANIFEST_BRANCH: "main"
-  WILD_MANIFEST_FILE: "manifests/oos16/oneplus_13_w.xml"
-  WILD_CLANG_REL: "kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin"
+  OP13_MANIFEST_REPO: "https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git"  # source manifest repo
+  OP13_MANIFEST_BRANCH: "main"
+  OP13_MANIFEST_FILE: "manifests/oos16/oneplus_13_w.xml"
+  OP13_CLANG_REL: "kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin"
   SUSFS_REPO: "https://github.com/cctv18/susfs4oki.git"
   SUSFS_DEFAULT_REF: "oki-android15-6.6"
   CCACHE_COMPRESS: "true"
@@ -31,11 +31,11 @@ on:
   workflow_dispatch:
     inputs:
       feature_profile:
-        description: "Preset: battery_daily = safest battery/stability defaults, wild_daily = closer to Wild release, minimal_debug = root+susfs only, experimental_max = all extras"
+        description: "Preset: battery_daily = safest battery/stability defaults, advanced_daily = more feature-rich daily preset, minimal_debug = root+susfs only, experimental_max = all extras"
         type: choice
         required: true
         default: battery_daily
-        options: [battery_daily, wild_daily, minimal_debug, experimental_max]
+        options: [battery_daily, advanced_daily, minimal_debug, experimental_max]
       sukisu_channel:
         description: "SukiSU Ultra channel only. No KSUN backend. builtin_latest is the safest first CCTV18 SUSFS test; main_latest is available for testing."
         type: choice
@@ -89,7 +89,7 @@ on:
         default: "On"
         options: ["On", "Off"]
       unicode_fix:
-        description: "Enable Unicode path-hardening symbols if supported. Wild includes this, but it is marked experimental upstream."
+        description: "Enable Unicode path-hardening symbols if supported. Useful for modern Android file/path handling; keep On for this OP13 daily profile."
         type: choice
         required: true
         default: "On"
@@ -113,13 +113,13 @@ on:
         default: "On"
         options: ["On", "Off"]
       hmbird:
-        description: "Enable HMBIRD/Fengchi only for Wild-like testing. Off is safer for daily driver."
+        description: "Enable HMBIRD/Fengchi only for experimental scheduler testing. Off is safer for daily driver."
         type: choice
         required: true
         default: "Off"
         options: ["On", "Off"]
       lto:
-        description: "LTO mode. Wild OP13 config uses thin."
+        description: "LTO mode. Thin is the recommended OP13 daily-driver setting."
         type: choice
         required: true
         default: thin
@@ -156,7 +156,7 @@ on:
         default: true
 
 concurrency:
-  group: op13-wildbase-adv-stable-${{ github.ref }}
+  group: op13-sukisu-cctv18-adv-stable-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -165,7 +165,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache-op13-wildbase-adv-stable
+      CCACHE_DIR: ${{ github.workspace }}/.ccache-op13-sukisu-cctv18-adv-stable
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
@@ -256,10 +256,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-op13-wildbase-adv-stable-${{ github.event.inputs.feature_profile }}-${{ github.ref_name }}
+          key: ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-${{ github.event.inputs.feature_profile }}-${{ github.ref_name }}
           restore-keys: |
-            ccache-${{ runner.os }}-op13-wildbase-adv-stable-${{ github.event.inputs.feature_profile }}-
-            ccache-${{ runner.os }}-op13-wildbase-adv-stable-
+            ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-${{ github.event.inputs.feature_profile }}-
+            ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-
 
       - name: "Install build dependencies and repo"
         shell: bash
@@ -279,14 +279,14 @@ jobs:
           ccache -M "${{ env.CCACHE_MAXSIZE }}"
           ccache -s || true
 
-      - name: "Sync WildKernels OP13 OOS16 source base"
+      - name: "Sync OP13 OOS16 source base"
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p kernel_workspace
           cd kernel_workspace
-          echo "Using Wild manifest: $WILD_MANIFEST_REPO ($WILD_MANIFEST_BRANCH/$WILD_MANIFEST_FILE)"
-          repo init -u "$WILD_MANIFEST_REPO" -b "$WILD_MANIFEST_BRANCH" -m "$WILD_MANIFEST_FILE" --repo-rev=v2.16 --depth=1 --no-clone-bundle --no-tags
+          echo "Using OP13 manifest: $OP13_MANIFEST_REPO ($OP13_MANIFEST_BRANCH/$OP13_MANIFEST_FILE)"
+          repo init -u "$OP13_MANIFEST_REPO" -b "$OP13_MANIFEST_BRANCH" -m "$OP13_MANIFEST_FILE" --repo-rev=v2.16 --depth=1 --no-clone-bundle --no-tags
           ok=0
           for spec in "8 4" "4 2" "2 1" "1 1"; do
             set -- $spec
@@ -306,14 +306,14 @@ jobs:
           sed -i 's/ -dirty//g' kernel_platform/msm-kernel/scripts/setlocalversion || true
           sed -i 's/ -dirty//g' kernel_platform/external/dtc/scripts/setlocalversion || true
 
-      - name: "Select exact Wild/AOSP clang toolchain"
+      - name: "Select exact OP13/AOSP clang toolchain"
         shell: bash
         run: |
           set -euo pipefail
           KP="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
-          CLANG_BIN="$GITHUB_WORKSPACE/kernel_workspace/$WILD_CLANG_REL"
+          CLANG_BIN="$GITHUB_WORKSPACE/kernel_workspace/$OP13_CLANG_REL"
           if [ ! -x "$CLANG_BIN/clang" ]; then
-            echo "::error::Expected Wild OP13 clang not found: $CLANG_BIN/clang"
+            echo "::error::Expected OP13 clang not found: $CLANG_BIN/clang"
             find "$KP/prebuilts/clang" -path '*/bin/clang' -type f 2>/dev/null | sort || true
             exit 1
           fi
@@ -845,11 +845,11 @@ jobs:
           HMBIRD_IN="${{ inputs.hmbird }}"
           SUSFS_IN="${{ inputs.susfs }}"
 
-          # Safety presets. Defaults are intentionally conservative for SukiSU-on-WildBase.
+          # Safety presets. Defaults are intentionally conservative for SukiSU Ultra + CCTV18 SUSFS on OP13.
           if [ "$PROFILE" = "minimal_debug" ]; then
             BBR_IN="Off"; BBG_IN="Off"; TTL_IPSET_IN="Off"; NTSYNC_IN="Off"; UNICODE_IN="Off"; DS_IN="Off"; ADIOS_IN="Off"; ZRAM_LZ4_IN="Off"; HMBIRD_IN="Off"
-          elif [ "$PROFILE" = "wild_daily" ]; then
-            # Mirrors the working Wild feature list more closely, but still lets explicit inputs disable items.
+          elif [ "$PROFILE" = "advanced_daily" ]; then
+            # More feature-rich daily preset while still allowing explicit inputs to disable items.
             [ "${{ inputs.hmbird }}" = "On" ] && HMBIRD_IN="On" || true
             [ "${{ inputs.droidspaces }}" = "On" ] && DS_IN="On" || true
           elif [ "$PROFILE" = "experimental_max" ]; then
@@ -1092,27 +1092,121 @@ jobs:
           fi
           echo "Packaging Image: $KERNEL_IMAGE"
           cp "$KERNEL_IMAGE" package_AK3/Image
+
+          if [ "${{ inputs.susfs }}" = "On" ]; then
+            SUS_LABEL="CCTV18_SUSFS_${SUSVER:-oki}"
+            MODE_LABEL="CCTV18 SUSFS"
+          else
+            SUS_LABEL="NoSUSFS_Debug"
+            MODE_LABEL="NoSUSFS Debug"
+          fi
+          PROFILE_LABEL="${{ inputs.feature_profile }}"
+          RUN_NO="${{ github.run_number }}"
+          REPO_URL="https://github.com/ox1d3x3/Op13_Susfs_kernel"
+          INSTALL_TITLE="OP13 SukiSU Ultra + CCTV18 SUSFS"
+          ZIP="AK3_OP13_OOS16_android15-6.6.89_${SUKISU_PACKAGE_LABEL:-SukiSUUltra}_${SUS_LABEL}_ADV_STABLE_${RUN_NO}.zip"
+          export MODE_LABEL PROFILE_LABEL RUN_NO REPO_URL INSTALL_TITLE ZIP
+
+          cat > package_AK3/INSTALL_INFO.txt <<EOF
+          ${INSTALL_TITLE}
+          ==================================
+
+          Device target : OnePlus 13 / PJZ110 / sun / OOS16
+          Kernel release: ${KERNEL_RELEASE:-unknown}
+          Root backend  : SukiSU Ultra (${SUKISU_PACKAGE_LABEL:-SukiSUUltra})
+          SUSFS source  : CCTV18 susfs4oki (${SUSVER:-${{ inputs.susfs_ref }}})
+          Profile       : ${PROFILE_LABEL}
+          Build number  : ${RUN_NO}
+
+          Install notes:
+          1. Keep a matching stock boot.img for your current active slot before flashing.
+          2. Flash this ZIP from a custom recovery or kernel flasher that supports AnyKernel3.
+          3. If the device bootloops, return to bootloader and flash your stock boot.img back to the active slot.
+          4. First boot can take longer than usual. Do not force reboot too early.
+          5. Do not enable extra modules until the kernel boots cleanly.
+
+          Recommended first daily settings:
+          - battery_daily profile
+          - SukiSU Ultra builtin_latest
+          - CCTV18 SUSFS On
+          - BBR/BBG/TTL_IP_SET/NTSYNC/Unicode/ZRAM-LZ4 On
+          - HMBIRD/Droidspaces Off
+          EOF
+          cp package_AK3/INSTALL_INFO.txt out_artifacts/INSTALL_INFO.txt
+
           if [ -f package_AK3/anykernel.sh ]; then
             python3 - <<'PY'
           from pathlib import Path
           import os
           import re
-          label = os.environ.get('SUKISU_PACKAGE_LABEL', 'SukiSU')
+          label = os.environ.get('SUKISU_PACKAGE_LABEL', 'SukiSUUltra')
+          mode_label = os.environ.get('MODE_LABEL', 'CCTV18 SUSFS')
+          profile = os.environ.get('PROFILE_LABEL', 'battery_daily')
+          run_no = os.environ.get('RUN_NO', '')
+          repo_url = os.environ.get('REPO_URL', 'https://github.com/ox1d3x3/Op13_Susfs_kernel')
+          kernel_rel = os.environ.get('KERNEL_RELEASE', '')
+          zip_name = os.environ.get('ZIP', '')
           p = Path('package_AK3/anykernel.sh')
-          s = p.read_text(errors='replace')
-          sus_label = 'CCTV18 SUSFS' if os.environ.get('SUSFS_ENABLED','On') == 'On' else 'NoSUSFS Debug'
-          s = re.sub(r'^\s*kernel\.string=.*$', f'kernel.string=OP13 OOS16 {label} + {sus_label} Advanced Stable Daily', s, flags=re.M)
+          s = p.read_text(encoding='utf-8', errors='replace')
+          s = re.sub(r'^\s*kernel\.string=.*$', f'kernel.string=OP13 PJZ110 | {label} + {mode_label} | Advanced Stable Daily', s, flags=re.M)
           if 'block=boot' not in s:
               s = s.replace('block=auto', 'block=boot') if 'block=auto' in s else s + '\nblock=boot\n'
-          p.write_text(s)
+          s = re.sub(r'\n# --- OX1D3X3 INSTALL INFO START ---.*?# --- OX1D3X3 INSTALL INFO END ---\n', '\n', s, flags=re.S)
+          marker = re.search(r'\n\.\s+tools/ak3-core\.sh\s*\n', s)
+          block = f'''
+          # --- OX1D3X3 INSTALL INFO START ---
+          ui_print " "
+          ui_print "===================================================="
+          ui_print " __  __ __"
+          ui_print " \\ \\ / //_ |"
+          ui_print "  \\ V /  | |"
+          ui_print "   > <   | |"
+          ui_print "  / . \\  | |"
+          ui_print " /_/ \\_\\ |_|"
+          ui_print "===================================================="
+          ui_print " "
+          ui_print "OP13 PJZ110 | SukiSU Ultra + {mode_label}"
+          ui_print "Profile : {profile}"
+          ui_print "Kernel  : {kernel_rel or 'unknown'}"
+          ui_print "Build   : #{run_no}"
+          ui_print "Package : {zip_name}"
+          ui_print "Builder : @Ox1d3x3"
+          ui_print "Repo    : {repo_url}"
+          ui_print " "
+          ui_print "Install notes:"
+          ui_print "- Target: OnePlus 13 / PJZ110 / sun / OOS16"
+          ui_print "- Flash only on matching firmware/kernel base"
+          ui_print "- Keep stock boot.img ready for rescue"
+          ui_print "- First boot may take longer than usual"
+          ui_print " "
+          device="$(getprop ro.product.device 2>/dev/null || true)"
+          model="$(getprop ro.product.model 2>/dev/null || true)"
+          build="$(getprop ro.build.version.ota 2>/dev/null || true)"
+          if [ -n "$device" ]; then ui_print "Device : $device ($model)"; fi
+          if [ -n "$build" ]; then ui_print "OTA    : $build"; fi
+          ui_print " "
+          if command -v cmd >/dev/null 2>&1; then
+            (cmd activity start --user 0 -a android.intent.action.VIEW -d "{repo_url}" >/dev/null 2>&1 &) || true
+          elif command -v am >/dev/null 2>&1; then
+            (am start --user 0 -a android.intent.action.VIEW -d "{repo_url}" >/dev/null 2>&1 &) || true
+          fi
+          # --- OX1D3X3 INSTALL INFO END ---
+          '''
+          if marker:
+              s = s[:marker.end()] + block + s[marker.end():]
+          else:
+              s += '\n' + block
+          p.write_text(s, encoding='utf-8')
           PY
           fi
-          if [ "${{ inputs.susfs }}" = "On" ]; then
-            SUS_LABEL="CCTV18_SUSFS_${SUSVER:-oki}"
-          else
-            SUS_LABEL="NoSUSFS_Debug"
-          fi
-          ZIP="AK3_OP13_OOS16_android15-6.6.89_${SUKISU_PACKAGE_LABEL:-SukiSUUltra}_${SUS_LABEL}_ADV_STABLE_${{ github.run_number }}.zip"
+
+          cat > package_AK3/banner <<EOF
+          ====================================================
+          Ox1d3x3 OP13 Kernel
+          SukiSU Ultra + ${MODE_LABEL} [${PROFILE_LABEL}]
+          ====================================================
+          EOF
+
           (cd package_AK3 && zip -r9 "../out_artifacts/$ZIP" . -x '*.git*' -x '*README*' -x '*.md' >/dev/null)
           sha256sum out_artifacts/*.zip | tee out_artifacts/SHA256SUMS.txt
 
@@ -1129,7 +1223,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v24 build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v25 build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -1153,6 +1247,29 @@ jobs:
             echo "| BUILD_TIME input | ${{ inputs.BUILD_TIME }} |"
             echo "| Build timestamp resolved | ${BUILD_TIME_RESOLVED:-unknown} |"
             echo "| Build user/host | ${{ inputs.BUILD_USER }}@${{ inputs.BUILD_HOST }} |"
+            echo ""
+            echo "### Install info"
+            echo ""
+            echo "- The flash ZIP includes `INSTALL_INFO.txt` and an AnyKernel3 installer banner."
+            echo "- Keep a matching stock `boot.img` for the active slot before flashing."
+            echo "- If the device bootloops, restore stock `boot.img` first, then collect logs from recovery."
+            echo ""
+            echo "### Recommended proven daily defaults for OP13 CN/PJZ110"
+            echo ""
+            echo "| Option | Recommended | Why |"
+            echo "|---|---:|---|"
+            echo "| feature_profile | battery_daily | Safest profile that already built successfully. |"
+            echo "| sukisu_channel | builtin_latest | This is the channel that compiled cleanly in the successful v24 run. |"
+            echo "| susfs | On | Target feature; CCTV18 susfs4oki is now compiling. |"
+            echo "| bbr | On | Reasonable network default, low risk. |"
+            echo "| bbg | On | Keep enabled because the current successful build used it. |"
+            echo "| ttl_ipset | On | Useful advanced netfilter support; current build passed with it. |"
+            echo "| ntsync | On | Low-risk modern compatibility feature if present in tree. |"
+            echo "| unicode_fix | On | Keep enabled because current build passed with it. |"
+            echo "| zram_lz4_support | On | Support only, not a forced zram.ko replacement. |"
+            echo "| adios | On only if your v24 boot test is stable | It compiled, but verify real battery/idle drain before calling it proven. |"
+            echo "| hmbird | Off | Scheduler changes can affect idle drain and stability. |"
+            echo "| droidspaces | Off | Extra container feature, not needed for daily battery profile. |"
           } >> "$GITHUB_STEP_SUMMARY"
           ccache -s || true
           df -hT || true
@@ -1160,7 +1277,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v21-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v25-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
