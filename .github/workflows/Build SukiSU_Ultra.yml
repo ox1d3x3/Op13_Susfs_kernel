@@ -695,8 +695,8 @@ jobs:
           for p in adb_paths:
               if p.exists():
                   s = p.read_text(encoding='utf-8', errors='replace')
-                  if 'susfs_starts_with(' in s or 'susfs_ends_with(' in s:
-                      print(f'ERROR: unresolved susfs_starts_with/susfs_ends_with call remains in {p}', file=sys.stderr)
+                  if re.search(r'(?<!ksu_)susfs_starts_with\s*\(', s) or re.search(r'(?<!ksu_)susfs_ends_with\s*\(', s):
+                      print(f'ERROR: unresolved raw susfs_starts_with/susfs_ends_with call remains in {p}', file=sys.stderr)
                       sys.exit(1)
                   if 'ksu_susfs_starts_with(' in s and 'static inline bool ksu_susfs_starts_with' not in s:
                       print(f'ERROR: ksu_susfs_starts_with wrapper missing in {p}', file=sys.stderr)
@@ -709,7 +709,106 @@ jobs:
                       print(f'ERROR: USER_ARG_NULL capture argument remains in {p}', file=sys.stderr)
                       sys.exit(1)
 
-          print(f'Compatibility repair summary: adb_root_patched={patched_adb}, sulog_patched={patched_sulog}')
+          def patch_ksud_bool_hooks(p: Path):
+              if not p.exists():
+                  return False
+              s = p.read_text(encoding='utf-8', errors='replace')
+              orig = s
+              # Current SukiSU builtin can enter a SUSFS static-key path without providing the
+              # matching key symbols after CCTV18 patching. Force the older bool hook path, which
+              # SukiSU already supports and which lets stop_vfs_read_hook()/stop_input_hook() work.
+              s = s.replace('#if defined(CONFIG_KSU_SUSFS) && defined(KSU_COMPAT_USE_STATIC_KEY)',
+                            '#if 0 /* OP13_CCTV18_SUKISU_COMPAT: use bool hooks instead of missing static-key symbols */')
+              if s != orig:
+                  p.write_text(s, encoding='utf-8')
+                  print(f'Forced bool hook compatibility path in {p}')
+              return s != orig
+
+          def patch_ksu_compat_symbols(p: Path):
+              if not p.exists():
+                  return False
+              s = p.read_text(encoding='utf-8', errors='replace')
+              if 'OP13_CCTV18_SUKISU_COMPAT_BEGIN' in s:
+                  return False
+              compat = '\n'.join([
+                  '',
+                  '/* OP13_CCTV18_SUKISU_COMPAT_BEGIN',
+                  ' * Compatibility layer for SukiSU Ultra builtin + CCTV18 susfs4oki on OP13/OOS16.',
+                  ' * CCTV18\'s OKI SUSFS patch expects a few hook/selinux-hide symbols that are not',
+                  ' * exported by the current SukiSU builtin unity tree. Keep these conservative:',
+                  ' * - hook enabled helpers follow SukiSU\'s bool hook state;',
+                  ' * - selinux-hide stays disabled unless SukiSU grows native support again;',
+                  ' * - *_with_policy fallbacks return -EINVAL and are only here to satisfy linking',
+                  ' *   when the hidden-policy path is disabled.',
+                  ' */',
+                  '#ifdef CONFIG_KSU_SUSFS',
+                  'extern bool ksu_vfs_read_hook;',
+                  'extern bool ksu_input_hook;',
+                  '',
+                  'bool ksu_is_init_rc_hook_enabled(void)',
+                  '{',
+                  '\treturn ksu_vfs_read_hook;',
+                  '}',
+                  '',
+                  'bool ksu_is_input_hook_enabled(void)',
+                  '{',
+                  '\treturn ksu_input_hook;',
+                  '}',
+                  '',
+                  'bool ksu_selinux_hide_running = false;',
+                  'void *backup_sepolicy = NULL;',
+                  '',
+                  'int security_context_to_sid_with_policy(void *policy, const char *scontext,',
+                  '\t\tu32 scontext_len, u32 *sid, u32 def_sid, gfp_t gfp_flags)',
+                  '{',
+                  '\treturn -EINVAL;',
+                  '}',
+                  '',
+                  'int security_sid_to_context_with_policy(void *policy, u32 sid,',
+                  '\t\tchar **scontext, u32 *scontext_len)',
+                  '{',
+                  '\tif (scontext)',
+                  '\t\t*scontext = NULL;',
+                  '\tif (scontext_len)',
+                  '\t\t*scontext_len = 0;',
+                  '\treturn -EINVAL;',
+                  '}',
+                  '',
+                  'int security_compute_av_user_with_policy(void *policy, u32 ssid, u32 tsid,',
+                  '\t\tu16 tclass, void *avd)',
+                  '{',
+                  '\treturn -EINVAL;',
+                  '}',
+                  '#endif /* CONFIG_KSU_SUSFS */',
+                  '/* OP13_CCTV18_SUKISU_COMPAT_END */',
+                  ''
+              ])
+              p.write_text(s.rstrip() + compat, encoding='utf-8')
+              print(f'Injected OP13 CCTV18/SukiSU link compatibility symbols into {p}')
+              return True
+
+          ksud_paths = [Path('drivers/kernelsu/runtime/ksud.c'), Path('KernelSU/kernel/runtime/ksud.c')]
+          ksu_c_paths = [Path('drivers/kernelsu/ksu.c'), Path('KernelSU/kernel/ksu.c')]
+          patched_ksud = any(patch_ksud_bool_hooks(p) for p in ksud_paths)
+          patched_ksu_c = any(patch_ksu_compat_symbols(p) for p in ksu_c_paths)
+
+          # Verify the raw helper calls are gone, but do not falsely match our ksu_susfs_* wrappers.
+          for p in adb_paths:
+              if p.exists():
+                  s = p.read_text(encoding='utf-8', errors='replace')
+                  if re.search(r'(?<!ksu_)susfs_starts_with\s*\(', s) or re.search(r'(?<!ksu_)susfs_ends_with\s*\(', s):
+                      print(f'ERROR: unresolved raw susfs string helper remains in {p}', file=sys.stderr)
+                      sys.exit(1)
+
+          for p in ksu_c_paths:
+              if p.exists():
+                  s = p.read_text(encoding='utf-8', errors='replace')
+                  if 'OP13_CCTV18_SUKISU_COMPAT_BEGIN' not in s:
+                      print(f'ERROR: OP13 CCTV18/SukiSU compatibility symbols missing from {p}', file=sys.stderr)
+                      sys.exit(1)
+                  break
+
+          print(f'Compatibility repair summary: adb_root_patched={patched_adb}, sulog_patched={patched_sulog}, ksud_bool_hooks={patched_ksud}, ksu_link_compat={patched_ksu_c}')
           PY
 
           echo "SukiSU/CCTV18 compatibility repair preview:"
