@@ -1279,9 +1279,12 @@ jobs:
             find package_AK3 -maxdepth 2 -type f | sed -n '1,160p' || true
             exit 1
           fi
-          if unzip -l "$AK3_ZIP" | grep -qE '\.zip$'; then
+          # Check only archive members, not the unzip header line that prints the archive path itself.
+          # v28 falsely failed because `unzip -l "$AK3_ZIP"` prints `Archive: ...zip`, which matched `\.zip$`.
+          NESTED_ZIPS="$(zipinfo -1 "$AK3_ZIP" | grep -E '(^|/)[^/]+\.zip$' || true)"
+          if [ -n "$NESTED_ZIPS" ]; then
             echo "::error::Nested zip detected inside AnyKernel package; refusing artifact."
-            unzip -l "$AK3_ZIP" | grep -E '\.zip$' || true
+            printf '%s\n' "$NESTED_ZIPS"
             exit 1
           fi
           sha256sum "$AK3_ZIP" | tee "$AK3_ZIP.sha256" > out_artifacts/SHA256SUMS.txt
@@ -1356,7 +1359,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v28 build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v29 build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -1424,7 +1427,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v28-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v29-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
