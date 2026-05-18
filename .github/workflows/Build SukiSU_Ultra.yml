@@ -742,58 +742,57 @@ jobs:
                   ' * Runtime-safe compatibility layer for SukiSU Ultra builtin + CCTV18 susfs4oki on OP13/OOS16.',
                   ' * v29 used -EINVAL stubs for the *_with_policy SELinux helpers. That made the kernel build,',
                   ' * but caused ksud sepolicy injection to fail at runtime (Invalid argument), breaking Zygisk/LSPosed.',
-                  ' * v31 forwards those helpers to the active SELinux policy helpers instead of returning -EINVAL.',
+                  ' * v32 forwards those helpers using the exact non-stateful SELinux helper signatures exposed by this OP13/OOS16 6.6 tree.',
                   ' */',
                   '#ifdef CONFIG_KSU_SUSFS',
                   '#include <linux/errno.h>',
                   '#include <linux/gfp.h>',
                   '#include <linux/types.h>',
-                  'struct selinux_state;',
+
                   'struct av_decision;',
-                  'extern struct selinux_state selinux_state;',
                   'extern bool ksu_vfs_read_hook;',
                   'extern bool ksu_input_hook;',
                   '',
                   'bool ksu_is_init_rc_hook_enabled(void)',
                   '{',
-                  '\treturn ksu_vfs_read_hook;',
+                  '	return ksu_vfs_read_hook;',
                   '}',
                   '',
                   'bool ksu_is_input_hook_enabled(void)',
                   '{',
-                  '\treturn ksu_input_hook;',
+                  '	return ksu_input_hook;',
                   '}',
                   '',
                   'bool ksu_selinux_hide_running = false;',
                   'void *backup_sepolicy = NULL;',
                   '',
-                  '/* These are stateful on android15/common 6.6.89. Keep the policy argument ignored intentionally;',
-                  ' * SukiSU/ksud policy injection needs the live SELinux policy, not the disabled hide-running backup.',
+                  '/* This OP13/OOS16 6.6 tree exposes non-stateful SELinux helper prototypes in',
+                  ' * security/selinux/include/security.h. Do not redeclare stateful variants here;',
+                  ' * just bridge CCTV18/SukiSU *_with_policy calls to the live active-policy helpers.',
                   ' */',
-                  'extern int security_context_to_sid_default(struct selinux_state *state, const char *scontext,',
-                  '\t\tu32 scontext_len, u32 *sid, u32 def_sid, gfp_t gfp_flags);',
-                  'extern int security_sid_to_context(struct selinux_state *state, u32 sid,',
-                  '\t\tchar **scontext, u32 *scontext_len);',
-                  'extern void security_compute_av_user(struct selinux_state *state, u32 ssid, u32 tsid,',
-                  '\t\tu16 tclass, struct av_decision *avd);',
+                  'extern int security_context_to_sid_default(const char *scontext, u32 scontext_len,',
+                  '		u32 *sid, u32 def_sid, gfp_t gfp_flags);',
+                  'extern int security_sid_to_context(u32 sid, char **scontext, u32 *scontext_len);',
+                  'extern void security_compute_av_user(u32 ssid, u32 tsid, u16 tclass,',
+                  '		struct av_decision *avd);',
                   '',
                   'int security_context_to_sid_with_policy(void *policy, const char *scontext,',
-                  '\t\tu32 scontext_len, u32 *sid, u32 def_sid, gfp_t gfp_flags)',
+                  '		u32 scontext_len, u32 *sid, u32 def_sid, gfp_t gfp_flags)',
                   '{',
-                  '\treturn security_context_to_sid_default(&selinux_state, scontext, scontext_len, sid, def_sid, gfp_flags);',
+                  '	return security_context_to_sid_default(scontext, scontext_len, sid, def_sid, gfp_flags);',
                   '}',
                   '',
                   'int security_sid_to_context_with_policy(void *policy, u32 sid,',
-                  '\t\tchar **scontext, u32 *scontext_len)',
+                  '		char **scontext, u32 *scontext_len)',
                   '{',
-                  '\treturn security_sid_to_context(&selinux_state, sid, scontext, scontext_len);',
+                  '	return security_sid_to_context(sid, scontext, scontext_len);',
                   '}',
                   '',
                   'int security_compute_av_user_with_policy(void *policy, u32 ssid, u32 tsid,',
-                  '\t\tu16 tclass, struct av_decision *avd)',
+                  '		u16 tclass, struct av_decision *avd)',
                   '{',
-                  '\tsecurity_compute_av_user(&selinux_state, ssid, tsid, tclass, avd);',
-                  '\treturn 0;',
+                  '	security_compute_av_user(ssid, tsid, tclass, avd);',
+                  '	return 0;',
                   '}',
                   '#endif /* CONFIG_KSU_SUSFS */',
                   '/* OP13_CCTV18_SUKISU_COMPAT_END */',
@@ -807,6 +806,16 @@ jobs:
           ksu_c_paths = [Path('drivers/kernelsu/ksu.c'), Path('KernelSU/kernel/ksu.c')]
           patched_ksud = any(patch_ksud_bool_hooks(p) for p in ksud_paths)
           patched_ksu_c = any(patch_ksu_compat_symbols(p) for p in ksu_c_paths)
+
+          # v32 guard: this OP13/OOS16 source declares non-stateful SELinux helpers.
+          # Fail before compile if the old stateful-wrapper call style slipped back in.
+          for p in ksu_c_paths:
+              if p.exists():
+                  s_chk = p.read_text(encoding='utf-8', errors='replace')
+                  compat_part = s_chk.split('OP13_CCTV18_SUKISU_COMPAT_BEGIN', 1)[-1]
+                  if '&selinux_state' in compat_part or 'struct selinux_state *state' in compat_part:
+                      print(f'ERROR: stale stateful SELinux wrapper compatibility code remains in {p}', file=sys.stderr)
+                      sys.exit(1)
 
           # Verify the raw helper calls are gone, but do not falsely match our ksu_susfs_* wrappers.
           for p in adb_paths:
@@ -1369,7 +1378,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v31 build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v32 build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -1437,7 +1446,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v31-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v32-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
