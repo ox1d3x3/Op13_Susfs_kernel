@@ -720,86 +720,148 @@ jobs:
                   return False
               s = p.read_text(encoding='utf-8', errors='replace')
               orig = s
-              # Current SukiSU builtin can enter a SUSFS static-key path without providing the
-              # matching key symbols after CCTV18 patching. Force the older bool hook path, which
-              # SukiSU already supports and which lets stop_vfs_read_hook()/stop_input_hook() work.
-              s = s.replace('#if defined(CONFIG_KSU_SUSFS) && defined(KSU_COMPAT_USE_STATIC_KEY)',
-                            '#if 0 /* OP13_CCTV18_SUKISU_COMPAT: use bool hooks instead of missing static-key symbols */')
+              # Current SukiSU builtin can expose KSU_COMPAT_USE_STATIC_KEY while CCTV18 OKI
+              # patch expects KernelSU-Next-style static-key globals. For OP13/SukiSU,
+              # force ksud.c to use SukiSU's stable bool hook path instead.
+              s = re.sub(
+                  r'#if\s+defined\(CONFIG_KSU_SUSFS\)\s*&&\s*defined\(KSU_COMPAT_USE_STATIC_KEY\)',
+                  '#if 0 /* OP13_LSPOSED_CLEAN: use bool hooks, not CCTV18/KSUN static-key stop path */',
+                  s,
+              )
               if s != orig:
                   p.write_text(s, encoding='utf-8')
                   print(f'Forced bool hook compatibility path in {p}')
               return s != orig
 
-          def patch_cctv18_selinux_hide_to_live_policy():
-              """Disable CCTV18/KSUN-style SELinux hide-policy detour for SukiSU.
+          def patch_cctv18_selinux_to_live_policy():
+              """Remove the CCTV18 hidden-backup-policy detour for SukiSU Ultra.
 
-              The OKI patch can add code paths that expect KSUN symbols such as
-              ksu_selinux_hide_running, backup_sepolicy and security_*_with_policy().
-              Current SukiSU Ultra builtin does not provide that full hidden-policy
-              machinery. Returning -EINVAL from fake wrappers made ksud/module sepolicy
-              unreliable for LSPosed. The safer fix is to remove only that detour and let
-              the kernel use its normal live SELinux policy helpers.
+              CCTV18's OKI patch adds my_setprocattr/my_write_context/my_write_access
+              code that calls security_*_with_policy(backup_sepolicy, ...). That path is
+              intended for a root backend that provides backup_sepolicy and related helpers.
+              SukiSU Ultra builtin on OP13 does not provide that backend cleanly.
+
+              Do not emulate it with -EINVAL stubs. Instead, route those calls back to the
+              live kernel SELinux helpers and replace hook tables with the stock handlers.
+              This keeps SELinux enforcing and avoids the LSPosed sepolicy Invalid argument path.
               """
               changed_any = False
-              for p in [Path('security/selinux/hooks.c'), Path('security/selinux/selinuxfs.c')]:
+              targets = [Path('security/selinux/hooks.c'), Path('security/selinux/selinuxfs.c')]
+              for p in targets:
                   if not p.exists():
                       continue
                   s = p.read_text(encoding='utf-8', errors='replace')
                   orig = s
+
+                  # Drop the backup-policy argument from CCTV18 helper calls.
+                  s = s.replace('security_context_to_sid_with_policy(backup_sepolicy,',
+                                'security_context_to_sid_default(')
+                  s = s.replace('security_sid_to_context_with_policy(backup_sepolicy,',
+                                'security_sid_to_context(')
+                  s = s.replace('security_compute_av_user_with_policy(backup_sepolicy,',
+                                'security_compute_av_user(')
+
+                  # Robust multiline variants, just in case the patch was formatted differently.
                   s = re.sub(r'security_context_to_sid_with_policy\s*\(\s*backup_sepolicy\s*,\s*',
                              'security_context_to_sid_default(', s)
                   s = re.sub(r'security_sid_to_context_with_policy\s*\(\s*backup_sepolicy\s*,\s*',
                              'security_sid_to_context(', s)
                   s = re.sub(r'security_compute_av_user_with_policy\s*\(\s*backup_sepolicy\s*,\s*',
                              'security_compute_av_user(', s)
-                  s = s.replace('ksu_selinux_hide_running', 'false /* OP13_LSPOSED_SAFE: disable CCTV18 hidden sepolicy detour */')
+
+                  # Do not route live SELinux transactions through CCTV18's hidden policy wrappers.
+                  s = re.sub(r'LSM_HOOK_INIT\s*\(\s*setprocattr\s*,\s*my_setprocattr\s*\)',
+                             'LSM_HOOK_INIT(setprocattr, selinux_setprocattr)', s)
+                  s = re.sub(r'\[SEL_ACCESS\]\s*=\s*my_write_access\s*,',
+                             '[SEL_ACCESS] = sel_write_access,', s)
+                  s = re.sub(r'\[SEL_CONTEXT\]\s*=\s*my_write_context\s*,',
+                             '[SEL_CONTEXT] = sel_write_context,', s)
+
+                  # Disable only the hidden-policy conditional path, not SELinux itself.
+                  s = s.replace('!ksu_selinux_hide_running', 'true /* OP13_LSPOSED_CLEAN: hidden sepolicy disabled */')
+                  s = s.replace('ksu_selinux_hide_running', 'false /* OP13_LSPOSED_CLEAN */')
+
                   if s != orig:
                       p.write_text(s, encoding='utf-8')
-                      print(f'Disabled CCTV18 hidden-policy detour in {p}; live SELinux helpers remain in use')
+                      print(f'Neutralised CCTV18 hidden-policy detour in {p}; live SELinux helpers remain active')
                       changed_any = True
               return changed_any
 
-          def patch_ksu_hook_symbols_only(p: Path):
-              if not p.exists():
+          def create_static_key_compat_object():
+              """Provide only missing static-key symbols expected by the OKI patch.
+
+              Keep this separate from ksu.c to avoid injecting fake SELinux policy wrappers.
+              """
+              ksu_dir = Path('KernelSU/kernel') if Path('KernelSU/kernel').exists() else Path('drivers/kernelsu')
+              if not ksu_dir.exists():
+                  print('ERROR: Cannot find SukiSU kernel directory for OP13 compat object', file=sys.stderr)
+                  sys.exit(1)
+
+              defs = []
+              wanted = {
+                  'ksu_is_input_hook_enabled': 'TRUE',
+                  'ksu_is_init_rc_hook_enabled': 'TRUE',
+                  'ksu_input_hook_key_false': 'FALSE',
+                  'ksu_init_rc_hook_key_false': 'FALSE',
+              }
+              tree_files = []
+              for root in [Path('KernelSU/kernel'), Path('drivers/kernelsu')]:
+                  if root.exists():
+                      tree_files.extend([x for x in root.rglob('*') if x.is_file() and x.name != 'op13_cctv18_static_keys.c'])
+
+              def symbol_defined(sym: str) -> bool:
+                  pat = re.compile(r'\b(DEFINE_STATIC_KEY_(?:TRUE|FALSE)|struct\s+static_key_(?:true|false))\s*\(?\s*' + re.escape(sym) + r'\b')
+                  for f in tree_files:
+                      try:
+                          txt = f.read_text(encoding='utf-8', errors='ignore')
+                      except Exception:
+                          continue
+                      if pat.search(txt):
+                          return True
                   return False
-              s = p.read_text(encoding='utf-8', errors='replace')
-              if 'OP13_CCTV18_SUKISU_HOOK_COMPAT_BEGIN' in s:
-                  return False
-              compat = '\n'.join([
-                  '',
-                  '/* OP13_CCTV18_SUKISU_HOOK_COMPAT_BEGIN',
-                  ' * SukiSU Ultra builtin + CCTV18 susfs4oki hook compatibility for OP13/OOS16.',
-                  ' * Keep this intentionally narrow: only provide the hook-enabled helpers',
-                  ' * required by the CCTV18 OKI patch. Do not stub SELinux policy helpers here.',
-                  ' */',
-                  '#ifdef CONFIG_KSU_SUSFS',
-                  'extern bool ksu_vfs_read_hook;',
-                  'extern bool ksu_input_hook;',
-                  '',
-                  'bool ksu_is_init_rc_hook_enabled(void)',
-                  '{',
-                  '\treturn ksu_vfs_read_hook;',
-                  '}',
-                  '',
-                  'bool ksu_is_input_hook_enabled(void)',
-                  '{',
-                  '\treturn ksu_input_hook;',
-                  '}',
-                  '#endif /* CONFIG_KSU_SUSFS */',
-                  '/* OP13_CCTV18_SUKISU_HOOK_COMPAT_END */',
-                  ''
-              ])
-              p.write_text(s.rstrip() + compat, encoding='utf-8')
-              print(f'Injected narrow hook compatibility helpers into {p}')
+
+              for sym, kind in wanted.items():
+                  if not symbol_defined(sym):
+                      defs.append((sym, kind))
+
+              c_path = ksu_dir / 'op13_cctv18_static_keys.c'
+              if defs:
+                  lines = [
+                      '#include <linux/jump_label.h>',
+                      '',
+                      '/* OP13_LSPOSED_CLEAN: missing CCTV18/SukiSU static-key compatibility symbols only. */',
+                  ]
+                  for sym, kind in defs:
+                      lines.append(f'DEFINE_STATIC_KEY_{kind}({sym});')
+                  lines.append('')
+                  c_path.write_text('\n'.join(lines), encoding='utf-8')
+                  print(f'Created {c_path} with symbols: ' + ', '.join(sym for sym, _ in defs))
+              else:
+                  c_path.write_text('/* OP13_LSPOSED_CLEAN: no missing static-key symbols required. */\n', encoding='utf-8')
+                  print(f'Created empty {c_path}; all static-key symbols already exist')
+
+              mk = ksu_dir / 'Makefile'
+              if not mk.exists():
+                  print(f'ERROR: SukiSU Makefile missing: {mk}', file=sys.stderr)
+                  sys.exit(1)
+              mt = mk.read_text(encoding='utf-8', errors='replace')
+              if 'op13_cctv18_static_keys.o' not in mt:
+                  mt = mt.rstrip() + '\nobj-$(CONFIG_KSU) += op13_cctv18_static_keys.o\n'
+                  mk.write_text(mt, encoding='utf-8')
+                  print(f'Linked op13_cctv18_static_keys.o from {mk}')
               return True
 
+          adb_paths = [Path('drivers/kernelsu/feature/adb_root.c'), Path('KernelSU/kernel/feature/adb_root.c')]
+          sulog_paths = [Path('drivers/kernelsu/sulog/event.c'), Path('KernelSU/kernel/sulog/event.c')]
           ksud_paths = [Path('drivers/kernelsu/runtime/ksud.c'), Path('KernelSU/kernel/runtime/ksud.c')]
-          ksu_c_paths = [Path('drivers/kernelsu/ksu.c'), Path('KernelSU/kernel/ksu.c')]
-          patched_ksud = any(patch_ksud_bool_hooks(p) for p in ksud_paths)
-          patched_selinux_detour = patch_cctv18_selinux_hide_to_live_policy()
-          patched_ksu_hook = any(patch_ksu_hook_symbols_only(p) for p in ksu_c_paths)
 
-          # Verify the raw helper calls are gone, but do not falsely match our ksu_susfs_* wrappers.
+          patched_adb = any(patch_adb_root(p) for p in adb_paths)
+          patched_sulog = any(patch_sulog(p) for p in sulog_paths)
+          patched_ksud = any(patch_ksud_bool_hooks(p) for p in ksud_paths)
+          patched_selinux = patch_cctv18_selinux_to_live_policy()
+          patched_static_keys = create_static_key_compat_object()
+
+          # Hard verification: catch the exact previous failures before wasting a full build.
           for p in adb_paths:
               if p.exists():
                   s = p.read_text(encoding='utf-8', errors='replace')
@@ -807,32 +869,38 @@ jobs:
                       print(f'ERROR: unresolved raw susfs string helper remains in {p}', file=sys.stderr)
                       sys.exit(1)
 
-          for p in [Path('security/selinux/hooks.c'), Path('security/selinux/selinuxfs.c')]:
-              if p.exists():
-                  s_chk = p.read_text(encoding='utf-8', errors='replace')
-                  forbidden = ['security_context_to_sid_with_policy', 'security_sid_to_context_with_policy',
-                               'security_compute_av_user_with_policy', 'backup_sepolicy', 'ksu_selinux_hide_running']
-                  bad = [x for x in forbidden if x in s_chk]
-                  if bad:
-                      print(f'ERROR: incompatible CCTV18 hidden-policy symbol(s) remain in {p}: {bad}', file=sys.stderr)
-                      sys.exit(1)
-
-          for p in ksu_c_paths:
+          for p in sulog_paths:
               if p.exists():
                   s = p.read_text(encoding='utf-8', errors='replace')
-                  if 'OP13_CCTV18_SUKISU_HOOK_COMPAT_BEGIN' not in s:
-                      print(f'ERROR: OP13 CCTV18/SukiSU hook compatibility helpers missing from {p}', file=sys.stderr)
+                  if re.search(r',\s*USER_ARG_NULL\s*,\s*gfp\)', s):
+                      print(f'ERROR: USER_ARG_NULL capture argument remains in {p}', file=sys.stderr)
                       sys.exit(1)
-                  if 'security_context_to_sid_with_policy' in s or 'backup_sepolicy' in s:
-                      print(f'ERROR: old SELinux wrapper compatibility code remains in {p}', file=sys.stderr)
-                      sys.exit(1)
-                  break
 
-          print(f'Compatibility repair summary: adb_root_patched={patched_adb}, sulog_patched={patched_sulog}, ksud_bool_hooks={patched_ksud}, selinux_detour_disabled={patched_selinux_detour}, ksu_hook_compat={patched_ksu_hook}')
+          for p in [Path('security/selinux/hooks.c'), Path('security/selinux/selinuxfs.c')]:
+              if p.exists():
+                  s = p.read_text(encoding='utf-8', errors='replace')
+                  bad = []
+                  for token in ['security_context_to_sid_with_policy(', 'security_sid_to_context_with_policy(',
+                                'security_compute_av_user_with_policy(', 'backup_sepolicy,', 'my_write_access',
+                                'my_write_context', 'my_setprocattr']:
+                      if token in s:
+                          bad.append(token)
+                  if bad:
+                      print(f'ERROR: OP13 LSPosed clean-up incomplete in {p}: {bad}', file=sys.stderr)
+                      sys.exit(1)
+
+          for p in ksud_paths:
+              if p.exists():
+                  s = p.read_text(encoding='utf-8', errors='replace')
+                  if re.search(r'#if\s+defined\(CONFIG_KSU_SUSFS\)\s*&&\s*defined\(KSU_COMPAT_USE_STATIC_KEY\)', s):
+                      print(f'ERROR: ksud static-key stop path still enabled in {p}', file=sys.stderr)
+                      sys.exit(1)
+
+          print(f'Compatibility repair summary: adb_root_patched={patched_adb}, sulog_patched={patched_sulog}, ksud_bool_hooks={patched_ksud}, selinux_live_policy={patched_selinux}, static_key_object={patched_static_keys}')
           PY
 
           echo "SukiSU/CCTV18 compatibility repair preview:"
-          grep -Rns 'ksu_susfs_starts_with\|ksu_susfs_ends_with\|KSU_SULOG_EVENT_IOCTL_GRANT_ROOT\|OP13_CCTV18_SUKISU_HOOK_COMPAT\|OP13_LSPOSED_SAFE' drivers/kernelsu KernelSU security/selinux 2>/dev/null | head -n 120 || true
+          grep -Rns 'ksu_susfs_starts_with\|ksu_susfs_ends_with\|KSU_SULOG_EVENT_IOCTL_GRANT_ROOT\|OP13_LSPOSED_CLEAN\|op13_cctv18_static_keys' drivers/kernelsu KernelSU security/selinux 2>/dev/null | head -n 160 || true
 
           echo "Post-CCTV18 SUSFS symbol check:"
           grep -Rns 'KSU_SUSFS\|SUSFS_VERSION\|susfs_init\|susfs_starts_with\|susfs_ends_with' drivers KernelSU fs include 2>/dev/null | head -n 180 || true
@@ -1373,7 +1441,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v33 LSPosed Safe LSPosed Safe build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v34 LSPosed Clean build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -1441,7 +1509,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v33-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v34-LSPosed-Clean-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
