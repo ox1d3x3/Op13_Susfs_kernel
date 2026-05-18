@@ -730,92 +730,74 @@ jobs:
                   print(f'Forced bool hook compatibility path in {p}')
               return s != orig
 
-          def patch_ksu_compat_symbols(p: Path):
+          def patch_cctv18_selinux_hide_to_live_policy():
+              """Disable CCTV18/KSUN-style SELinux hide-policy detour for SukiSU.
+
+              The OKI patch can add code paths that expect KSUN symbols such as
+              ksu_selinux_hide_running, backup_sepolicy and security_*_with_policy().
+              Current SukiSU Ultra builtin does not provide that full hidden-policy
+              machinery. Returning -EINVAL from fake wrappers made ksud/module sepolicy
+              unreliable for LSPosed. The safer fix is to remove only that detour and let
+              the kernel use its normal live SELinux policy helpers.
+              """
+              changed_any = False
+              for p in [Path('security/selinux/hooks.c'), Path('security/selinux/selinuxfs.c')]:
+                  if not p.exists():
+                      continue
+                  s = p.read_text(encoding='utf-8', errors='replace')
+                  orig = s
+                  s = re.sub(r'security_context_to_sid_with_policy\s*\(\s*backup_sepolicy\s*,\s*',
+                             'security_context_to_sid_default(', s)
+                  s = re.sub(r'security_sid_to_context_with_policy\s*\(\s*backup_sepolicy\s*,\s*',
+                             'security_sid_to_context(', s)
+                  s = re.sub(r'security_compute_av_user_with_policy\s*\(\s*backup_sepolicy\s*,\s*',
+                             'security_compute_av_user(', s)
+                  s = s.replace('ksu_selinux_hide_running', 'false /* OP13_LSPOSED_SAFE: disable CCTV18 hidden sepolicy detour */')
+                  if s != orig:
+                      p.write_text(s, encoding='utf-8')
+                      print(f'Disabled CCTV18 hidden-policy detour in {p}; live SELinux helpers remain in use')
+                      changed_any = True
+              return changed_any
+
+          def patch_ksu_hook_symbols_only(p: Path):
               if not p.exists():
                   return False
               s = p.read_text(encoding='utf-8', errors='replace')
-              if 'OP13_CCTV18_SUKISU_COMPAT_BEGIN' in s:
+              if 'OP13_CCTV18_SUKISU_HOOK_COMPAT_BEGIN' in s:
                   return False
               compat = '\n'.join([
                   '',
-                  '/* OP13_CCTV18_SUKISU_COMPAT_BEGIN',
-                  ' * Runtime-safe compatibility layer for SukiSU Ultra builtin + CCTV18 susfs4oki on OP13/OOS16.',
-                  ' * v29 used -EINVAL stubs for the *_with_policy SELinux helpers. That made the kernel build,',
-                  ' * but caused ksud sepolicy injection to fail at runtime (Invalid argument), breaking Zygisk/LSPosed.',
-                  ' * v32 forwards those helpers using the exact non-stateful SELinux helper signatures exposed by this OP13/OOS16 6.6 tree.',
+                  '/* OP13_CCTV18_SUKISU_HOOK_COMPAT_BEGIN',
+                  ' * SukiSU Ultra builtin + CCTV18 susfs4oki hook compatibility for OP13/OOS16.',
+                  ' * Keep this intentionally narrow: only provide the hook-enabled helpers',
+                  ' * required by the CCTV18 OKI patch. Do not stub SELinux policy helpers here.',
                   ' */',
                   '#ifdef CONFIG_KSU_SUSFS',
-                  '#include <linux/errno.h>',
-                  '#include <linux/gfp.h>',
-                  '#include <linux/types.h>',
-
-                  'struct av_decision;',
                   'extern bool ksu_vfs_read_hook;',
                   'extern bool ksu_input_hook;',
                   '',
                   'bool ksu_is_init_rc_hook_enabled(void)',
                   '{',
-                  '	return ksu_vfs_read_hook;',
+                  '\treturn ksu_vfs_read_hook;',
                   '}',
                   '',
                   'bool ksu_is_input_hook_enabled(void)',
                   '{',
-                  '	return ksu_input_hook;',
-                  '}',
-                  '',
-                  'bool ksu_selinux_hide_running = false;',
-                  'void *backup_sepolicy = NULL;',
-                  '',
-                  '/* This OP13/OOS16 6.6 tree exposes non-stateful SELinux helper prototypes in',
-                  ' * security/selinux/include/security.h. Do not redeclare stateful variants here;',
-                  ' * just bridge CCTV18/SukiSU *_with_policy calls to the live active-policy helpers.',
-                  ' */',
-                  'extern int security_context_to_sid_default(const char *scontext, u32 scontext_len,',
-                  '		u32 *sid, u32 def_sid, gfp_t gfp_flags);',
-                  'extern int security_sid_to_context(u32 sid, char **scontext, u32 *scontext_len);',
-                  'extern void security_compute_av_user(u32 ssid, u32 tsid, u16 tclass,',
-                  '		struct av_decision *avd);',
-                  '',
-                  'int security_context_to_sid_with_policy(void *policy, const char *scontext,',
-                  '		u32 scontext_len, u32 *sid, u32 def_sid, gfp_t gfp_flags)',
-                  '{',
-                  '	return security_context_to_sid_default(scontext, scontext_len, sid, def_sid, gfp_flags);',
-                  '}',
-                  '',
-                  'int security_sid_to_context_with_policy(void *policy, u32 sid,',
-                  '		char **scontext, u32 *scontext_len)',
-                  '{',
-                  '	return security_sid_to_context(sid, scontext, scontext_len);',
-                  '}',
-                  '',
-                  'int security_compute_av_user_with_policy(void *policy, u32 ssid, u32 tsid,',
-                  '		u16 tclass, struct av_decision *avd)',
-                  '{',
-                  '	security_compute_av_user(ssid, tsid, tclass, avd);',
-                  '	return 0;',
+                  '\treturn ksu_input_hook;',
                   '}',
                   '#endif /* CONFIG_KSU_SUSFS */',
-                  '/* OP13_CCTV18_SUKISU_COMPAT_END */',
+                  '/* OP13_CCTV18_SUKISU_HOOK_COMPAT_END */',
                   ''
               ])
               p.write_text(s.rstrip() + compat, encoding='utf-8')
-              print(f'Injected OP13 CCTV18/SukiSU link compatibility symbols into {p}')
+              print(f'Injected narrow hook compatibility helpers into {p}')
               return True
 
           ksud_paths = [Path('drivers/kernelsu/runtime/ksud.c'), Path('KernelSU/kernel/runtime/ksud.c')]
           ksu_c_paths = [Path('drivers/kernelsu/ksu.c'), Path('KernelSU/kernel/ksu.c')]
           patched_ksud = any(patch_ksud_bool_hooks(p) for p in ksud_paths)
-          patched_ksu_c = any(patch_ksu_compat_symbols(p) for p in ksu_c_paths)
-
-          # v32 guard: this OP13/OOS16 source declares non-stateful SELinux helpers.
-          # Fail before compile if the old stateful-wrapper call style slipped back in.
-          for p in ksu_c_paths:
-              if p.exists():
-                  s_chk = p.read_text(encoding='utf-8', errors='replace')
-                  compat_part = s_chk.split('OP13_CCTV18_SUKISU_COMPAT_BEGIN', 1)[-1]
-                  if '&selinux_state' in compat_part or 'struct selinux_state *state' in compat_part:
-                      print(f'ERROR: stale stateful SELinux wrapper compatibility code remains in {p}', file=sys.stderr)
-                      sys.exit(1)
+          patched_selinux_detour = patch_cctv18_selinux_hide_to_live_policy()
+          patched_ksu_hook = any(patch_ksu_hook_symbols_only(p) for p in ksu_c_paths)
 
           # Verify the raw helper calls are gone, but do not falsely match our ksu_susfs_* wrappers.
           for p in adb_paths:
@@ -825,19 +807,32 @@ jobs:
                       print(f'ERROR: unresolved raw susfs string helper remains in {p}', file=sys.stderr)
                       sys.exit(1)
 
+          for p in [Path('security/selinux/hooks.c'), Path('security/selinux/selinuxfs.c')]:
+              if p.exists():
+                  s_chk = p.read_text(encoding='utf-8', errors='replace')
+                  forbidden = ['security_context_to_sid_with_policy', 'security_sid_to_context_with_policy',
+                               'security_compute_av_user_with_policy', 'backup_sepolicy', 'ksu_selinux_hide_running']
+                  bad = [x for x in forbidden if x in s_chk]
+                  if bad:
+                      print(f'ERROR: incompatible CCTV18 hidden-policy symbol(s) remain in {p}: {bad}', file=sys.stderr)
+                      sys.exit(1)
+
           for p in ksu_c_paths:
               if p.exists():
                   s = p.read_text(encoding='utf-8', errors='replace')
-                  if 'OP13_CCTV18_SUKISU_COMPAT_BEGIN' not in s:
-                      print(f'ERROR: OP13 CCTV18/SukiSU compatibility symbols missing from {p}', file=sys.stderr)
+                  if 'OP13_CCTV18_SUKISU_HOOK_COMPAT_BEGIN' not in s:
+                      print(f'ERROR: OP13 CCTV18/SukiSU hook compatibility helpers missing from {p}', file=sys.stderr)
+                      sys.exit(1)
+                  if 'security_context_to_sid_with_policy' in s or 'backup_sepolicy' in s:
+                      print(f'ERROR: old SELinux wrapper compatibility code remains in {p}', file=sys.stderr)
                       sys.exit(1)
                   break
 
-          print(f'Compatibility repair summary: adb_root_patched={patched_adb}, sulog_patched={patched_sulog}, ksud_bool_hooks={patched_ksud}, ksu_link_compat={patched_ksu_c}')
+          print(f'Compatibility repair summary: adb_root_patched={patched_adb}, sulog_patched={patched_sulog}, ksud_bool_hooks={patched_ksud}, selinux_detour_disabled={patched_selinux_detour}, ksu_hook_compat={patched_ksu_hook}')
           PY
 
           echo "SukiSU/CCTV18 compatibility repair preview:"
-          grep -Rns 'ksu_susfs_starts_with\|ksu_susfs_ends_with\|KSU_SULOG_EVENT_IOCTL_GRANT_ROOT' drivers/kernelsu KernelSU 2>/dev/null | head -n 80 || true
+          grep -Rns 'ksu_susfs_starts_with\|ksu_susfs_ends_with\|KSU_SULOG_EVENT_IOCTL_GRANT_ROOT\|OP13_CCTV18_SUKISU_HOOK_COMPAT\|OP13_LSPOSED_SAFE' drivers/kernelsu KernelSU security/selinux 2>/dev/null | head -n 120 || true
 
           echo "Post-CCTV18 SUSFS symbol check:"
           grep -Rns 'KSU_SUSFS\|SUSFS_VERSION\|susfs_init\|susfs_starts_with\|susfs_ends_with' drivers KernelSU fs include 2>/dev/null | head -n 180 || true
@@ -1378,7 +1373,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v32 build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v33 LSPosed Safe LSPosed Safe build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -1446,7 +1441,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v32-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v33-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
