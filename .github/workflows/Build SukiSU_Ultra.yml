@@ -1,4 +1,4 @@
-name: OP13 SukiSU Ultra 
+name: OP13 SukiSU Ultra
 
 env:
   TZ: Asia/Shanghai
@@ -588,7 +588,7 @@ jobs:
           GLUE="$KERNEL_DIR/susfs4oki/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
           [ -f "$GLUE" ] || { echo "::error::Missing CCTV18 KernelSU/SukiSU glue patch: $GLUE"; exit 1; }
 
-          echo "SukiSU path diagnostics before CCTV18 glue:"
+          echo "SukiSU path lsposed-clean-fix2s before CCTV18 glue:"
           ls -la drivers/kernelsu || true
           readlink -f drivers/kernelsu || true
           find KernelSU drivers/kernelsu -maxdepth 3 -type f \( -name Kconfig -o -name Kbuild -o -name Makefile \) -print 2>/dev/null || true
@@ -753,7 +753,7 @@ jobs:
               Even unused compiled functions can still reference backup_sepolicy and
               security_*_with_policy symbols and break link-time/runtime behaviour.
 
-              This v36 path does three things:
+              This v38 path does three things:
                 1. Route live SELinux hooks back to stock handlers.
                 2. Remove backup-policy arguments from simple helper calls when safe.
                 3. Preprocessor-disable the unused CCTV18 wrapper functions entirely.
@@ -859,6 +859,15 @@ jobs:
                       continue
                   s = p.read_text(encoding='utf-8', errors='replace')
                   orig = s
+
+                  # Remove forward declarations for CCTV18 wrapper functions that we disable.
+                  # If left behind, Clang with -Werror treats them as unused static functions.
+                  for fname in ['my_setprocattr', 'my_write_access', 'my_write_context']:
+                      proto_pat = re.compile(
+                          r'(?ms)^[ \t]*(?:static\s+)?[A-Za-z_][A-Za-z0-9_\s\*]*\s+' + re.escape(fname) +
+                          r'\s*\([^;{}]*\)\s*;[ \t]*(?:/\*.*?\*/)?\n'
+                      )
+                      s = proto_pat.sub('', s)
 
                   # Route live hook tables back to stock SELinux handlers.
                   s = re.sub(r'LSM_HOOK_INIT\s*\(\s*setprocattr\s*,\s*my_setprocattr\s*\)',
@@ -995,6 +1004,9 @@ jobs:
                                    'security_compute_av_user_with_policy(', 'backup_sepolicy,']
                   if any(tok in s for tok in hidden_tokens) and 'OP13_LSPOSED_CLEAN_SPLIT_DISABLED' not in s:
                       bad.append('hidden-policy tokens remain outside disabled wrapper path')
+                  for fname in ['my_setprocattr', 'my_write_access', 'my_write_context']:
+                      if re.search(r'(?ms)^[ \t]*(?:static\s+)?[A-Za-z_][A-Za-z0-9_\s\*]*\s+' + re.escape(fname) + r'\s*\([^;{}]*\)\s*;', s):
+                          bad.append(f'forward declaration remains for {fname}')
                   if bad:
                       print(f'ERROR: OP13 LSPosed clean-up incomplete in {p}: {bad}', file=sys.stderr)
                       sys.exit(1)
@@ -1196,7 +1208,7 @@ jobs:
             BUILD_JOBS="$BUILD_JOBS_IN"
           fi
           if ! echo "$BUILD_JOBS" | grep -Eq '^[0-9]+$'; then
-            echo "::warning::Invalid build_jobs='$BUILD_JOBS_IN'; using 1 for clean diagnostics."
+            echo "::warning::Invalid build_jobs='$BUILD_JOBS_IN'; using 1 for clean lsposed-clean-fix2s."
             BUILD_JOBS=1
           fi
           if [ "$BUILD_JOBS" -lt 1 ]; then BUILD_JOBS=1; fi
@@ -1584,7 +1596,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v36 LSPosed Clean build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v38 LSPosed Clean build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -1652,7 +1664,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v36-LSPosed-Clean-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v38-LSPosed-Clean-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
