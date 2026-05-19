@@ -1,4 +1,4 @@
-name: OP13 SukiSU Ultra
+name: OP13 SukiSU Ultra 
 
 env:
   TZ: Asia/Shanghai
@@ -150,6 +150,11 @@ on:
         type: boolean
         required: true
         default: false
+      build_jobs:
+        description: "Build jobs. Use 1 to expose the first real compiler error cleanly; use auto after the issue is fixed."
+        type: string
+        required: false
+        default: "1"
       enforce_stock_suffix:
         description: "Fail if UTS_RELEASE does not match stock OP13 suffix"
         type: boolean
@@ -1183,11 +1188,25 @@ jobs:
           export KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-${BUILD_TIME_RESOLVED:-}}"
           export LOCALVERSION="$OP_STOCK_LOCALVERSION"
           MAKE_ARGS=(LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache $REAL_CLANG" LD="$REAL_LD_LLD" HOSTLD="$REAL_LD_LLD" O=out LOCALVERSION="$LOCALVERSION")
+          mkdir -p "$GITHUB_WORKSPACE/out_artifacts/debug"
+          BUILD_JOBS_IN="${{ inputs.build_jobs }}"
+          if [ -z "$BUILD_JOBS_IN" ] || [ "$BUILD_JOBS_IN" = "auto" ]; then
+            BUILD_JOBS="$(nproc)"
+          else
+            BUILD_JOBS="$BUILD_JOBS_IN"
+          fi
+          if ! echo "$BUILD_JOBS" | grep -Eq '^[0-9]+$'; then
+            echo "::warning::Invalid build_jobs='$BUILD_JOBS_IN'; using 1 for clean diagnostics."
+            BUILD_JOBS=1
+          fi
+          if [ "$BUILD_JOBS" -lt 1 ]; then BUILD_JOBS=1; fi
+          echo "Build jobs: $BUILD_JOBS"
+          echo "BUILD_JOBS_RESOLVED=$BUILD_JOBS" >> "$GITHUB_ENV"
           if [ "${{ inputs.clean_build }}" = "true" ]; then
             export CCACHE_DISABLE=1
           fi
 
-          make -j"$(nproc)" "${MAKE_ARGS[@]}" gki_defconfig
+          make -j"$BUILD_JOBS" "${MAKE_ARGS[@]}" gki_defconfig
 
           # Enforce stock suffix correctly: clear CONFIG_LOCALVERSION and let the LOCALVERSION env
           # provide OP_STOCK_LOCALVERSION exactly once. This avoids the duplicate -4k prefix.
@@ -1243,7 +1262,7 @@ jobs:
             ./scripts/config --file out/.config -e LTO_CLANG -e LTO_CLANG_THIN -d LTO_CLANG_FULL || true
           fi
 
-          make -j"$(nproc)" "${MAKE_ARGS[@]}" olddefconfig
+          make -j"$BUILD_JOBS" "${MAKE_ARGS[@]}" olddefconfig
 
           # Hard stop before the expensive full compile if CONFIG_LOCALVERSION leaked from stock defconfig.
           if grep -q '^CONFIG_LOCALVERSION="-4k"' out/.config; then
@@ -1263,7 +1282,20 @@ jobs:
           fi
           if grep -q '^CONFIG_KSU_SYSCALL_HOOK=y' out/.config; then echo "::error::CONFIG_KSU_SYSCALL_HOOK=y detected; refusing unstable hook mode"; exit 1; fi
 
-          make -j"$(nproc)" "${MAKE_ARGS[@]}" all
+          BUILD_LOG="$GITHUB_WORKSPACE/out_artifacts/debug/kernel_build_full.log"
+          echo "Running full kernel build with -j$BUILD_JOBS. Full log: $BUILD_LOG"
+          set +e
+          make -j"$BUILD_JOBS" "${MAKE_ARGS[@]}" all 2>&1 | tee "$BUILD_LOG"
+          MAKE_STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$MAKE_STATUS" -ne 0 ]; then
+            echo "::error::Kernel build failed. Showing first useful compiler/linker errors from $BUILD_LOG"
+            grep -n -i -E 'error:|undefined symbol|conflicting types|implicit declaration|No such file|fatal error|FAILED|undefined reference' "$BUILD_LOG" | head -n 120 || true
+            echo "::group::Last 220 lines of kernel build log"
+            tail -n 220 "$BUILD_LOG" || true
+            echo "::endgroup::"
+            exit "$MAKE_STATUS"
+          fi
           REL="$(cat out/include/config/kernel.release 2>/dev/null || true)"
           echo "KERNEL_RELEASE=$REL" >> "$GITHUB_ENV"
           echo "Kernel release: $REL"
