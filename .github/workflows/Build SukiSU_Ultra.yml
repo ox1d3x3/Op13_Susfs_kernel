@@ -615,6 +615,13 @@ jobs:
             echo "KSU_SUSFS Kconfig symbol already present before glue patch."
           fi
 
+
+      - name: "Apply OP13 SukiSU/CCTV18 LSPosed compatibility repairs"
+        if: inputs.susfs == 'On'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$KERNEL_DIR"
           echo "Apply SukiSU Ultra + CCTV18 compatibility repairs."
           python3 - <<'PY'
           from pathlib import Path
@@ -725,7 +732,7 @@ jobs:
               # force ksud.c to use SukiSU's stable bool hook path instead.
               s = re.sub(
                   r'#if\s+defined\(CONFIG_KSU_SUSFS\)\s*&&\s*defined\(KSU_COMPAT_USE_STATIC_KEY\)',
-                  '#if 0 /* OP13_LSPOSED_CLEAN_FIX: use bool hooks, not CCTV18/KSUN static-key stop path */',
+                  '#if 0 /* OP13_LSPOSED_CLEAN_SPLIT: use bool hooks, not CCTV18/KSUN static-key stop path */',
                   s,
               )
               if s != orig:
@@ -741,7 +748,7 @@ jobs:
               Even unused compiled functions can still reference backup_sepolicy and
               security_*_with_policy symbols and break link-time/runtime behaviour.
 
-              This v35 path does three things:
+              This v36 path does three things:
                 1. Route live SELinux hooks back to stock handlers.
                 2. Remove backup-policy arguments from simple helper calls when safe.
                 3. Preprocessor-disable the unused CCTV18 wrapper functions entirely.
@@ -766,7 +773,7 @@ jobs:
                       return s, False
                   # If already disabled very close before the function, skip.
                   prefix = s[max(0, m.start()-120):m.start()]
-                  if 'OP13_LSPOSED_CLEAN_FIX_DISABLED' in prefix or '#if 0' in prefix.splitlines()[-3:]:
+                  if 'OP13_LSPOSED_CLEAN_SPLIT_DISABLED' in prefix or '#if 0' in prefix.splitlines()[-3:]:
                       return s, False
                   i = m.end() - 1
                   depth = 0
@@ -832,9 +839,9 @@ jobs:
                           if depth == 0:
                               end = j + 1
                               disabled = (
-                                  '#if 0 /* OP13_LSPOSED_CLEAN_FIX_DISABLED: incompatible CCTV18 hidden-policy wrapper */\n'
+                                  '#if 0 /* OP13_LSPOSED_CLEAN_SPLIT_DISABLED: incompatible CCTV18 hidden-policy wrapper */\n'
                                   + s[m.start():end]
-                                  + '\n#endif /* OP13_LSPOSED_CLEAN_FIX_DISABLED */'
+                                  + '\n#endif /* OP13_LSPOSED_CLEAN_SPLIT_DISABLED */'
                               )
                               return s[:m.start()] + disabled + s[end:], True
                       j += 1
@@ -919,7 +926,7 @@ jobs:
                   lines = [
                       '#include <linux/jump_label.h>',
                       '',
-                      '/* OP13_LSPOSED_CLEAN_FIX: missing CCTV18/SukiSU static-key compatibility symbols only. */',
+                      '/* OP13_LSPOSED_CLEAN_SPLIT: missing CCTV18/SukiSU static-key compatibility symbols only. */',
                   ]
                   for sym, kind in defs:
                       lines.append(f'DEFINE_STATIC_KEY_{kind}({sym});')
@@ -927,7 +934,7 @@ jobs:
                   c_path.write_text('\n'.join(lines), encoding='utf-8')
                   print(f'Created {c_path} with symbols: ' + ', '.join(sym for sym, _ in defs))
               else:
-                  c_path.write_text('/* OP13_LSPOSED_CLEAN_FIX: no missing static-key symbols required. */\n', encoding='utf-8')
+                  c_path.write_text('/* OP13_LSPOSED_CLEAN_SPLIT: no missing static-key symbols required. */\n', encoding='utf-8')
                   print(f'Created empty {c_path}; all static-key symbols already exist')
 
               mk = ksu_dir / 'Makefile'
@@ -981,7 +988,7 @@ jobs:
                   # If hidden-policy symbols remain but no disabled wrapper marker exists, fail.
                   hidden_tokens = ['security_context_to_sid_with_policy(', 'security_sid_to_context_with_policy(',
                                    'security_compute_av_user_with_policy(', 'backup_sepolicy,']
-                  if any(tok in s for tok in hidden_tokens) and 'OP13_LSPOSED_CLEAN_FIX_DISABLED' not in s:
+                  if any(tok in s for tok in hidden_tokens) and 'OP13_LSPOSED_CLEAN_SPLIT_DISABLED' not in s:
                       bad.append('hidden-policy tokens remain outside disabled wrapper path')
                   if bad:
                       print(f'ERROR: OP13 LSPosed clean-up incomplete in {p}: {bad}', file=sys.stderr)
@@ -997,8 +1004,14 @@ jobs:
           print(f'Compatibility repair summary: adb_root_patched={patched_adb}, sulog_patched={patched_sulog}, ksud_bool_hooks={patched_ksud}, selinux_live_policy={patched_selinux}, static_key_object={patched_static_keys}')
           PY
 
+      - name: "Validate SukiSU/CCTV18 SUSFS integration"
+        if: inputs.susfs == 'On'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$KERNEL_DIR"
           echo "SukiSU/CCTV18 compatibility repair preview:"
-          grep -Rns 'ksu_susfs_starts_with\|ksu_susfs_ends_with\|KSU_SULOG_EVENT_IOCTL_GRANT_ROOT\|OP13_LSPOSED_CLEAN_FIX\|op13_cctv18_static_keys' drivers/kernelsu KernelSU security/selinux 2>/dev/null | head -n 160 || true
+          grep -Rns 'ksu_susfs_starts_with\|ksu_susfs_ends_with\|KSU_SULOG_EVENT_IOCTL_GRANT_ROOT\|OP13_LSPOSED_CLEAN_SPLIT\|op13_cctv18_static_keys' drivers/kernelsu KernelSU security/selinux 2>/dev/null | head -n 160 || true
 
           echo "Post-CCTV18 SUSFS symbol check:"
           grep -Rns 'KSU_SUSFS\|SUSFS_VERSION\|susfs_init\|susfs_starts_with\|susfs_ends_with' drivers KernelSU fs include 2>/dev/null | head -n 180 || true
@@ -1539,7 +1552,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v35 LSPosed Clean build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v36 LSPosed Clean build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -1607,7 +1620,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v35-LSPosed-Clean-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v36-LSPosed-Clean-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
