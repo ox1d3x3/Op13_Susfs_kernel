@@ -58,6 +58,12 @@ on:
         type: string
         required: false
         default: "oki-android15-6.6"
+      sus_map:
+        description: "SUSFS SUS_MAP hiding. Off by default for LSPosed/Zygisk stability; enable only if you specifically need proc maps hiding."
+        type: choice
+        required: true
+        default: "Off"
+        options: ["On", "Off"]
       toolchain:
         description: "Toolchain. aosp_prebuilt is the only safe default for OP13 OOS16."
         type: choice
@@ -621,6 +627,25 @@ jobs:
           fi
 
 
+      - name: "Restore stock SELinux policy path for LSPosed compatibility"
+        if: inputs.susfs == 'On'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$KERNEL_DIR"
+          echo "Restoring stock SELinux live policy files after CCTV18 SUSFS patch."
+          echo "Reason: SukiSU Ultra already manages module sepolicy; CCTV18 hidden-policy detours cause ksud sepolicy EINVAL on OP13/OOS16."
+          for f in             security/selinux/avc.c             security/selinux/hooks.c             security/selinux/selinuxfs.c             security/selinux/ss/services.c; do
+            if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+              git checkout -- "$f"
+              echo "Restored $f"
+            else
+              echo "Warning: $f is not tracked in this kernel tree"
+            fi
+          done
+          echo "SELinux detour tokens after restore:"
+          grep -Rns 'backup_sepolicy\|security_.*_with_policy\|my_setprocattr\|my_write_access\|my_write_context' security/selinux 2>/dev/null || true
+
       - name: "Apply OP13 SukiSU/CCTV18 LSPosed compatibility repairs"
         if: inputs.susfs == 'On'
         shell: bash
@@ -753,7 +778,7 @@ jobs:
               Even unused compiled functions can still reference backup_sepolicy and
               security_*_with_policy symbols and break link-time/runtime behaviour.
 
-              This v38 path does three things:
+              This v39 path does three things:
                 1. Route live SELinux hooks back to stock handlers.
                 2. Remove backup-policy arguments from simple helper calls when safe.
                 3. Preprocessor-disable the unused CCTV18 wrapper functions entirely.
@@ -1094,7 +1119,7 @@ jobs:
           CONFIG_KSU_SUSFS_SPOOF_UNAME=y
           CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
           CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
-          CONFIG_KSU_SUSFS_SUS_MAP=y
+          # CONFIG_KSU_SUSFS_SUS_MAP is not set
           # CONFIG_KSU_SUSFS_ENABLE_LOG is not set
           CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
           EOF
@@ -1231,8 +1256,13 @@ jobs:
             ./scripts/config --file out/.config -e KSU_SUSFS \
               -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT \
               -e KSU_SUSFS_SPOOF_UNAME -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-              -e KSU_SUSFS_OPEN_REDIRECT -e KSU_SUSFS_SUS_MAP -d KSU_SUSFS_ENABLE_LOG \
+              -e KSU_SUSFS_OPEN_REDIRECT -d KSU_SUSFS_ENABLE_LOG \
               -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS || true
+            if [[ "${{ inputs.sus_map }}" == "On" ]]; then
+              ./scripts/config --file out/.config -e KSU_SUSFS_SUS_MAP || true
+            else
+              ./scripts/config --file out/.config -d KSU_SUSFS_SUS_MAP || true
+            fi
           else
             ./scripts/config --file out/.config -d KSU_SUSFS -d KSU_SUSFS_SUS_PATH -d KSU_SUSFS_SUS_MOUNT -d KSU_SUSFS_SUS_KSTAT \
               -d KSU_SUSFS_SPOOF_UNAME -d KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG -d KSU_SUSFS_OPEN_REDIRECT \
@@ -1596,7 +1626,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v38 LSPosed Clean build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v39 LSPosed Clean build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -1664,7 +1694,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v38-LSPosed-Clean-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v39-LSPosed-Clean-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
