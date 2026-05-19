@@ -725,7 +725,7 @@ jobs:
               # force ksud.c to use SukiSU's stable bool hook path instead.
               s = re.sub(
                   r'#if\s+defined\(CONFIG_KSU_SUSFS\)\s*&&\s*defined\(KSU_COMPAT_USE_STATIC_KEY\)',
-                  '#if 0 /* OP13_LSPOSED_CLEAN: use bool hooks, not CCTV18/KSUN static-key stop path */',
+                  '#if 0 /* OP13_LSPOSED_CLEAN_FIX: use bool hooks, not CCTV18/KSUN static-key stop path */',
                   s,
               )
               if s != orig:
@@ -734,18 +734,113 @@ jobs:
               return s != orig
 
           def patch_cctv18_selinux_to_live_policy():
-              """Remove the CCTV18 hidden-backup-policy detour for SukiSU Ultra.
+              """Disable CCTV18 hidden-backup-policy wrappers for SukiSU Ultra cleanly.
 
-              CCTV18's OKI patch adds my_setprocattr/my_write_context/my_write_access
-              code that calls security_*_with_policy(backup_sepolicy, ...). That path is
-              intended for a root backend that provides backup_sepolicy and related helpers.
-              SukiSU Ultra builtin on OP13 does not provide that backend cleanly.
+              The previous v34 cleanup changed the live hook tables back to stock handlers,
+              but it left the unused CCTV18 wrapper function bodies in hooks.c/selinuxfs.c.
+              Even unused compiled functions can still reference backup_sepolicy and
+              security_*_with_policy symbols and break link-time/runtime behaviour.
 
-              Do not emulate it with -EINVAL stubs. Instead, route those calls back to the
-              live kernel SELinux helpers and replace hook tables with the stock handlers.
-              This keeps SELinux enforcing and avoids the LSPosed sepolicy Invalid argument path.
+              This v35 path does three things:
+                1. Route live SELinux hooks back to stock handlers.
+                2. Remove backup-policy arguments from simple helper calls when safe.
+                3. Preprocessor-disable the unused CCTV18 wrapper functions entirely.
+
+              SELinux stays enforcing. We are not adding permissive rules and we are not
+              faking policy decisions. We are only removing the incompatible hidden-policy
+              detour that SukiSU Ultra builtin does not provide cleanly on OP13/OOS16.
               """
               changed_any = False
+
+              def wrap_function_if_present(s: str, name: str):
+                  """Wrap a C function definition in #if 0 by matching braces."""
+                  # Most affected functions are static int/ssize_t wrappers, but keep the
+                  # return-type pattern broad enough for vendor formatting.
+                  pattern = re.compile(
+                      r'(^[ \t]*(?:static\s+)?[A-Za-z_][A-Za-z0-9_\s\*]*\s+' + re.escape(name) +
+                      r'\s*\([^;]*?\)\s*\{)',
+                      re.M | re.S,
+                  )
+                  m = pattern.search(s)
+                  if not m:
+                      return s, False
+                  # If already disabled very close before the function, skip.
+                  prefix = s[max(0, m.start()-120):m.start()]
+                  if 'OP13_LSPOSED_CLEAN_FIX_DISABLED' in prefix or '#if 0' in prefix.splitlines()[-3:]:
+                      return s, False
+                  i = m.end() - 1
+                  depth = 0
+                  j = i
+                  in_str = False
+                  in_chr = False
+                  esc = False
+                  line_comment = False
+                  block_comment = False
+                  while j < len(s):
+                      c = s[j]
+                      n = s[j+1] if j + 1 < len(s) else ''
+                      if line_comment:
+                          if c == '\n':
+                              line_comment = False
+                          j += 1
+                          continue
+                      if block_comment:
+                          if c == '*' and n == '/':
+                              block_comment = False
+                              j += 2
+                          else:
+                              j += 1
+                          continue
+                      if in_str:
+                          if esc:
+                              esc = False
+                          elif c == '\\':
+                              esc = True
+                          elif c == '"':
+                              in_str = False
+                          j += 1
+                          continue
+                      if in_chr:
+                          if esc:
+                              esc = False
+                          elif c == '\\':
+                              esc = True
+                          elif c == "'":
+                              in_chr = False
+                          j += 1
+                          continue
+                      if c == '/' and n == '/':
+                          line_comment = True
+                          j += 2
+                          continue
+                      if c == '/' and n == '*':
+                          block_comment = True
+                          j += 2
+                          continue
+                      if c == '"':
+                          in_str = True
+                          j += 1
+                          continue
+                      if c == "'":
+                          in_chr = True
+                          j += 1
+                          continue
+                      if c == '{':
+                          depth += 1
+                      elif c == '}':
+                          depth -= 1
+                          if depth == 0:
+                              end = j + 1
+                              disabled = (
+                                  '#if 0 /* OP13_LSPOSED_CLEAN_FIX_DISABLED: incompatible CCTV18 hidden-policy wrapper */\n'
+                                  + s[m.start():end]
+                                  + '\n#endif /* OP13_LSPOSED_CLEAN_FIX_DISABLED */'
+                              )
+                              return s[:m.start()] + disabled + s[end:], True
+                      j += 1
+                  print(f'ERROR: could not find end of function {name}', file=sys.stderr)
+                  sys.exit(1)
+
               targets = [Path('security/selinux/hooks.c'), Path('security/selinux/selinuxfs.c')]
               for p in targets:
                   if not p.exists():
@@ -753,23 +848,7 @@ jobs:
                   s = p.read_text(encoding='utf-8', errors='replace')
                   orig = s
 
-                  # Drop the backup-policy argument from CCTV18 helper calls.
-                  s = s.replace('security_context_to_sid_with_policy(backup_sepolicy,',
-                                'security_context_to_sid_default(')
-                  s = s.replace('security_sid_to_context_with_policy(backup_sepolicy,',
-                                'security_sid_to_context(')
-                  s = s.replace('security_compute_av_user_with_policy(backup_sepolicy,',
-                                'security_compute_av_user(')
-
-                  # Robust multiline variants, just in case the patch was formatted differently.
-                  s = re.sub(r'security_context_to_sid_with_policy\s*\(\s*backup_sepolicy\s*,\s*',
-                             'security_context_to_sid_default(', s)
-                  s = re.sub(r'security_sid_to_context_with_policy\s*\(\s*backup_sepolicy\s*,\s*',
-                             'security_sid_to_context(', s)
-                  s = re.sub(r'security_compute_av_user_with_policy\s*\(\s*backup_sepolicy\s*,\s*',
-                             'security_compute_av_user(', s)
-
-                  # Do not route live SELinux transactions through CCTV18's hidden policy wrappers.
+                  # Route live hook tables back to stock SELinux handlers.
                   s = re.sub(r'LSM_HOOK_INIT\s*\(\s*setprocattr\s*,\s*my_setprocattr\s*\)',
                              'LSM_HOOK_INIT(setprocattr, selinux_setprocattr)', s)
                   s = re.sub(r'\[SEL_ACCESS\]\s*=\s*my_write_access\s*,',
@@ -777,13 +856,24 @@ jobs:
                   s = re.sub(r'\[SEL_CONTEXT\]\s*=\s*my_write_context\s*,',
                              '[SEL_CONTEXT] = sel_write_context,', s)
 
-                  # Disable only the hidden-policy conditional path, not SELinux itself.
-                  s = s.replace('!ksu_selinux_hide_running', 'true /* OP13_LSPOSED_CLEAN: hidden sepolicy disabled */')
-                  s = s.replace('ksu_selinux_hide_running', 'false /* OP13_LSPOSED_CLEAN */')
+                  # If any simple hidden-policy helper call remains outside disabled wrappers,
+                  # rewrite it to the live helper call. This is harmless if the function is later
+                  # #if0-disabled, but useful for formatting variants.
+                  s = re.sub(r'security_context_to_sid_with_policy\s*\(\s*backup_sepolicy\s*,\s*',
+                             'security_context_to_sid_default(', s)
+                  s = re.sub(r'security_sid_to_context_with_policy\s*\(\s*backup_sepolicy\s*,\s*',
+                             'security_sid_to_context(', s)
+                  s = re.sub(r'security_compute_av_user_with_policy\s*\(\s*backup_sepolicy\s*,\s*',
+                             'security_compute_av_user(', s)
+
+                  # Disable the now-unused CCTV18 wrapper functions so their hidden-policy path
+                  # cannot produce unresolved symbols or runtime policy failures.
+                  for fname in ['my_setprocattr', 'my_write_access', 'my_write_context']:
+                      s, did = wrap_function_if_present(s, fname)
 
                   if s != orig:
                       p.write_text(s, encoding='utf-8')
-                      print(f'Neutralised CCTV18 hidden-policy detour in {p}; live SELinux helpers remain active')
+                      print(f'Neutralised CCTV18 hidden-policy wrappers in {p}; stock live SELinux handlers remain active')
                       changed_any = True
               return changed_any
 
@@ -829,7 +919,7 @@ jobs:
                   lines = [
                       '#include <linux/jump_label.h>',
                       '',
-                      '/* OP13_LSPOSED_CLEAN: missing CCTV18/SukiSU static-key compatibility symbols only. */',
+                      '/* OP13_LSPOSED_CLEAN_FIX: missing CCTV18/SukiSU static-key compatibility symbols only. */',
                   ]
                   for sym, kind in defs:
                       lines.append(f'DEFINE_STATIC_KEY_{kind}({sym});')
@@ -837,7 +927,7 @@ jobs:
                   c_path.write_text('\n'.join(lines), encoding='utf-8')
                   print(f'Created {c_path} with symbols: ' + ', '.join(sym for sym, _ in defs))
               else:
-                  c_path.write_text('/* OP13_LSPOSED_CLEAN: no missing static-key symbols required. */\n', encoding='utf-8')
+                  c_path.write_text('/* OP13_LSPOSED_CLEAN_FIX: no missing static-key symbols required. */\n', encoding='utf-8')
                   print(f'Created empty {c_path}; all static-key symbols already exist')
 
               mk = ksu_dir / 'Makefile'
@@ -879,12 +969,20 @@ jobs:
           for p in [Path('security/selinux/hooks.c'), Path('security/selinux/selinuxfs.c')]:
               if p.exists():
                   s = p.read_text(encoding='utf-8', errors='replace')
+                  # Verify live dispatch is not routed to the CCTV18 wrapper names. The wrapper
+                  # definitions may still exist inside #if 0 disabled blocks, which is safe.
                   bad = []
-                  for token in ['security_context_to_sid_with_policy(', 'security_sid_to_context_with_policy(',
-                                'security_compute_av_user_with_policy(', 'backup_sepolicy,', 'my_write_access',
-                                'my_write_context', 'my_setprocattr']:
-                      if token in s:
-                          bad.append(token)
+                  if re.search(r'LSM_HOOK_INIT\s*\(\s*setprocattr\s*,\s*my_setprocattr\s*\)', s):
+                      bad.append('live setprocattr still points to my_setprocattr')
+                  if re.search(r'\[SEL_ACCESS\]\s*=\s*my_write_access\s*,', s):
+                      bad.append('SEL_ACCESS still points to my_write_access')
+                  if re.search(r'\[SEL_CONTEXT\]\s*=\s*my_write_context\s*,', s):
+                      bad.append('SEL_CONTEXT still points to my_write_context')
+                  # If hidden-policy symbols remain but no disabled wrapper marker exists, fail.
+                  hidden_tokens = ['security_context_to_sid_with_policy(', 'security_sid_to_context_with_policy(',
+                                   'security_compute_av_user_with_policy(', 'backup_sepolicy,']
+                  if any(tok in s for tok in hidden_tokens) and 'OP13_LSPOSED_CLEAN_FIX_DISABLED' not in s:
+                      bad.append('hidden-policy tokens remain outside disabled wrapper path')
                   if bad:
                       print(f'ERROR: OP13 LSPosed clean-up incomplete in {p}: {bad}', file=sys.stderr)
                       sys.exit(1)
@@ -900,7 +998,7 @@ jobs:
           PY
 
           echo "SukiSU/CCTV18 compatibility repair preview:"
-          grep -Rns 'ksu_susfs_starts_with\|ksu_susfs_ends_with\|KSU_SULOG_EVENT_IOCTL_GRANT_ROOT\|OP13_LSPOSED_CLEAN\|op13_cctv18_static_keys' drivers/kernelsu KernelSU security/selinux 2>/dev/null | head -n 160 || true
+          grep -Rns 'ksu_susfs_starts_with\|ksu_susfs_ends_with\|KSU_SULOG_EVENT_IOCTL_GRANT_ROOT\|OP13_LSPOSED_CLEAN_FIX\|op13_cctv18_static_keys' drivers/kernelsu KernelSU security/selinux 2>/dev/null | head -n 160 || true
 
           echo "Post-CCTV18 SUSFS symbol check:"
           grep -Rns 'KSU_SUSFS\|SUSFS_VERSION\|susfs_init\|susfs_starts_with\|susfs_ends_with' drivers KernelSU fs include 2>/dev/null | head -n 180 || true
@@ -1441,7 +1539,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v34 LSPosed Clean build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v35 LSPosed Clean build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -1509,7 +1607,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v34-LSPosed-Clean-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v35-LSPosed-Clean-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
