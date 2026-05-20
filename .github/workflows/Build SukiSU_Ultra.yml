@@ -37,13 +37,13 @@ on:
         default: battery_daily
         options: [battery_daily, advanced_daily, minimal_debug, experimental_max]
       sukisu_channel:
-        description: "SukiSU Ultra channel only. No KSUN backend. builtin_latest is the safest first CCTV18 SUSFS test; main_latest is available for testing."
+        description: "SukiSU Ultra only. tag_v4_1_0 is default for LSPosed stability testing; builtin_latest is known to build but may break LSPosed after reboot."
         type: choice
         required: true
-        default: builtin_latest
-        options: [builtin_latest, main_latest, custom_ref]
+        default: tag_v4_1_0
+        options: [tag_v4_1_0, tag_v4_1_1, builtin_latest, main_latest, custom_ref]
       sukisu_custom_ref:
-        description: "Only used when sukisu_channel=custom_ref. Example: builtin, main, dev, or a SukiSU branch/tag/commit."
+        description: "Only used when sukisu_channel=custom_ref. Example: builtin, main, v4.1.0, v4.1.1, or a commit."
         type: string
         required: false
         default: ""
@@ -173,7 +173,7 @@ on:
         default: true
 
 concurrency:
-  group: op13-sukisu-cctv18-adv-stable-${{ github.ref }}
+  group: op13-sukisu-cctv18-adv-stable-v40-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -182,7 +182,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache-op13-sukisu-cctv18-adv-stable
+      CCACHE_DIR: ${{ github.workspace }}/.ccache-op13-sukisu-cctv18-adv-stable-v40
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
@@ -273,10 +273,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-${{ github.event.inputs.feature_profile }}-${{ github.ref_name }}
+          key: ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v40-${{ github.event.inputs.feature_profile }}-${{ github.ref_name }}
           restore-keys: |
-            ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-${{ github.event.inputs.feature_profile }}-
-            ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-
+            ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v40-${{ github.event.inputs.feature_profile }}-
+            ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v40-
 
       - name: "Install build dependencies and repo"
         shell: bash
@@ -387,6 +387,17 @@ jobs:
           LABEL=""
 
           case "$CHANNEL" in
+            tag_v4_1_0)
+              # Pin SukiSU Ultra to v4.1.0 for LSPosed/Zygisk stability testing.
+              # v4.1.0 introduced SUSFS support for ksud and predates later builtin/latest changes.
+              SETUP_ARG="v4.1.0"
+              LABEL="SukiSUUltra_v4.1.0"
+              ;;
+            tag_v4_1_1)
+              # Alternate pinned SukiSU Ultra tag if v4.1.0 does not build on this tree.
+              SETUP_ARG="v4.1.1"
+              LABEL="SukiSUUltra_v4.1.1"
+              ;;
             builtin_latest)
               # SukiSU Ultra builtin channel. This is the safest first path for CCTV18 susfs4oki.
               SETUP_ARG="builtin"
@@ -778,7 +789,7 @@ jobs:
               Even unused compiled functions can still reference backup_sepolicy and
               security_*_with_policy symbols and break link-time/runtime behaviour.
 
-              This v39 path does three things:
+              This v40 path does three things:
                 1. Route live SELinux hooks back to stock handlers.
                 2. Remove backup-policy arguments from simple helper calls when safe.
                 3. Preprocessor-disable the unused CCTV18 wrapper functions entirely.
@@ -1626,7 +1637,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v39 LSPosed Clean build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v40 Pinned SukiSU LSPosed Test build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -1675,7 +1686,7 @@ jobs:
             echo "| Option | Recommended | Why |"
             echo "|---|---:|---|"
             echo "| feature_profile | battery_daily | Safest profile that already built successfully. |"
-            echo "| sukisu_channel | builtin_latest | This is the channel that compiled cleanly in the successful v24/v26 baseline. |"
+            echo "| sukisu_channel | tag_v4_1_0 | Recommended first LSPosed stability test. builtin_latest built but LSPosed can fail after reboot. |"
             echo "| susfs | On | Target feature; CCTV18 susfs4oki is now compiling. |"
             echo "| bbr | On | Reasonable network default, low risk. |"
             echo "| bbg | On | Keep enabled because the current successful build used it. |"
@@ -1694,7 +1705,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v39-LSPosed-Clean-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v40-Pinned-SukiSU-LSPosed-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
