@@ -173,7 +173,7 @@ on:
         default: true
 
 concurrency:
-  group: op13-sukisu-cctv18-adv-stable-v42-${{ github.ref }}
+  group: op13-sukisu-cctv18-adv-stable-v43-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -182,7 +182,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache-op13-sukisu-cctv18-adv-stable-v42
+      CCACHE_DIR: ${{ github.workspace }}/.ccache-op13-sukisu-cctv18-adv-stable-v43
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
@@ -273,10 +273,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v42-${{ github.event.inputs.feature_profile }}-${{ github.ref_name }}
+          key: ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v43-${{ github.event.inputs.feature_profile }}-${{ github.ref_name }}
           restore-keys: |
-            ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v42-${{ github.event.inputs.feature_profile }}-
-            ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v42-
+            ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v43-${{ github.event.inputs.feature_profile }}-
+            ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v43-
 
       - name: "Install build dependencies and repo"
         shell: bash
@@ -499,6 +499,75 @@ jobs:
               p.write_text(s, encoding='utf-8')
           PY
           fi
+
+      - name: "Repair SukiSU sulog argv ABI"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$KERNEL_DIR"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, sys
+
+          paths = [
+              Path('drivers/kernelsu/sulog/event.c'),
+              Path('KernelSU/kernel/sulog/event.c'),
+          ]
+
+          def patch_one(p: Path) -> bool:
+              if not p.exists():
+                  return False
+              s = p.read_text(encoding='utf-8', errors='replace')
+              orig = s
+
+              m = re.search(r'(?:static\s+)?[^\n;{}]*ksu_sulog_capture\s*\((.*?)\)\s*\{', s, re.S)
+              if not m:
+                  print(f'WARN: ksu_sulog_capture definition not found in {p}; skipping')
+                  return False
+              sig = re.sub(r'\s+', ' ', m.group(1)).strip()
+              expects_pointer = bool(re.search(r'struct\s+user_arg_ptr\s*\*', sig))
+              replacement_arg = 'NULL' if expects_pointer else 'USER_ARG_NULL'
+
+              # Fix the exact no-argv grant-root call that changes ABI across SukiSU revisions.
+              # Older/current builtin can use either:
+              #   struct user_arg_ptr *argv_user  -> pass NULL
+              #   const struct user_arg_ptr argv  -> pass USER_ARG_NULL
+              pattern = re.compile(
+                  r'(ksu_sulog_capture\s*\(\s*KSU_SULOG_EVENT_IOCTL_GRANT_ROOT\s*,\s*NULL\s*,\s*)'
+                  r'(?:&\s*USER_ARG_NULL|USER_ARG_NULL|NULL)'
+                  r'(\s*,\s*gfp\s*\))',
+                  re.S,
+              )
+              s, n = pattern.subn(r'\1' + replacement_arg + r'\2', s)
+
+              if s != orig:
+                  p.write_text(s, encoding='utf-8')
+                  mode = 'pointer' if expects_pointer else 'value'
+                  print(f'Patched {p}: ksu_sulog_capture argv ABI = {mode}, replacements={n}')
+                  return True
+
+              # If no replacement was needed, still verify the existing call is correct.
+              bad = False
+              if expects_pointer:
+                  bad = bool(re.search(r'ksu_sulog_capture\s*\(\s*KSU_SULOG_EVENT_IOCTL_GRANT_ROOT\s*,\s*NULL\s*,\s*&?\s*USER_ARG_NULL\s*,\s*gfp\s*\)', s, re.S))
+              else:
+                  bad = bool(re.search(r'ksu_sulog_capture\s*\(\s*KSU_SULOG_EVENT_IOCTL_GRANT_ROOT\s*,\s*NULL\s*,\s*(?:&\s*USER_ARG_NULL|NULL)\s*,\s*gfp\s*\)', s, re.S))
+              if bad:
+                  print(f'ERROR: bad ksu_sulog_capture argv argument remains in {p}', file=sys.stderr)
+                  sys.exit(1)
+              print(f'No sulog ABI patch needed in {p}')
+              return False
+
+          touched = False
+          seen = False
+          for p in paths:
+              if p.exists():
+                  seen = True
+                  touched = patch_one(p) or touched
+          if not seen:
+              print('ERROR: no SukiSU sulog/event.c path found', file=sys.stderr)
+              sys.exit(1)
+          PY
 
       - name: "Apply CCTV18 susfs4oki source and patches"
         if: inputs.susfs == 'On'
@@ -789,7 +858,7 @@ jobs:
               Even unused compiled functions can still reference backup_sepolicy and
               security_*_with_policy symbols and break link-time/runtime behaviour.
 
-              This v42 path does three things:
+              This v43 path does three things:
                 1. Route live SELinux hooks back to stock handlers.
                 2. Remove backup-policy arguments from simple helper calls when safe.
                 3. Preprocessor-disable the unused CCTV18 wrapper functions entirely.
@@ -1641,7 +1710,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v42 SukiSU Only Debug Fix build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v43 SukiSU Only Debug Fix build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -1709,7 +1778,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v42-SukiSU-Only-Debug-Fix-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v43-SukiSU-Only-Debug-Fix-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
