@@ -142,7 +142,7 @@ on:
 
 jobs:
   build:
-    name: OP13 KSUN v48 ${{ inputs.feature_profile }}
+    name: OP13 KSUN v49 ${{ inputs.feature_profile }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -155,24 +155,20 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Checkout pinned OP13 KSUN build engine
-        uses: actions/checkout@v4
-        with:
-          repository: WildKernels/OnePlus_KernelSU_SUSFS
-          ref: 14d04c1
-          path: build_engine
-          fetch-depth: 1
-
-      - name: Verify pinned build engine files
+      - name: Verify pinned remote build engine metadata
         shell: bash
         run: |
           set -euo pipefail
-          echo "Pinned build engine ref: 14d04c1"
-          echo "This checkout is used only for manifests/config reference."
-          echo "The composite build engine is called remotely as WildKernels/OnePlus_KernelSU_SUSFS/.github/actions@14d04c1."
-          test -f build_engine/manifests/oos16/oneplus_13_w.xml
-          echo "✅ OP13 OOS16 manifest exists."
-          echo "Remote action path reference is not validated locally, so the old local-action path failure cannot occur."
+          ENGINE_REF="14d04c1ed0753280330ccabd773e903f76c9a038"
+          ENGINE_ACTION="https://raw.githubusercontent.com/WildKernels/OnePlus_KernelSU_SUSFS/${ENGINE_REF}/.github/actions/action.yml"
+          ENGINE_CONFIG="https://raw.githubusercontent.com/WildKernels/OnePlus_KernelSU_SUSFS/${ENGINE_REF}/configs/oos16/OP13.json"
+          echo "Remote build engine ref: ${ENGINE_REF}"
+          echo "Remote composite action: WildKernels/OnePlus_KernelSU_SUSFS/.github/actions@${ENGINE_REF}"
+          curl -fsSL "$ENGINE_ACTION" -o /tmp/wild_action.yml
+          curl -fsSL "$ENGINE_CONFIG" -o /tmp/wild_op13.json
+          grep -q "op_config_json" /tmp/wild_action.yml
+          jq -e '.model == "OP13" and .soc == "sun" and .os_version == "OOS16" and .android_version == "android15" and .kernel_version == "6.6"' /tmp/wild_op13.json >/dev/null
+          echo "✅ Remote engine action and OP13 config are reachable."
 
       # -------------------------------------------------------------------------
       # 02. Preflight and runner diagnostics
@@ -203,14 +199,13 @@ jobs:
       # -------------------------------------------------------------------------
       # 03. Prepare OP13/OOS16 manifest and structured config
       # -------------------------------------------------------------------------
-      - name: Prepare OP13 OOS16 manifests
+      - name: Prepare inline OP13/OOS16 configuration
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf manifests
-          cp -a build_engine/manifests ./manifests
-          test -f manifests/oos16/oneplus_13_w.xml
-          echo "Manifest ready: manifests/oos16/oneplus_13_w.xml"
+          echo "Using inline OP13 config based on the pinned remote build engine."
+          echo "No local Wild checkout is used, so the previous actions/checkout short-ref failure cannot occur."
+          echo "Remote action will receive op_config_json directly."
 
       - name: Resolve feature matrix
         id: matrix
@@ -343,7 +338,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "## OP13 KSUN SUSFS Stable Daily v48"
+            echo "## OP13 KSUN SUSFS Stable Daily v49"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -420,6 +415,6 @@ jobs:
         if: always() && inputs.debug_artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: OP13_KSUN_v48_wrapper_debug_${{ github.run_number }}
+          name: OP13_KSUN_v49_wrapper_debug_${{ github.run_number }}
           path: wrapper_debug/**
           if-no-files-found: ignore
