@@ -173,7 +173,7 @@ on:
         default: true
 
 concurrency:
-  group: op13-sukisu-cctv18-adv-stable-v41-${{ github.ref }}
+  group: op13-sukisu-cctv18-adv-stable-v42-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -182,7 +182,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache-op13-sukisu-cctv18-adv-stable-v41
+      CCACHE_DIR: ${{ github.workspace }}/.ccache-op13-sukisu-cctv18-adv-stable-v42
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
@@ -273,10 +273,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v41-${{ github.event.inputs.feature_profile }}-${{ github.ref_name }}
+          key: ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v42-${{ github.event.inputs.feature_profile }}-${{ github.ref_name }}
           restore-keys: |
-            ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v41-${{ github.event.inputs.feature_profile }}-
-            ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v41-
+            ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v42-${{ github.event.inputs.feature_profile }}-
+            ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v42-
 
       - name: "Install build dependencies and repo"
         shell: bash
@@ -720,13 +720,20 @@ jobs:
                   return False
               s = p.read_text(encoding='utf-8', errors='replace')
               orig = s
-              # Newer SukiSU sulog signature expects struct user_arg_ptr *. USER_ARG_NULL is a struct value,
-              # so replace it when used as the capture argv_user argument. This is intentionally broad
-              # inside sulog/event.c because USER_ARG_NULL is only for the null argv marker there.
-              s = re.sub(r',\s*USER_ARG_NULL\s*,\s*gfp\)', ', NULL, gfp)', s)
+              # SukiSU changes ksu_sulog_capture() argv type between revisions and between
+              # SUSFS/no-SUSFS builds. Patch dynamically instead of forcing pointer or value.
+              expects_pointer = bool(re.search(r'ksu_sulog_capture\s*\([^;{]*struct\s+user_arg_ptr\s*\*', s, re.S))
+              if expects_pointer:
+                  # Pointer signature: null argv must be NULL, not USER_ARG_NULL struct value.
+                  s = re.sub(r',\s*&?USER_ARG_NULL\s*,\s*gfp\)', ', NULL, gfp)', s)
+              else:
+                  # Value signature: null argv must be USER_ARG_NULL, not &USER_ARG_NULL or NULL.
+                  s = re.sub(r',\s*&USER_ARG_NULL\s*,\s*gfp\)', ', USER_ARG_NULL, gfp)', s)
+                  s = re.sub(r',\s*NULL\s*,\s*gfp\)', ', USER_ARG_NULL, gfp)', s)
               if s != orig:
                   p.write_text(s, encoding='utf-8')
-                  print(f'Patched USER_ARG_NULL pointer compatibility in {p}')
+                  mode = 'pointer' if expects_pointer else 'value'
+                  print(f'Patched USER_ARG_NULL compatibility in {p} for {mode} ksu_sulog_capture signature')
               return s != orig
 
           adb_paths = [Path('drivers/kernelsu/feature/adb_root.c'), Path('KernelSU/kernel/feature/adb_root.c')]
@@ -748,8 +755,12 @@ jobs:
           for p in sulog_paths:
               if p.exists():
                   s = p.read_text(encoding='utf-8', errors='replace')
-                  if re.search(r',\s*USER_ARG_NULL\s*,\s*gfp\)', s):
-                      print(f'ERROR: USER_ARG_NULL capture argument remains in {p}', file=sys.stderr)
+                  expects_pointer = bool(re.search(r'ksu_sulog_capture\s*\([^;{]*struct\s+user_arg_ptr\s*\*', s, re.S))
+                  if expects_pointer and re.search(r',\s*&?USER_ARG_NULL\s*,\s*gfp\)', s):
+                      print(f'ERROR: USER_ARG_NULL value remains for pointer ksu_sulog_capture signature in {p}', file=sys.stderr)
+                      sys.exit(1)
+                  if (not expects_pointer) and re.search(r',\s*(?:&USER_ARG_NULL|NULL)\s*,\s*gfp\)', s):
+                      print(f'ERROR: pointer/null argv remains for value ksu_sulog_capture signature in {p}', file=sys.stderr)
                       sys.exit(1)
 
           def patch_ksud_bool_hooks(p: Path):
@@ -778,7 +789,7 @@ jobs:
               Even unused compiled functions can still reference backup_sepolicy and
               security_*_with_policy symbols and break link-time/runtime behaviour.
 
-              This v41 path does three things:
+              This v42 path does three things:
                 1. Route live SELinux hooks back to stock handlers.
                 2. Remove backup-policy arguments from simple helper calls when safe.
                 3. Preprocessor-disable the unused CCTV18 wrapper functions entirely.
@@ -1008,8 +1019,12 @@ jobs:
           for p in sulog_paths:
               if p.exists():
                   s = p.read_text(encoding='utf-8', errors='replace')
-                  if re.search(r',\s*USER_ARG_NULL\s*,\s*gfp\)', s):
-                      print(f'ERROR: USER_ARG_NULL capture argument remains in {p}', file=sys.stderr)
+                  expects_pointer = bool(re.search(r'ksu_sulog_capture\s*\([^;{]*struct\s+user_arg_ptr\s*\*', s, re.S))
+                  if expects_pointer and re.search(r',\s*&?USER_ARG_NULL\s*,\s*gfp\)', s):
+                      print(f'ERROR: USER_ARG_NULL value remains for pointer ksu_sulog_capture signature in {p}', file=sys.stderr)
+                      sys.exit(1)
+                  if (not expects_pointer) and re.search(r',\s*(?:&USER_ARG_NULL|NULL)\s*,\s*gfp\)', s):
+                      print(f'ERROR: pointer/null argv remains for value ksu_sulog_capture signature in {p}', file=sys.stderr)
                       sys.exit(1)
 
           for p in [Path('security/selinux/hooks.c'), Path('security/selinux/selinuxfs.c')]:
@@ -1626,7 +1641,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v41 Buildable Baseline build"
+            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v42 SukiSU Only Debug Fix build"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -1694,7 +1709,7 @@ jobs:
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v4
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v41-Buildable-Baseline-${{ github.run_number }}
+          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v42-SukiSU-Only-Debug-Fix-${{ github.run_number }}
           path: out_artifacts/**
           if-no-files-found: error
           retention-days: 14
