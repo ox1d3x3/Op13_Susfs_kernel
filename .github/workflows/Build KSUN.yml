@@ -4,122 +4,216 @@ permissions:
   contents: read
   actions: read
 
+concurrency:
+  group: op13-ksun-susfs-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
-  OP_EXPECTED_UTS: "6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k"
-  OP_UNAME_STOCK_MIMIC: "8-g7e1f3c083cc6-abogki467167594-4k"
+  DEVICE_MODEL: OP13
+  DEVICE_CODENAME: sun
+  TARGET_OS: OOS16
+  ANDROID_VERSION: android15
+  KERNEL_VERSION: "6.6"
+  EXPECTED_UTS: "6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k"
+  STOCK_UNAME_SUFFIX: "8-g7e1f3c083cc6-abogki467167594-4k"
+  DEFAULT_KSUN_REF: "551ad80473f60e052917aec08abf5323b6ab2f7c"
+  DEFAULT_SUSFS_REF: "85bcfac5edc8ba7808581e8d0a3ca9c7deca78e4"
 
 on:
   workflow_dispatch:
     inputs:
       feature_profile:
-        description: "Profile: battery_daily = stable/battery, wild_match = closest to known-good Wild KSUN release, advanced_daily = battery + Droidspaces, minimal_debug = minimal KSUN test"
+        description: "Profile: wild_match = closest known-good KSUN release, battery_daily = safer daily, advanced_daily = battery + Droidspaces, minimal_debug = smallest test"
         type: choice
         required: true
         default: wild_match
         options:
-          - battery_daily
           - wild_match
+          - battery_daily
           - advanced_daily
           - minimal_debug
       ksun_ref:
-        description: "KernelSU Next ref. Default pins the known-good OP13/OOS16 KSUN release family. Use dev only for testing."
+        description: "KernelSU Next ref/commit. Default matches the known-good OP13/OOS16 release family."
         type: string
         required: false
         default: "551ad80473f60e052917aec08abf5323b6ab2f7c"
       susfs:
-        description: "Enable SUSFS. Keep On for the real KSUN daily-driver test."
+        description: "Enable SUSFS. Keep On for MS Authenticator + root hiding tests."
         type: choice
         required: true
         default: "On"
-        options: ["On", "Off"]
+        options:
+          - "On"
+          - "Off"
       susfs_ref:
-        description: "simonpunk susfs4ksu ref. Default pins OP13/OOS16 android15-6.6 SUSFS v2.1.0 release-family commit."
+        description: "SUSFS ref/commit. Default is android15-6.6 SUSFS v2.1.0 release-family commit."
         type: string
         required: false
         default: "85bcfac5edc8ba7808581e8d0a3ca9c7deca78e4"
       optimize_level:
-        description: "Compiler optimisation. O2 is safer for daily driver; O3 is testing only."
+        description: "Compiler optimisation. O2 is safer for daily use; O3 is testing only."
         type: choice
         required: true
         default: O2
-        options: [O2, O3]
+        options:
+          - O2
+          - O3
+      BUILD_TIME:
+        description: "Build timestamp. Use F for current UTC time, blank for build-engine default, or paste stock-like timestamp."
+        type: string
+        required: false
+        default: "F"
       hmbird:
-        description: "HMBIRD/Fengchi override. Auto follows profile."
+        description: "HMBIRD/Fengchi. Auto follows selected profile."
         type: choice
         required: true
         default: Auto
-        options: [Auto, "On", "Off"]
+        options:
+          - Auto
+          - "On"
+          - "Off"
       droidspaces:
-        description: "Droidspaces override. Auto follows profile."
+        description: "Droidspaces. Auto follows selected profile."
         type: choice
         required: true
         default: Auto
-        options: [Auto, "On", "Off"]
+        options:
+          - Auto
+          - "On"
+          - "Off"
+      adios:
+        description: "ADIOS I/O scheduler request. Kept for menu parity; build engine applies support if available."
+        type: choice
+        required: true
+        default: "On"
+        options:
+          - "On"
+          - "Off"
       bbr:
         description: "BBR TCP congestion control"
         type: choice
         required: true
         default: "On"
-        options: ["On", "Off"]
+        options:
+          - "On"
+          - "Off"
       bbg:
         description: "Baseband Guard"
         type: choice
         required: true
         default: "On"
-        options: ["On", "Off"]
+        options:
+          - "On"
+          - "Off"
       ttl_ipset:
         description: "TTL target + IP_SET + IPv6 NAT support"
         type: choice
         required: true
         default: "On"
-        options: ["On", "Off"]
+        options:
+          - "On"
+          - "Off"
       unicode_fix:
         description: "Unicode path bypass fix"
         type: choice
         required: true
         default: "On"
-        options: ["On", "Off"]
+        options:
+          - "On"
+          - "Off"
       ntsync:
         description: "NTSYNC support"
         type: choice
         required: true
         default: "On"
-        options: ["On", "Off"]
+        options:
+          - "On"
+          - "Off"
       clean_build:
-        description: "Clean build without ccache"
+        description: "Clean build without cache reuse"
         type: boolean
         required: true
         default: false
+      debug_artifacts:
+        description: "Upload wrapper debug summary/log files if produced"
+        type: boolean
+        required: true
+        default: true
 
 jobs:
   build:
-    name: OP13 KSUN SUSFS v45 (${{ inputs.feature_profile }})
+    name: OP13 KSUN v48 ${{ inputs.feature_profile }}
     runs-on: ubuntu-latest
+    timeout-minutes: 360
+
     steps:
+      # -------------------------------------------------------------------------
+      # 01. Repository checkout
+      # -------------------------------------------------------------------------
       - name: Checkout current repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Checkout proven OP13 KSUN build logic
+      - name: Checkout pinned OP13 KSUN build engine
         uses: actions/checkout@v4
         with:
           repository: WildKernels/OnePlus_KernelSU_SUSFS
-          ref: main
-          path: wild_upstream
+          ref: 14d04c1
+          path: build_engine
           fetch-depth: 1
 
-      - name: Prepare upstream manifests for composite action
+      - name: Verify pinned build engine files
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Pinned build engine ref: 14d04c1"
+          echo "This checkout is used only for manifests/config reference."
+          echo "The composite build engine is called remotely as WildKernels/OnePlus_KernelSU_SUSFS/.github/actions@14d04c1."
+          test -f build_engine/manifests/oos16/oneplus_13_w.xml
+          echo "✅ OP13 OOS16 manifest exists."
+          echo "Remote action path reference is not validated locally, so the old local-action path failure cannot occur."
+
+      # -------------------------------------------------------------------------
+      # 02. Preflight and runner diagnostics
+      # -------------------------------------------------------------------------
+      - name: Print build context
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Runner      : $(uname -a)"
+          echo "Repository  : ${GITHUB_REPOSITORY}"
+          echo "Workflow    : ${GITHUB_WORKFLOW}"
+          echo "Run ID      : ${GITHUB_RUN_ID}"
+          echo "Profile     : ${{ inputs.feature_profile }}"
+          echo "KSUN ref    : ${{ inputs.ksun_ref }}"
+          echo "SUSFS       : ${{ inputs.susfs }} / ${{ inputs.susfs_ref }}"
+          echo "Expected UTS: ${EXPECTED_UTS}"
+          df -hT
+
+      - name: Install host tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates ccache curl flex git \
+            jq kmod libelf-dev libssl-dev lld make openssl python3 unzip zip
+
+      # -------------------------------------------------------------------------
+      # 03. Prepare OP13/OOS16 manifest and structured config
+      # -------------------------------------------------------------------------
+      - name: Prepare OP13 OOS16 manifests
         shell: bash
         run: |
           set -euo pipefail
           rm -rf manifests
-          cp -a wild_upstream/manifests ./manifests
+          cp -a build_engine/manifests ./manifests
           test -f manifests/oos16/oneplus_13_w.xml
-          echo "Prepared OP13 OOS16 manifest: manifests/oos16/oneplus_13_w.xml"
+          echo "Manifest ready: manifests/oos16/oneplus_13_w.xml"
 
-      - name: Prepare OP13 config JSON
-        id: config
+      - name: Resolve feature matrix
+        id: matrix
         shell: bash
         run: |
           set -euo pipefail
@@ -154,7 +248,7 @@ jobs:
               ds=false
               ;;
             *)
-              echo "Unsupported profile: $profile" >&2
+              echo "Unsupported feature_profile: $profile" >&2
               exit 1
               ;;
           esac
@@ -162,7 +256,10 @@ jobs:
           [ '${{ inputs.susfs }}' = 'On' ] && susfs=true
           [ '${{ inputs.bbr }}' = 'On' ] && bbr=true
           [ '${{ inputs.bbg }}' = 'On' ] && bbg=true
-          [ '${{ inputs.ttl_ipset }}' = 'On' ] && ttl=true && ip_set=true
+          if [ '${{ inputs.ttl_ipset }}' = 'On' ]; then
+            ttl=true
+            ip_set=true
+          fi
           [ '${{ inputs.unicode_fix }}' = 'On' ] && unicode=true
           [ '${{ inputs.ntsync }}' = 'On' ] && ntsync=true
 
@@ -178,15 +275,19 @@ jobs:
             Auto) ;;
           esac
 
-          cat > op13_config.json <<EOF
+          # ADIOS is retained as an explicit menu option for parity with your OP13 workflow.
+          # The build engine applies scheduler patches/config only where that support exists.
+          adios='${{ inputs.adios }}'
+
+          cat > op13_ksun_config.json <<EOF
           {
-            "model": "OP13",
-            "soc": "sun",
+            "model": "${DEVICE_MODEL}",
+            "soc": "${DEVICE_CODENAME}",
             "branch": "wild/sm8750",
             "manifest": "oneplus_13_w.xml",
-            "android_version": "android15",
-            "kernel_version": "6.6",
-            "os_version": "OOS16",
+            "android_version": "${ANDROID_VERSION}",
+            "kernel_version": "${KERNEL_VERSION}",
+            "os_version": "${TARGET_OS}",
             "lto": "thin",
             "zyc_compiler": "https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240723-release/Clang-19.0.0git-20240723.tar.gz",
             "c_compiler": "kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin",
@@ -203,54 +304,122 @@ jobs:
             "ip_set": $ip_set,
             "unicode": $unicode,
             "ntsync": $ntsync,
-            "uname": "${OP_UNAME_STOCK_MIMIC}"
+            "uname": "${STOCK_UNAME_SUFFIX}"
           }
           EOF
 
-          python3 -m json.tool op13_config.json
-          config_json=$(jq -c . op13_config.json)
+          python3 -m json.tool op13_ksun_config.json
+          config_json=$(jq -c . op13_ksun_config.json)
           echo "config_json=$config_json" >> "$GITHUB_OUTPUT"
+          echo "hmbird=$hmbird" >> "$GITHUB_OUTPUT"
+          echo "ds=$ds" >> "$GITHUB_OUTPUT"
+          echo "susfs=$susfs" >> "$GITHUB_OUTPUT"
+          echo "bbr=$bbr" >> "$GITHUB_OUTPUT"
+          echo "bbg=$bbg" >> "$GITHUB_OUTPUT"
+          echo "ttl=$ttl" >> "$GITHUB_OUTPUT"
+          echo "ip_set=$ip_set" >> "$GITHUB_OUTPUT"
+          echo "unicode=$unicode" >> "$GITHUB_OUTPUT"
+          echo "ntsync=$ntsync" >> "$GITHUB_OUTPUT"
+          echo "adios=$adios" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve build timestamp
+        id: build_time
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw='${{ inputs.BUILD_TIME }}'
+          if [ -z "$raw" ]; then
+            resolved=''
+          elif [ "$raw" = "F" ] || [ "$raw" = "f" ]; then
+            resolved="$(date -u '+%a %b %e %T UTC %Y')"
+          else
+            resolved="$raw"
+          fi
+          echo "resolved=$resolved" >> "$GITHUB_OUTPUT"
+          echo "Resolved build timestamp: ${resolved:-<engine default>}"
+
+      - name: Build plan summary
+        shell: bash
+        run: |
+          set -euo pipefail
           {
-            echo "## OP13 KSUN SUSFS v45 Build Plan"
+            echo "## OP13 KSUN SUSFS Stable Daily v48"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
-            echo "| Model | OP13 / sun / OOS16 |"
-            echo "| Profile | $profile |"
+            echo "| Model | ${DEVICE_MODEL} / ${DEVICE_CODENAME} / ${TARGET_OS} |"
+            echo "| Android/kernel | ${ANDROID_VERSION} / ${KERNEL_VERSION} |"
+            echo "| Feature profile | ${{ inputs.feature_profile }} |"
             echo "| Root backend | KernelSU Next / KSUN |"
             echo "| KSUN ref | ${{ inputs.ksun_ref }} |"
-            echo "| SUSFS | ${{ inputs.susfs }} |"
+            echo "| SUSFS | ${{ steps.matrix.outputs.susfs }} |"
             echo "| SUSFS ref | ${{ inputs.susfs_ref }} |"
-            echo "| Expected UTS | ${OP_EXPECTED_UTS} |"
-            echo "| HMBIRD | $hmbird |"
-            echo "| Droidspaces | $ds |"
-            echo "| BBR | $bbr |"
-            echo "| BBG | $bbg |"
-            echo "| TTL/IP_SET | $ttl / $ip_set |"
-            echo "| Unicode | $unicode |"
-            echo "| NTSYNC | $ntsync |"
+            echo "| Expected stock UTS | ${EXPECTED_UTS} |"
+            echo "| HMBIRD | ${{ steps.matrix.outputs.hmbird }} |"
+            echo "| Droidspaces | ${{ steps.matrix.outputs.ds }} |"
+            echo "| ADIOS menu request | ${{ steps.matrix.outputs.adios }} |"
+            echo "| BBR | ${{ steps.matrix.outputs.bbr }} |"
+            echo "| BBG | ${{ steps.matrix.outputs.bbg }} |"
+            echo "| TTL/IP_SET | ${{ steps.matrix.outputs.ttl }} / ${{ steps.matrix.outputs.ip_set }} |"
+            echo "| Unicode | ${{ steps.matrix.outputs.unicode }} |"
+            echo "| NTSYNC | ${{ steps.matrix.outputs.ntsync }} |"
+            echo "| Optimisation | ${{ inputs.optimize_level }} |"
+            echo "| BUILD_TIME input | ${{ inputs.BUILD_TIME }} |"
+            echo "| Build timestamp resolved | ${{ steps.build_time.outputs.resolved }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Build OP13 KernelSU Next SUSFS kernel
+      # -------------------------------------------------------------------------
+      # 04. Kernel build
+      # -------------------------------------------------------------------------
+      - name: Build OP13 KSUN SUSFS kernel
         id: build_kernel
-        uses: ./wild_upstream/.github/actions
+        uses: WildKernels/OnePlus_KernelSU_SUSFS/.github/actions@14d04c1ed0753280330ccabd773e903f76c9a038
         with:
-          op_config_json: ${{ steps.config.outputs.config_json }}
+          op_config_json: ${{ steps.matrix.outputs.config_json }}
           ksu_type: KSUN
           ksu_branch_or_hash: ${{ inputs.ksun_ref }}
           susfs_commit_hash_or_branch: ${{ inputs.susfs_ref }}
+          build_timestamp: ${{ steps.build_time.outputs.resolved }}
           optimize_level: ${{ inputs.optimize_level }}
           clean: ${{ inputs.clean_build }}
 
-      - name: Final summary
+      # -------------------------------------------------------------------------
+      # 05. Post-build discovery, validation and artifact mirror
+      # -------------------------------------------------------------------------
+      - name: Locate build outputs
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p wrapper_debug
+          {
+            echo "# Build output discovery"
+            echo ""
+            echo "## ZIP files"
+            find "$GITHUB_WORKSPACE" -type f -name '*.zip' -printf '%p %s bytes\n' | sort || true
+            echo ""
+            echo "## Kernel Images"
+            find "$GITHUB_WORKSPACE" -type f \( -name 'Image' -o -name 'Image.gz' -o -name 'Image.lz4' \) -printf '%p %s bytes\n' | sort || true
+          } | tee wrapper_debug/output_discovery.txt
+
+      - name: Final status summary
         if: always()
         shell: bash
         run: |
           {
             echo ""
-            echo "## v45 Final Status"
+            echo "## Test expectation"
             echo ""
-            echo "This workflow intentionally uses the proven OP13/OOS16 KSUN build action path instead of the custom SukiSU/CCTV18 compatibility stack."
-            echo "If this boots and LSPosed + susfs4ksu survive two reboots, the SukiSU path is confirmed as the unstable side."
+            echo "This is the KSUN comparison lane. Use it to compare against the SukiSU Ultra + CCTV18 builds."
+            echo "If this survives LSPosed + susfs4ksu + MS Authenticator after two reboots, the SukiSU runtime path is the unstable side."
+            echo ""
+            echo "Recommended first test: flash, boot, confirm KSUN manager, install/enable Zygisk Next + LSPosed + susfs4ksu, then reboot twice."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload wrapper debug artifacts
+        if: always() && inputs.debug_artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OP13_KSUN_v48_wrapper_debug_${{ github.run_number }}
+          path: wrapper_debug/**
+          if-no-files-found: ignore
