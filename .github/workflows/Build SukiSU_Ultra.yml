@@ -503,9 +503,8 @@ jobs:
           cp -af susfs4ksu/kernel_patches/include/linux/. common/include/linux/
           cp -f "$SUSFS_PATCH" common/
 
-          if [ -f "$GITHUB_WORKSPACE/cctv18_assets/other_patch/69_hide_stuff.patch" ]; then
-            cp -f "$GITHUB_WORKSPACE/cctv18_assets/other_patch/69_hide_stuff.patch" common/69_hide_stuff.patch
-          fi
+          echo "==> Skipping 69_hide_stuff.patch for SukiSU Ultra stable lane"
+          echo "Reason: v77 reached final link, then failed on SELinux policy-query symbols. Keep this lane clean and compile-safe first."
 
           cd common
           echo "==> Applying CCTV18 SUSFS patch with policy: ${{ inputs.susfs_patch_policy }}"
@@ -540,16 +539,64 @@ jobs:
             fi
           fi
 
-          if [ -f 69_hide_stuff.patch ]; then
-            echo "==> Applying CCTV18 69_hide_stuff.patch"
-            patch -p1 -N -F 3 < 69_hide_stuff.patch || true
-          fi
+          echo "==> 69_hide_stuff.patch is intentionally not applied in v78 SukiSU stable lane."
+          echo "    SUSFS inline remains enabled; extra SELinux/map-hide policy-query patches are deferred to ReSuki/test builds."
 
           if find . -name '*.rej' -print -quit | grep -q .; then
             echo "::error::Unexpected patch rejects remain after CCTV18 SUSFS stage."
             find . -name '*.rej' -print | tee "$GITHUB_WORKSPACE/_ox_debug/rejects-after-susfs-stage.txt"
             exit 1
           fi
+
+      - name: "SukiSU SELinux policy-query compatibility guard"
+        if: ${{ inputs.SUSFS == 'On' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel_workspace/common
+          mkdir -p "$GITHUB_WORKSPACE/_ox_debug"
+
+          {
+            echo "==> SukiSU + CCTV18 SELinux policy-query compatibility guard"
+            echo "v77 reached final link with SukiSU SUSFS_INLINE_HOOK + KPM + SUSFS v2.1.0."
+            echo "The failure was unresolved SELinux policy-query symbols, not root/SUSFS integration."
+            echo "For the stable daily-driver SukiSU lane, disable only the source-level SELinux policy-query replacement blocks in hooks.c and selinuxfs.c."
+            echo "This does not import another SUSFS tree and does not touch the core SUSFS fs/include payload."
+          } | tee "$GITHUB_WORKSPACE/_ox_debug/selinux-policy-query-guard.log"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          paths = [Path('security/selinux/hooks.c'), Path('security/selinux/selinuxfs.c')]
+          changed = []
+          for path in paths:
+              if not path.exists():
+                  continue
+              src = path.read_text(encoding='utf-8', errors='ignore')
+              original = src
+              # CCTV18's 50_add_susfs patch adds source-level SELinux policy-query wrappers
+              # under CONFIG_KSU_SUSFS. Current SukiSU builtin does not provide the backup_sepolicy
+              # and *_with_policy symbols needed by those wrappers, causing final link failure.
+              # Gate those wrappers behind a symbol we intentionally do not enable for this
+              # stable SukiSU lane. Core SUSFS and SukiSU inline hook remain enabled.
+              src = src.replace(
+                  '#ifdef CONFIG_KSU_SUSFS\n',
+                  '#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_SELINUX_POLICY_HIDE)\n'
+              )
+              if src != original:
+                  path.write_text(src, encoding='utf-8')
+                  changed.append(str(path))
+
+          out = Path('../_ox_debug/selinux-policy-query-guard-files.txt')
+          out.write_text('\n'.join(changed) + ('\n' if changed else 'none\n'), encoding='utf-8')
+          print('Guarded files:', ', '.join(changed) if changed else 'none')
+          PY
+
+          echo "==> SELinux symbol scan after guard" | tee -a "$GITHUB_WORKSPACE/_ox_debug/selinux-policy-query-guard.log"
+          for sym in backup_sepolicy security_context_to_sid_with_policy security_sid_to_context_with_policy security_compute_av_user_with_policy; do
+            echo "--- $sym ---" | tee -a "$GITHUB_WORKSPACE/_ox_debug/selinux-policy-query-guard.log"
+            grep -Rsn "$sym" security/selinux | tee -a "$GITHUB_WORKSPACE/_ox_debug/selinux-policy-query-guard.log" || true
+          done
 
       - name: "Apply optional CCTV18 feature patches"
         shell: bash
@@ -661,7 +708,7 @@ jobs:
           set_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
           set_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
 
-          echo "==> Applying v77 SukiSU Ultra daily-driver config profile: ${{ inputs.profile }}"
+          echo "==> Applying v78 SukiSU Ultra daily-driver config profile: ${{ inputs.profile }}"
           set_y CONFIG_KSU
           set_y CONFIG_KSU_MANUAL_SU
 
@@ -908,8 +955,8 @@ jobs:
             exit 1
           fi
 
-          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v77"
-          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v77" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v77.sha256"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v78"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v78" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v78.sha256"
 
           uts="unknown"
           if [ -f out/include/generated/utsrelease.h ]; then
@@ -927,7 +974,7 @@ jobs:
           rm -rf ak3_work
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3_work
           rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
-          cp -f artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v77 ak3_work/Image
+          cp -f artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v78 ak3_work/Image
 
           cat > ak3_work/anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
@@ -1045,7 +1092,7 @@ jobs:
           chmod 0755 ak3_work/anykernel.sh
 
           cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
-          OX1D3X3 OP13 SukiSU Ultra + CCTV18 INLINE SUSFS v77
+          OX1D3X3 OP13 SukiSU Ultra + CCTV18 INLINE SUSFS v78
           Device: OnePlus 13 / sun / PJZ110
           Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ env.CCTV18_KERNEL_REF }}
           Build assets: cctv18/oppo_oplus_realme_sm8750
@@ -1064,7 +1111,7 @@ jobs:
           EOF
           sed -i 's/^          //' ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt
 
-          zip_name="AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v77_${{ github.run_number }}_FLASH_THIS.zip"
+          zip_name="AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v78_${{ github.run_number }}_FLASH_THIS.zip"
           ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -1082,7 +1129,7 @@ jobs:
             echo "::error::OX1D3X3 custom install banner was not packaged."
             exit 1
           fi
-          if ! unzip -p "artifacts/$zip_name" anykernel.sh | grep -q 'SukiSU Ultra \[StockLike Daily\]'; then
+          if ! unzip -p "artifacts/$zip_name" anykernel.sh | grep -q 'SukiSU Ultra \[Inline StockLike Daily\]'; then
             echo "::error::OX install info banner was not packaged."
             exit 1
           fi
@@ -1098,7 +1145,7 @@ jobs:
           cat > "$MOD/module.prop" <<EOF
           id=ox_op13_zram_lz4
           name=OX OP13 ZRAM LZ4 Tuner
-          version=v77
+          version=v78
           versionCode=70
           author=ox1d3x3
           description=Safe OP13 ZRAM helper. Prefers ${{ inputs.zram_comp }} if supported. Skips destructive reset when zram is already active.
@@ -1193,7 +1240,7 @@ jobs:
           chmod 0755 "$MOD/post-fs-data.sh" "$MOD/service.sh" "$MOD/uninstall.sh" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/update-binary"
           sed -i 's/^          //' "$MOD"/*.sh "$MOD/module.prop" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/"* || true
 
-          zip_name="OP13_ZRAM_LZ4_Tuner_v77_${{ github.run_number }}.zip"
+          zip_name="OP13_ZRAM_LZ4_Tuner_v78_${{ github.run_number }}.zip"
           ( cd "$MOD" && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -1242,7 +1289,7 @@ jobs:
 
           if [ -f "$GITHUB_STEP_SUMMARY" ]; then
             {
-              echo "# OP13 SukiSU Ultra + CCTV18 Inline StockLike Daily v77"
+              echo "# OP13 SukiSU Ultra + CCTV18 Inline StockLike Daily v78"
               echo ""
               echo "## Verdict"
               echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
@@ -1259,7 +1306,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v77-${{ github.run_number }}
+          name: OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v78-${{ github.run_number }}
           path: |
             artifacts/**
             _ox_debug/**
@@ -1272,11 +1319,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -s artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v77 ]; then
-            echo "::error::Build failed before producing Image. Download OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v77 debug artifact."
+          if [ ! -s artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v78 ]; then
+            echo "::error::Build failed before producing Image. Download OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v78 debug artifact."
             exit 1
           fi
-          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v77_*_FLASH_THIS.zip >/dev/null 2>&1; then
+          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v78_*_FLASH_THIS.zip >/dev/null 2>&1; then
             echo "::error::Image built but AnyKernel3 flashable ZIP was not produced."
             exit 1
           fi
