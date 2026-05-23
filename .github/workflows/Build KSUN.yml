@@ -18,22 +18,22 @@ on:
           - debug_only
         default: stock_daily
       ksun_ref:
-        description: "KernelSU-Next ref for CCTV18-compatible dev-susfs setup path. Keep dev-susfs for clean CCTV18 KSUN lane."
+        description: "KernelSU-Next ref. For clean CCTV18 KSUN lane keep dev-susfs unless you are testing a known-good commit."
         required: true
         type: string
         default: "dev-susfs"
       susfs_enable:
-        description: "Enable CCTV18 susfs4oki. This workflow uses CCTV18 SUSFS only."
+        description: "Enable CCTV18 susfs4oki only. No WildKernels/TheWildJames SUSFS patch tree is used."
         required: true
         type: boolean
         default: true
       susfs_ref:
-        description: "CCTV18 susfs4oki branch/ref. OP13 Android 15 / 6.6 should use oki-android15-6.6."
+        description: "CCTV18 susfs4oki branch/ref. OP13 Android 15/16 6.6 should use oki-android15-6.6."
         required: true
         type: string
         default: "oki-android15-6.6"
       susfs_patch_policy:
-        description: "strict fails on any SUSFS reject; audited_cctv18 only allows the known task_mmu reject; native_cctv18 behaves like CCTV18 upstream and audits rejects."
+        description: "strict fails on any reject; audited_cctv18 allows only the known task_mmu reject; native_cctv18 audits but continues like CCTV18."
         required: true
         type: choice
         options:
@@ -64,28 +64,23 @@ on:
           - O2
           - O3
         default: O2
-      lz4_zstd:
-        description: "Apply CCTV18 LZ4/ZSTD patch when it cleanly matches this source."
-        required: true
-        type: boolean
-        default: true
       adios:
-        description: "Apply CCTV18 ADIOS scheduler patch when it cleanly matches this source."
+        description: "Apply CCTV18 ADIOS scheduler patch if it exists and dry-run applies cleanly."
         required: true
         type: boolean
         default: true
       baseband_guard:
-        description: "Apply CCTV18 Baseband Guard patch when it cleanly matches this source."
+        description: "Apply CCTV18 Baseband Guard patch if it exists and dry-run applies cleanly."
         required: true
         type: boolean
         default: true
       better_net:
-        description: "Enable extra netfilter/ipset/TTL support for advanced networking."
+        description: "Enable netfilter/ipset/TTL support for useful advanced networking without making BBR default."
         required: true
         type: boolean
         default: true
       bbr_mode:
-        description: "BBR off is default for daily driver; enabled/default are available for testing."
+        description: "BBR off is default for daily driver. enabled/default are test options."
         required: true
         type: choice
         options:
@@ -93,18 +88,37 @@ on:
           - enabled
           - default
         default: off
+      zram_lz4:
+        description: "Enable kernel ZRAM + LZ4/LZ4HC/ZSTD support in config. This is config-only, not a random patch mix."
+        required: true
+        type: boolean
+        default: true
+      zram_comp:
+        description: "Preferred ZRAM default compressor when kernel config supports CONFIG_ZRAM_DEF_COMP."
+        required: true
+        type: choice
+        options:
+          - lz4
+          - lzo-rle
+          - zstd
+        default: lz4
+      package_zram_tuner_zip:
+        description: "Create separate KSU/Magisk ZRAM LZ4 tuner zip artifact. Safe/non-invasive by default."
+        required: true
+        type: boolean
+        default: true
       ntsync:
         description: "Enable NTSYNC config if available."
         required: true
         type: boolean
         default: true
       unicode_fix:
-        description: "Apply CCTV18 Unicode-related patch when present and clean."
+        description: "Apply CCTV18 Unicode-related patch if present and dry-run applies cleanly."
         required: true
         type: boolean
         default: true
       droidspaces:
-        description: "Enable Droidspaces/container options. Off is safer for normal phone use."
+        description: "Enable Droidspaces/container namespace options. Off is safer for normal phone use."
         required: true
         type: boolean
         default: false
@@ -114,7 +128,7 @@ on:
         type: boolean
         default: false
       package_ak3:
-        description: "Create AnyKernel3 flashable ZIP plus raw Image."
+        description: "Create fixed AnyKernel3 flashable ZIP plus raw Image."
         required: true
         type: boolean
         default: true
@@ -124,13 +138,13 @@ on:
         type: boolean
         default: false
       upload_debug:
-        description: "Always upload logs, final config, rejects, UTS, Image and ZIP."
+        description: "Always upload logs, final config, rejects, UTS, Image and ZIPs."
         required: true
         type: boolean
         default: true
 
 concurrency:
-  group: op13-ksun-cctv18-clean-v68-${{ github.ref }}
+  group: op13-ksun-cctv18-clean-v70-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -143,7 +157,7 @@ env:
   CCTV18_BUILD_REPO: cctv18/oppo_oplus_realme_sm8750
   CCTV18_COMMON_REPO: cctv18/android_kernel_common_oneplus_sm8750
   CCTV18_TOOLCHAIN_RELEASE: LLVM-Clang18-r510928
-  CCACHE_DIR: ${{ github.workspace }}/.ccache_op13_ksun_cctv18_v68
+  CCACHE_DIR: ${{ github.workspace }}/.ccache_op13_ksun_cctv18_v70
   CCACHE_MAXSIZE: 3G
 
 jobs:
@@ -176,7 +190,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf kernel_workspace cctv18_assets _ox_debug artifacts ak3_work
+          rm -rf kernel_workspace cctv18_assets _ox_debug artifacts ak3_work zram_tuner_work
           mkdir -p kernel_workspace _ox_debug artifacts
 
           echo "==> Cloning CCTV18 build assets only"
@@ -357,7 +371,7 @@ jobs:
             exit 1
           fi
 
-      - name: 07 Apply CCTV18 optional patches cleanly only if they match
+      - name: 07 Apply minimal CCTV18 optional patches only if clean
         shell: bash
         run: |
           set -euo pipefail
@@ -392,11 +406,10 @@ jobs:
             fi
           }
 
-          clean_apply_optional_patch "lz4_zstd" "${{ inputs.lz4_zstd }}" "(lz4|zstd).*\.patch$"
-          clean_apply_optional_patch "adios" "${{ inputs.adios }}" "adios.*\.patch$"
-          clean_apply_optional_patch "baseband_guard" "${{ inputs.baseband_guard }}" "(baseband|bbg).*\.patch$"
-          clean_apply_optional_patch "unicode" "${{ inputs.unicode_fix }}" "unicode.*\.patch$"
-          clean_apply_optional_patch "rekernel" "${{ inputs.rekernel }}" "(rekernel|re-kernel).*\.patch$"
+          clean_apply_optional_patch "adios" "${{ inputs.adios }}" "(^|/).*adios.*\.patch$"
+          clean_apply_optional_patch "baseband_guard" "${{ inputs.baseband_guard }}" "(^|/).*(baseband|bbg).*\.patch$"
+          clean_apply_optional_patch "unicode" "${{ inputs.unicode_fix }}" "(^|/).*unicode.*\.patch$"
+          clean_apply_optional_patch "rekernel" "${{ inputs.rekernel }}" "(^|/).*(rekernel|re-kernel).*\.patch$"
 
           if find . -name '*.rej' -print -quit | grep -q .; then
             echo "::error::Patch rejects found after optional patch stage."
@@ -431,10 +444,11 @@ jobs:
 
           cfg_sym() { local s="$1"; echo "${s#CONFIG_}"; }
           set_y() { scripts/config --file "$cfg" -e "$(cfg_sym "$1")" || true; }
+          set_m() { scripts/config --file "$cfg" -m "$(cfg_sym "$1")" || true; }
           set_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
           set_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
 
-          echo "==> Applying v68 daily-driver config profile: ${{ inputs.profile }}"
+          echo "==> Applying v70 daily-driver config profile: ${{ inputs.profile }}"
           set_y CONFIG_KSU
 
           if [ "${{ inputs.susfs_enable }}" = "true" ]; then
@@ -447,23 +461,20 @@ jobs:
               CONFIG_KSU_SUSFS_SUS_KSTAT \
               CONFIG_KSU_SUSFS_TRY_UMOUNT \
               CONFIG_KSU_SUSFS_SPOOF_UNAME \
-              CONFIG_KSU_SUSFS_ENABLE_LOG \
               CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
               CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
               CONFIG_KSU_SUSFS_OPEN_REDIRECT \
               CONFIG_KSU_SUSFS_SUS_SU \
               CONFIG_KSU_SUSFS_SUS_MAP; do
-              case "$opt" in
-                CONFIG_KSU_SUSFS_ENABLE_LOG) set_n "$opt" ;;
-                *) set_y "$opt" ;;
-              esac
+              set_y "$opt"
             done
+            set_n CONFIG_KSU_SUSFS_ENABLE_LOG
           fi
 
           if [ "${{ inputs.stock_mimic }}" = "true" ]; then
             set_str CONFIG_LOCALVERSION "-${{ inputs.kernel_name }}"
           else
-            set_str CONFIG_LOCALVERSION "-${{ inputs.kernel_name }}-ox-v68"
+            set_str CONFIG_LOCALVERSION "-${{ inputs.kernel_name }}-ox-v70"
           fi
           set_n CONFIG_LOCALVERSION_AUTO
 
@@ -480,6 +491,25 @@ jobs:
               set_y CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3
               ;;
           esac
+
+          if [ "${{ inputs.zram_lz4 }}" = "true" ]; then
+            echo "==> Enabling ZRAM + LZ4/LZ4HC/ZSTD config support"
+            for opt in \
+              CONFIG_ZRAM \
+              CONFIG_ZSMALLOC \
+              CONFIG_CRYPTO_LZ4 \
+              CONFIG_CRYPTO_LZ4HC \
+              CONFIG_CRYPTO_ZSTD \
+              CONFIG_LZ4_COMPRESS \
+              CONFIG_LZ4_DECOMPRESS \
+              CONFIG_ZSTD_COMPRESS \
+              CONFIG_ZSTD_DECOMPRESS; do
+              set_y "$opt"
+            done
+            set_y CONFIG_ZRAM_WRITEBACK
+            set_y CONFIG_ZRAM_MULTI_COMP
+            set_str CONFIG_ZRAM_DEF_COMP "${{ inputs.zram_comp }}"
+          fi
 
           if [ "${{ inputs.better_net }}" = "true" ]; then
             for opt in \
@@ -501,6 +531,8 @@ jobs:
             done
           fi
 
+          # Avoid the previous DEFAULT_BBR choice warning by clearing DEFAULT_BBR before handling BBR mode.
+          set_n CONFIG_DEFAULT_BBR || true
           case "${{ inputs.bbr_mode }}" in
             off)
               set_n CONFIG_TCP_CONG_BBR
@@ -538,13 +570,12 @@ jobs:
               ;;
           esac
 
-          echo "==> Running olddefconfig without yes pipe"
-          # Important: do not use `yes | make olddefconfig` with `set -o pipefail`; yes exits via SIGPIPE and falsely fails the job.
+          echo "==> Running olddefconfig directly; no yes pipe, no SIGPIPE false failure"
           make "${MAKE_ARGS[@]}" olddefconfig
 
           cp -f out/.config "$GITHUB_WORKSPACE/_ox_debug/final.config"
           echo "==> Final config scan"
-          grep -E 'CONFIG_KSU|CONFIG_LOCALVERSION|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_BBR|CONFIG_IP_SET|CONFIG_NTSYNC|CONFIG_LTO|CONFIG_CC_OPTIMIZE|CONFIG_NETFILTER_XT_TARGET_TTL|CONFIG_ADIOS|CONFIG_BBG|CONFIG_BASEBAND' out/.config | tee "$GITHUB_WORKSPACE/_ox_debug/config-scan.txt" || true
+          grep -E 'CONFIG_KSU|CONFIG_LOCALVERSION|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_BBR|CONFIG_IP_SET|CONFIG_NTSYNC|CONFIG_LTO|CONFIG_CC_OPTIMIZE|CONFIG_NETFILTER_XT_TARGET_TTL|CONFIG_ADIOS|CONFIG_BBG|CONFIG_BASEBAND|CONFIG_ZRAM|CONFIG_ZSMALLOC|CONFIG_CRYPTO_LZ4|CONFIG_LZ4|CONFIG_ZSTD' out/.config | tee "$GITHUB_WORKSPACE/_ox_debug/config-scan.txt" || true
 
       - name: 09 Build OP13 KSUN CCTV18 clean Image
         id: build
@@ -576,8 +607,8 @@ jobs:
             exit 1
           fi
 
-          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v68"
-          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v68" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v68.sha256"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v70"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v70" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v70.sha256"
 
           uts="unknown"
           if [ -f out/include/generated/utsrelease.h ]; then
@@ -588,29 +619,131 @@ jobs:
           echo "uts=$uts" >> "$GITHUB_OUTPUT"
           ccache -s | tee "$GITHUB_WORKSPACE/_ox_debug/ccache-final.txt" || true
 
-      - name: 10 Package AnyKernel3 flashable ZIP
+      - name: 10 Package fixed AnyKernel3 flashable ZIP with OX install banner
         if: ${{ inputs.package_ak3 == true }}
         shell: bash
         run: |
           set -euo pipefail
           rm -rf ak3_work
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3_work
-          rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md ak3_work/LICENSE || true
-          cp -f artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v68 ak3_work/Image
+          rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
+          cp -f artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v70 ak3_work/Image
 
-          if [ -f ak3_work/anykernel.sh ]; then
-            sed -i 's/^do.devicecheck=.*/do.devicecheck=1/' ak3_work/anykernel.sh || true
-            sed -i 's/^device.name1=.*/device.name1=sun/' ak3_work/anykernel.sh || true
-            sed -i 's/^device.name2=.*/device.name2=OP13/' ak3_work/anykernel.sh || true
-            sed -i 's/^device.name3=.*/device.name3=OnePlus13/' ak3_work/anykernel.sh || true
-            sed -i 's/^device.name4=.*/device.name4=PJZ110/' ak3_work/anykernel.sh || true
-            awk 'NR==1 {print; print "ui_print \"\""; print "ui_print \"OX1D3X3 OP13 KSUN + CCTV18 CLEAN SUSFS v68\""; print "ui_print \"Stock-like daily-driver build\""; print "ui_print \"SUSFS source: cctv18/susfs4oki only\""; print "ui_print \"No WildKernels/TheWildJames SUSFS patch tree\""; print "ui_print \"\""; next} {print}' ak3_work/anykernel.sh > ak3_work/anykernel.sh.new
-            mv ak3_work/anykernel.sh.new ak3_work/anykernel.sh
-            chmod 0755 ak3_work/anykernel.sh
+          cat > ak3_work/anykernel.sh <<'AK3'
+          ### AnyKernel3 Ramdisk Mod Script
+          ## osm0sis @ xda-developers
+          ## OX1D3X3 OP13 KSUN + CCTV18 clean SUSFS package
+
+          ### AnyKernel setup
+          # global properties
+          properties() { '
+          kernel.string=PJZ110 | KernelSU-Next [StockLike] + CCTV18 SUSFS (OP-OX)
+          do.devicecheck=0
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          do.check_boot_version=0
+          device.name1=
+          device.name2=
+          device.name3=
+          device.name4=
+          device.name5=
+          supported.versions=
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; } # end properties
+
+
+          ### AnyKernel install
+          ## boot shell variables
+          # OP13 / PJZ110 is A/B slot device. Use partition-name detection, not old omap path.
+          block=boot
+          is_slot_device=auto
+          slot_select=active
+          ramdisk_compression=auto
+          patch_vbmeta_flag=auto
+          no_vbmeta_partition_patch=1
+          no_magisk_check=1
+
+          # import functions/variables and setup patching - see for reference (DO NOT REMOVE)
+          . tools/ak3-core.sh
+
+
+          # --- OX1D3X3 CUSTOM START ---
+          ui_print ' '
+          ui_print '===================================================='
+          ui_print '                   __   __  __ '
+          ui_print '                  \ \ / //_ |'
+          ui_print '                   \ V /   | |'
+          ui_print '                     > <    | |'
+          ui_print '                   / . \   | |'
+          ui_print '                 /_/ \_\  |_|'
+          ui_print '===================================================='
+          ui_print ' '
+          ui_print 'PJZ110 | KernelSU-Next [StockLike Daily] + CCTV18 SUSFS'
+          ui_print 'Kernel : 6.6.89-${{ inputs.kernel_name }}'
+          ui_print 'Build  : #${{ github.run_number }} (${{ inputs.kernel_name }})'
+          ui_print 'Builder: @Ox1d3x3'
+          ui_print 'Credits: @cctv18, KernelSU-Next, osm0sis, @mrcxlinux'
+          ui_print 'Source : CCTV18 susfs4oki only - no mixed SUSFS patch tree'
+          ui_print 'ZRAM   : kernel config=${{ inputs.zram_lz4 }} / preferred=${{ inputs.zram_comp }}'
+          ui_print ' '
+
+          device="$(getprop ro.product.device 2>/dev/null || true)"
+          model="$(getprop ro.product.model 2>/dev/null || true)"
+          android="$(getprop ro.build.version.release 2>/dev/null || true)"
+          patch="$(getprop ro.build.version.security_patch 2>/dev/null || true)"
+          slot="$(getprop ro.boot.slot_suffix 2>/dev/null || true)"
+          [ -z "$slot" ] && slot="$(getprop ro.boot.slot 2>/dev/null || true)"
+          if [ -n "$device" ]; then ui_print "Device : $device ($model)"; fi
+          if [ -n "$android" ]; then ui_print "Android: $android"; fi
+          if [ -n "$patch" ]; then ui_print "Patch  : $patch"; fi
+          if [ -n "$slot" ]; then ui_print "Slot   : $slot"; fi
+          ui_print 'Target : active boot partition'
+          ui_print ' '
+
+          # Best-effort open project page (may be ignored in recovery)
+          if command -v cmd >/dev/null 2>&1; then
+          (cmd activity start --user 0 -a android.intent.action.VIEW -d 'https://github.com/ox1d3x3/Op13_Susfs_kernel' >/dev/null 2>&1 &) || true
+          elif command -v am >/dev/null 2>&1; then
+          (am start --user 0 -a android.intent.action.VIEW -d 'https://github.com/ox1d3x3/Op13_Susfs_kernel' >/dev/null 2>&1 &) || true
+          fi
+          # --- OX1D3X3 CUSTOM END ---
+
+          # GKI check
+          kernel_version=$(cat /proc/version | awk -F '-' '{print $1}' | awk '{print $3}')
+          case $kernel_version in
+              5.1*) ksu_supported=true ;;
+              6.1*) ksu_supported=true ;;
+              6.6*) ksu_supported=true ;;
+              *) ksu_supported=false ;;
+          esac
+
+          ui_print ' '
+          ui_print '  -> Thank you for using this kernel'
+          $ksu_supported || abort '  -> Non-GKI device, abort.'
+
+          # boot install
+          split_boot
+
+          if [ -f "$SPLITIMG/ramdisk.cpio" ]; then
+              unpack_ramdisk
+              write_boot
+          else
+              flash_boot
           fi
 
+          ui_print ' '
+          ui_print ' Reboot Your System '
+          ui_print ' '
+          ui_print ' '
+          AK3
+          sed -i 's/^          //' ak3_work/anykernel.sh
+          chmod 0755 ak3_work/anykernel.sh
+
           cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
-          OX1D3X3 OP13 KSUN + CCTV18 CLEAN SUSFS v68
+          OX1D3X3 OP13 KSUN + CCTV18 CLEAN SUSFS v70
           Device: OnePlus 13 / sun / PJZ110
           Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ inputs.cctv18_kernel_ref }}
           Build assets: cctv18/oppo_oplus_realme_sm8750
@@ -621,22 +754,154 @@ jobs:
           TheWildJames kernel_patches: NOT USED
           Profile: ${{ inputs.profile }}
           Optimise: ${{ inputs.optimise }}
+          ZRAM/LZ4 config: ${{ inputs.zram_lz4 }} / compressor=${{ inputs.zram_comp }}
+          Separate ZRAM tuner ZIP: ${{ inputs.package_zram_tuner_zip }}
           UTS_RELEASE: ${{ steps.build.outputs.uts }}
           Built UTC: $(date -u '+%Y-%m-%d %H:%M:%S')
           EOF
+          sed -i 's/^          //' ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt
 
-          zip_name="AK3_OP13_KSUN_CCTV18_clean_stocklike_v68_${{ github.run_number }}.zip"
+          zip_name="AK3_OP13_KSUN_CCTV18_clean_stocklike_v70_${{ github.run_number }}_FLASH_THIS.zip"
           ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
-      - name: 11 Clean-source audit and debug collection
+          echo "==> AnyKernel3 package scan"
+          unzip -p "artifacts/$zip_name" anykernel.sh | sed -n '1,130p' | tee _ox_debug/packaged-anykernel.sh.txt
+          if unzip -p "artifacts/$zip_name" anykernel.sh | grep -q 'omap_hsmmc'; then
+            echo "::error::Packaged anykernel.sh still contains old omap boot path."
+            exit 1
+          fi
+          if unzip -p "artifacts/$zip_name" anykernel.sh | grep -q 'ExampleKernel'; then
+            echo "::error::Packaged anykernel.sh still contains default ExampleKernel banner."
+            exit 1
+          fi
+          if ! unzip -p "artifacts/$zip_name" anykernel.sh | grep -q 'OX1D3X3 CUSTOM START'; then
+            echo "::error::OX1D3X3 custom install banner was not packaged."
+            exit 1
+          fi
+          if ! unzip -p "artifacts/$zip_name" anykernel.sh | grep -q 'KernelSU-Next \[StockLike Daily\]'; then
+            echo "::error::OX install info banner was not packaged."
+            exit 1
+          fi
+      - name: 11 Package separate ZRAM LZ4 tuner ZIP
+        if: ${{ inputs.package_zram_tuner_zip == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf zram_tuner_work
+          MOD="zram_tuner_work"
+          mkdir -p "$MOD/META-INF/com/google/android" "$MOD/common"
+
+          cat > "$MOD/module.prop" <<EOF
+          id=ox_op13_zram_lz4
+          name=OX OP13 ZRAM LZ4 Tuner
+          version=v70
+          versionCode=70
+          author=ox1d3x3
+          description=Safe OP13 ZRAM helper. Prefers ${{ inputs.zram_comp }} if supported. Skips destructive reset when zram is already active.
+          EOF
+
+          cat > "$MOD/post-fs-data.sh" <<'EOS'
+          #!/system/bin/sh
+          MODDIR=${0%/*}
+          LOG=/data/adb/ox_zram_lz4.log
+          PREF="lz4"
+          CONF=/data/adb/ox_zram_lz4.conf
+          [ -f "$CONF" ] && . "$CONF"
+          echo "[$(date)] post-fs-data start" >> "$LOG"
+          Z=/sys/block/zram0
+          [ -d "$Z" ] || { echo "zram0 not found" >> "$LOG"; exit 0; }
+          if grep -qE '(^|/)zram0($| )' /proc/swaps 2>/dev/null; then
+            echo "zram already active, skipping reset for safety" >> "$LOG"
+            cat /proc/swaps >> "$LOG" 2>/dev/null
+            exit 0
+          fi
+          if [ -w "$Z/reset" ]; then echo 1 > "$Z/reset" 2>>"$LOG" || true; fi
+          if [ -r "$Z/comp_algorithm" ] && [ -w "$Z/comp_algorithm" ]; then
+            for alg in "$PREF" lz4 lzo-rle lzo zstd; do
+              if grep -qw "$alg" "$Z/comp_algorithm"; then
+                echo "$alg" > "$Z/comp_algorithm" 2>>"$LOG" && echo "compressor=$alg" >> "$LOG"
+                break
+              fi
+            done
+          fi
+          mem_kb=$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)
+          [ -n "$mem_kb" ] || mem_kb=$((8*1024*1024))
+          target_kb=$((mem_kb / 2))
+          min_kb=$((4*1024*1024))
+          cap_kb=$((8*1024*1024))
+          [ "$target_kb" -lt "$min_kb" ] && target_kb="$min_kb"
+          [ "$target_kb" -gt "$cap_kb" ] && target_kb="$cap_kb"
+          echo "${target_kb}K" > "$Z/disksize" 2>>"$LOG" || true
+          /system/bin/mkswap /dev/block/zram0 >> "$LOG" 2>&1 || /system/bin/toybox mkswap /dev/block/zram0 >> "$LOG" 2>&1 || true
+          /system/bin/swapon -p 32767 /dev/block/zram0 >> "$LOG" 2>&1 || /system/bin/toybox swapon -p 32767 /dev/block/zram0 >> "$LOG" 2>&1 || true
+          cat /proc/swaps >> "$LOG" 2>/dev/null || true
+          echo "[$(date)] post-fs-data done" >> "$LOG"
+          EOS
+
+          cat > "$MOD/service.sh" <<'EOS'
+          #!/system/bin/sh
+          LOG=/data/adb/ox_zram_lz4.log
+          sleep 30
+          echo "[$(date)] service check" >> "$LOG"
+          if [ -r /sys/block/zram0/comp_algorithm ]; then
+            echo "comp_algorithm: $(cat /sys/block/zram0/comp_algorithm)" >> "$LOG"
+          fi
+          cat /proc/swaps >> "$LOG" 2>/dev/null || true
+          EOS
+
+          cat > "$MOD/uninstall.sh" <<'EOS'
+          #!/system/bin/sh
+          rm -f /data/adb/ox_zram_lz4.log
+          EOS
+
+          cat > "$MOD/customize.sh" <<'EOS'
+          ui_print ""
+          ui_print "===================================================="
+          ui_print "                   __   __  __ "
+          ui_print "                  \\ \\ / //_ |"
+          ui_print "                   \\ V /   | |"
+          ui_print "                     > <    | |"
+          ui_print "                   / . \\   | |"
+          ui_print "                 /_/ \\_\\  |_|"
+          ui_print "===================================================="
+          ui_print "OX OP13 ZRAM LZ4 Tuner"
+          ui_print "Preferred compressor: ${{ inputs.zram_comp }}"
+          ui_print "Safe mode: will not reset zram if already active"
+          ui_print "Log: /data/adb/ox_zram_lz4.log"
+          ui_print ""
+          EOS
+
+          cat > "$MOD/META-INF/com/google/android/updater-script" <<'EOS'
+          #MAGISK
+          EOS
+
+          cat > "$MOD/META-INF/com/google/android/update-binary" <<'EOS'
+          #!/sbin/sh
+          # Minimal compatibility stub for Magisk/KernelSU module installers.
+          OUTFD=$2
+          ZIPFILE=$3
+          ui_print() { echo "ui_print $1" > /proc/self/fd/$OUTFD; echo "ui_print" > /proc/self/fd/$OUTFD; }
+          ui_print "Install this ZIP through KernelSU/SukiSU/Magisk module manager."
+          ui_print "If your manager supports Magisk module ZIPs, it will handle extraction."
+          exit 0
+          EOS
+
+          chmod 0755 "$MOD/post-fs-data.sh" "$MOD/service.sh" "$MOD/uninstall.sh" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/update-binary"
+          sed -i 's/^          //' "$MOD"/*.sh "$MOD/module.prop" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/"* || true
+
+          zip_name="OP13_ZRAM_LZ4_Tuner_v70_${{ github.run_number }}.zip"
+          ( cd "$MOD" && zip -r9 "../artifacts/$zip_name" . >/dev/null )
+          sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
+
+      - name: 12 Clean-source audit and debug collection
         if: always()
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p _ox_debug artifacts
           {
-            echo "Workflow: OP13 KSUN CCTV18 Clean StockLike Daily v68"
+            echo "Workflow: OP13 KSUN CCTV18 Clean StockLike Daily v70"
             echo "Profile: ${{ inputs.profile }}"
             echo "KSUN ref: ${{ inputs.ksun_ref }}"
             echo "SUSFS enabled: ${{ inputs.susfs_enable }}"
@@ -647,6 +912,7 @@ jobs:
             echo "Kernel name: ${{ inputs.kernel_name }}"
             echo "BBR mode: ${{ inputs.bbr_mode }}"
             echo "Better net: ${{ inputs.better_net }}"
+            echo "ZRAM/LZ4: ${{ inputs.zram_lz4 }} / ${{ inputs.zram_comp }}"
             echo "No WildKernels SUSFS patch tree is cloned or used."
             echo "No TheWildJames kernel_patches tree is cloned or used."
             echo "UTS: ${{ steps.build.outputs.uts }}"
@@ -663,11 +929,26 @@ jobs:
           fi
           find artifacts _ox_debug -maxdepth 3 -type f -printf '%p %s bytes\n' 2>/dev/null | sort | tee _ox_debug/artifact-preview.txt || true
 
-      - name: 12 Upload build and debug artifacts
+          if [ -f "$GITHUB_STEP_SUMMARY" ]; then
+            {
+              echo "# OP13 KSUN + CCTV18 Clean StockLike Daily v70"
+              echo ""
+              echo "## Verdict"
+              echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
+              echo "- SUSFS source: CCTV18 only."
+              echo "- ZRAM/LZ4 config enabled: ${{ inputs.zram_lz4 }} / ${{ inputs.zram_comp }}."
+              echo "- Separate ZRAM tuner module zip generated: ${{ inputs.package_zram_tuner_zip }}."
+              echo ""
+              echo "## Outputs"
+              find artifacts -maxdepth 1 -type f -printf '- `%f`\n' 2>/dev/null | sort
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 13 Upload build and debug artifacts
         if: always() && (inputs.upload_debug == true || success())
         uses: actions/upload-artifact@v6
         with:
-          name: OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v68-${{ github.run_number }}
+          name: OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v70-${{ github.run_number }}
           path: |
             artifacts/**
             _ox_debug/**
@@ -675,14 +956,19 @@ jobs:
           compression-level: 6
           retention-days: 14
 
-      - name: 13 Final status
+      - name: 14 Final status
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -s artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v68 ]; then
-            echo "::error::Build failed before producing Image. Download OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v68 debug artifact."
+          if [ ! -s artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v70 ]; then
+            echo "::error::Build failed before producing Image. Download OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v70 debug artifact."
+            exit 1
+          fi
+          if [ "${{ inputs.package_ak3 }}" = "true" ] && ! ls artifacts/AK3_OP13_KSUN_CCTV18_clean_stocklike_v70_*_FLASH_THIS.zip >/dev/null 2>&1; then
+            echo "::error::Image built but AnyKernel3 flashable ZIP was not produced."
             exit 1
           fi
           echo "✅ OP13 KSUN + CCTV18-only SUSFS clean stock-like daily-driver build completed."
+          echo "✅ Fixed AnyKernel3 boot partition detection: BLOCK=boot, IS_SLOT_DEVICE=auto, SLOT_SELECT=active."
           echo "✅ No WildKernels/TheWildJames SUSFS patch tree was used."
