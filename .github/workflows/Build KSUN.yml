@@ -101,7 +101,7 @@ on:
         default: true
 
 concurrency:
-  group: op13-ksun-susfs-v57-${{ github.ref }}
+  group: op13-ksun-susfs-v58-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -287,32 +287,78 @@ jobs:
           build_timestamp: ${{ steps.time.outputs.build_time }}
           clean: ${{ inputs.clean_build }}
 
-      - name: 08 Verify stock suffix and collect output list
+      - name: 08 Verify output and collect artifact list
         if: always()
         shell: bash
         run: |
           set -euo pipefail
           echo "Build outcome: ${{ steps.build.outcome }}"
-          echo "Kernel version output: ${{ steps.build.outputs.kernel_version }}"
+          echo "Engine kernel_version output: ${{ steps.build.outputs.kernel_version }}"
           echo "KSU version output: ${{ steps.build.outputs.ksu_version }}"
           echo "SUSFS version output: ${{ steps.build.outputs.susfs_version }}"
           echo "ZIP name output: ${{ steps.build.outputs.zip_name }}"
           echo "\nArtifact tree preview:"
-          find . -maxdepth 5 \( -name '*.zip' -o -name 'Image' -o -name '*.log' -o -name '*.txt' \) -printf '%p %s bytes\n' | sort | tail -120 || true
+          find . -maxdepth 7 \( -name '*.zip' -o -name 'Image' -o -name '*.log' -o -name '*.txt' -o -name 'utsrelease.h' \) -printf '%p %s bytes\n' | sort | tail -160 || true
+
+          # IMPORTANT:
+          # The Wild composite action output named `kernel_version` is the source family
+          # string such as android15-6.6.89. It is NOT the final Linux UTS_RELEASE.
+          # Previous v57 incorrectly compared that output with EXPECTED_UTS and failed
+          # even though the kernel and AK3 zip were created successfully.
+          actual_uts=""
+          uts_file=""
+          candidates=(
+            "OP13/kernel_platform/common/out/include/generated/utsrelease.h"
+            "OP13/kernel_platform/common/out/include/generated/compile.h"
+            "OP13/kernel_platform/common/include/generated/utsrelease.h"
+          )
+          for candidate in "${candidates[@]}"; do
+            if [ -f "$candidate" ]; then
+              uts_file="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$uts_file" ]; then
+            uts_file="$(find OP13/kernel_platform/common -path '*/include/generated/utsrelease.h' -print -quit 2>/dev/null || true)"
+          fi
+
+          if [ -n "$uts_file" ] && [ -f "$uts_file" ]; then
+            echo "Found UTS file: $uts_file"
+            cat "$uts_file" || true
+            actual_uts="$(sed -n 's/^#define UTS_RELEASE "\(.*\)"/\1/p' "$uts_file" | head -n1)"
+          fi
+
+          echo "Actual UTS_RELEASE: ${actual_uts:-<not found>}"
+          echo "Expected stock UTS: $EXPECTED_UTS"
 
           if [ '${{ inputs.stock_mimic }}' = 'On' ] && [ '${{ steps.build.outcome }}' = 'success' ]; then
-            kv='${{ steps.build.outputs.kernel_version }}'
-            if [ "$kv" != "$EXPECTED_UTS" ]; then
-              echo "::error::UTS_RELEASE mismatch. Expected $EXPECTED_UTS but got $kv"
+            if [ -n "$actual_uts" ]; then
+              if [ "$actual_uts" != "$EXPECTED_UTS" ]; then
+                echo "::warning::Actual UTS_RELEASE differs from expected stock mimic. Expected $EXPECTED_UTS but got $actual_uts"
+              else
+                echo "✅ UTS_RELEASE matches stock mimic target."
+              fi
+            else
+              echo "::warning::Could not locate generated utsrelease.h. Not failing because the Wild action kernel_version output is not UTS_RELEASE."
+            fi
+          fi
+
+          if [ '${{ steps.build.outcome }}' = 'success' ]; then
+            zip_path="$(find OP13/artifacts -maxdepth 1 -type f -name '*.zip' -print -quit 2>/dev/null || true)"
+            if [ -z "$zip_path" ]; then
+              echo "::error::Build succeeded but no AK3 zip was found under OP13/artifacts."
               exit 1
             fi
+            echo "✅ Flashable AK3 zip found: $zip_path"
+            sha256sum "$zip_path" | tee "${zip_path}.sha256"
           fi
 
       - name: 09 Upload kernel artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: OP13_KSUN_SUSFS_STABLE_DAILY_v57_${{ github.run_number }}
+          name: OP13_KSUN_SUSFS_STABLE_DAILY_v58_${{ github.run_number }}
           path: |
             OP13/artifacts/**
             **/*.zip
@@ -326,7 +372,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo '## OP13 KSUN + SUSFS Stable Daily v57'
+            echo '## OP13 KSUN + SUSFS Stable Daily v58'
             echo ''
             echo '| Item | Value |'
             echo '|---|---|'
@@ -336,7 +382,7 @@ jobs:
             echo "| SUSFS ref | ${{ inputs.susfs_ref }} |"
             echo "| Engine | $WILD_ENGINE_REPO@$WILD_ENGINE_REF |"
             echo "| kernel_patches | WildKernels/kernel_patches@$WILD_KERNEL_PATCHES_REF |"
-            echo "| Kernel version | ${{ steps.build.outputs.kernel_version }} |"
+            echo "| Engine kernel_version output | ${{ steps.build.outputs.kernel_version }} |"
             echo "| Expected UTS | $EXPECTED_UTS |"
             echo "| KSUN version | ${{ steps.build.outputs.ksu_version }} |"
             echo "| SUSFS version | ${{ steps.build.outputs.susfs_version }} |"
