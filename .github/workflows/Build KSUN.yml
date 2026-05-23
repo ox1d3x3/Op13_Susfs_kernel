@@ -7,553 +7,560 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
-      feature_profile:
-        description: 'Build profile'
+      profile:
+        description: "Daily-driver profile. clean_daily is the safest default."
         required: true
         type: choice
         options:
-          - release_match
-          - battery_daily
-          - advanced_daily
+          - clean_daily
+          - clean_plus
           - minimal_debug
-        default: battery_daily
+        default: clean_daily
       ksun_ref:
-        description: 'KernelSU-Next ref. Default is the proven OP13 KSUN 33129 commit.'
+        description: "CCTV18-compatible KernelSU-Next ref used via pershoot/KernelSU-Next dev-susfs setup path."
         required: true
-        default: '551ad80473f60e052917aec08abf5323b6ab2f7c'
-      susfs:
-        description: 'Enable SUSFS'
+        type: string
+        default: "dev-susfs"
+      susfs_enable:
+        description: "Enable CCTV18 susfs4oki kernel patching."
         required: true
-        type: choice
-        options: ['On', 'Off']
-        default: 'On'
+        type: boolean
+        default: true
       susfs_ref:
-        description: 'CCTV18 susfs4oki ref. Default is oki-android15-6.6.'
-        required: false
-        default: 'oki-android15-6.6'
-      optimize_level:
-        description: 'Compiler optimisation level'
+        description: "CCTV18 susfs4oki branch/ref. Keep oki-android15-6.6 for OP13 android15/6.6."
+        required: true
+        type: string
+        default: "oki-android15-6.6"
+      cctv18_kernel_ref:
+        description: "CCTV18 OP13 6.6.89 kernel-source branch/ref."
+        required: true
+        type: string
+        default: "oneplus/sm8750_v_16.0.0_oneplus_13_6.6.89"
+      kernel_name:
+        description: "LOCALVERSION suffix without leading dash. Use stock-like string if you want stock-like uname -r."
+        required: true
+        type: string
+        default: "android15-8-g7e1f3c083cc6-abogki467167594-4k"
+      optimise:
+        description: "Kernel optimisation profile. O2 is daily-driver default."
         required: true
         type: choice
-        options: ['O2', 'O3']
-        default: 'O2'
-      hmbird:
-        description: 'HMBIRD/SCX scheduler'
+        options: ["O2", "O3"]
+        default: "O2"
+      lz4_zstd:
+        description: "Apply CCTV18 lz4/zstd patch if available."
         required: true
-        type: choice
-        options: ['Auto', 'On', 'Off']
-        default: 'Auto'
-      droidspaces:
-        description: 'Droidspaces support'
+        type: boolean
+        default: true
+      adios:
+        description: "Enable CCTV18 ADIOS I/O scheduler patch if available."
         required: true
-        type: choice
-        options: ['Auto', 'On', 'Off']
-        default: 'Auto'
-      bbr:
-        description: 'Enable BBR'
+        type: boolean
+        default: true
+      baseband_guard:
+        description: "Enable CCTV18 Baseband Guard patch if available."
         required: true
-        type: choice
-        options: ['On', 'Off']
-        default: 'On'
-      bbg:
-        description: 'Enable Baseband Guard'
-        required: true
-        type: choice
-        options: ['On', 'Off']
-        default: 'On'
-      ttl_ipset:
-        description: 'Enable TTL + IP_SET'
-        required: true
-        type: choice
-        options: ['On', 'Off']
-        default: 'On'
-      unicode_fix:
-        description: 'Enable Unicode fix'
-        required: true
-        type: choice
-        options: ['On', 'Off']
-        default: 'On'
-      ntsync:
-        description: 'Enable NTSync'
-        required: true
-        type: choice
-        options: ['On', 'Off']
-        default: 'On'
-      stock_mimic:
-        description: 'Use stock-like OP13 UTS suffix'
-        required: true
-        type: choice
-        options: ['On', 'Off']
-        default: 'On'
-      BUILD_TIME:
-        description: 'Kernel build timestamp. Use F for current UTC time.'
-        required: false
-        default: 'F'
-      clean_build:
-        description: 'Clean build without ccache'
+        type: boolean
+        default: true
+      better_net:
+        description: "Enable extra netfilter/ipset/iptables features. Off is safest for normal daily use."
         required: true
         type: boolean
         default: false
+      bbr:
+        description: "Enable BBR TCP congestion controls. Off is safest for normal daily use."
+        required: true
+        type: boolean
+        default: false
+      droidspaces:
+        description: "Enable Droidspaces/container-related options. Off is safest for normal daily use."
+        required: true
+        type: boolean
+        default: false
+      rekernel:
+        description: "Enable Re:Kernel related config if available."
+        required: true
+        type: boolean
+        default: false
+      clean_ccache:
+        description: "Start with a clean ccache directory."
+        required: true
+        type: boolean
+        default: false
+      package_ak3:
+        description: "Create an AnyKernel3 flashable ZIP as well as raw Image artifact."
+        required: true
+        type: boolean
+        default: true
       debug_artifacts:
-        description: 'Upload debug artifacts when available'
+        description: "Upload logs, .config, rejects, Image, and ZIP for troubleshooting."
         required: true
         type: boolean
         default: true
 
 concurrency:
-  group: ox-op13-ksun-cctv18-susfs-v63-${{ github.ref }}
+  group: op13-ksun-cctv18-clean-v66-${{ github.ref }}
   cancel-in-progress: false
 
 env:
-  DEVICE_MODEL: OP13
-  DEVICE_CODENAME: sun
-  TARGET_OS: OOS16
+  TZ: Asia/Shanghai
   ANDROID_VERSION: android15
-  KERNEL_VERSION: '6.6'
-  EXPECTED_UTS: '6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k'
-  STOCK_UNAME_SUFFIX: '8-g7e1f3c083cc6-abogki467167594-4k'
-  ENGINE_REPO: WildKernels/OnePlus_KernelSU_SUSFS
-  ENGINE_REF: '14d04c1ed0753280330ccabd773e903f76c9a038'
-  # This is the missing part from previous broken wrappers:
-  # old build action clones kernel_patches live from main, which drifted after v2.1.0-r2.
-  # Pinning this restores the patchset used for KSUN 33129 + SUSFS v2.1.0.
-  ENGINE_KERNEL_PATCHES_REF: '6ac23b65150f5f505018403361779fa7a8a728b0'
-  DEFAULT_KSUN_REF: '551ad80473f60e052917aec08abf5323b6ab2f7c'
-  # Proven KSUN/SUSFS glue payload. CCTV18 common kernel patches are overlaid on top.
-  SIMONPUNK_GLUE_REF: '85bcfac5edc8ba7808581e8d0a3ca9c7deca78e4'
-  DEFAULT_SUSFS_REF: 'oki-android15-6.6'
+  KERNEL_VERSION: "6.6"
+  SUB_VERSION: "89"
+  DEVICE_NAME: OP13
+  DEVICE_CODENAME: sun
+  EXPECTED_BASE_UTS: "6.6.89"
+  CCTV18_BUILD_REPO: cctv18/oppo_oplus_realme_sm8750
+  CCTV18_COMMON_REPO: cctv18/android_kernel_common_oneplus_sm8750
+  CCTV18_TOOLCHAIN_RELEASE: LLVM-Clang18-r510928
+  CCACHE_DIR: ${{ github.workspace }}/.ccache_op13_cctv18_clean_6.6.89
+  CCACHE_MAXSIZE: 3G
 
 jobs:
   build:
-    name: OX OP13 KSUN CCTV18 SUSFS daily
-    runs-on: ubuntu-latest
+    name: "${{ inputs.profile }} | KSUN=${{ inputs.ksun_ref }} | CCTV18 SUSFS=${{ inputs.susfs_enable }}"
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
 
     steps:
-      - name: 01 Checkout pinned KSUN build engine
-        uses: actions/checkout@v4
+      - name: 01 Checkout current repository for metadata only
+        uses: actions/checkout@v5
         with:
-          repository: ${{ env.ENGINE_REPO }}
-          ref: ${{ env.ENGINE_REF }}
           fetch-depth: 1
 
-      - name: 02 Preflight and explain pinned stack
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Workspace: $GITHUB_WORKSPACE"
-          echo "Build engine commit: $(git rev-parse HEAD)"
-          echo "Pinned patchset ref: $ENGINE_KERNEL_PATCHES_REF"
-          test -f .github/actions/action.yml
-          test -f configs/oos16/OP13.json
-          test -f manifests/oos16/oneplus_13_w.xml
-          echo "== Top level =="
-          find . -maxdepth 2 -type d | sort | sed 's#^./#  #' | head -80
-
-      - name: 03 Patch build engine to use the matching v2.1.0-r2 kernel_patches tree
-        shell: bash
-        run: |
-          set -euo pipefail
-          ACTION_FILE='.github/actions/action.yml'
-          echo "Before patch, kernel_patches clone lines:"
-          grep -nE 'kernel_patches|TheWildJames/kernel_patches|WildKernels/kernel_patches' "$ACTION_FILE" || true
-
-          python3 - <<'PY'
-          from pathlib import Path
-
-          p = Path('.github/actions/action.yml')
-          text = p.read_text()
-          cctv18_ref = '${{ inputs.susfs_ref }}'
-
-          def replace_shell_line(text: str, needle: str, replacement_lines: list[str], label: str) -> str:
-              out = []
-              count = 0
-              for line in text.splitlines():
-                  if needle in line:
-                      indent = line[:len(line) - len(line.lstrip())]
-                      out.extend(indent + repl for repl in replacement_lines)
-                      count += 1
-                  else:
-                      out.append(line)
-              if count != 1:
-                  raise SystemExit(f'Expected to replace exactly one {label} line, replaced {count}. Action layout changed.')
-              return '\n'.join(out) + '\n'
-
-          text = replace_shell_line(
-              text,
-              'retry_clone "https://github.com/TheWildJames/kernel_patches.git"',
-              [
-                  'echo "Pinning matching kernel_patches tree for KSUN 33129 + SUSFS v2.1.0"',
-                  'rm -rf kernel_patches',
-                  'git clone --no-tags --depth 1 https://github.com/WildKernels/kernel_patches.git kernel_patches',
-                  '( cd kernel_patches && git fetch --no-tags --depth=1 origin "$ENGINE_KERNEL_PATCHES_REF" && git checkout --force "$ENGINE_KERNEL_PATCHES_REF" )',
-                  'echo "✅ kernel_patches pinned to $(git -C kernel_patches rev-parse HEAD)"',
-              ],
-              'kernel_patches clone',
-          )
-          p.write_text(text)
-          PY
-
-          echo "After patch, kernel_patches clone lines:"
-          grep -nE 'kernel_patches|TheWildJames/kernel_patches|WildKernels/kernel_patches|6ac23b6' "$ACTION_FILE" || true
-
-
-          echo "Patching build engine to overlay CCTV18 common SUSFS payload while retaining proven KSUN glue..."
-          python3 - <<'INNERPY'
-          from pathlib import Path
-          import re
-
-          p = Path('.github/actions/action.yml')
-          text = p.read_text()
-
-          # Insert the overlay at the end of the action's "Clone AnyKernel3 and Other Dependencies" step.
-          # Do NOT search for the SUSFS commit echo line; that text changed between action snapshots.
-          # The stable anchor is the final `cd ..` immediately before `echo "✅ Dependencies cloned"`.
-          pattern = re.compile(r'(?m)^(?P<indent>\s*)cd \.\.\n(?P=indent)echo "✅ Dependencies cloned"')
-
-          overlay_template = """
-          {indent}# OX CCTV18 common SUSFS overlay
-          {indent}# Current directory is normally susfs4ksu here when OP_SUSFS=true.
-          {indent}if [ "$OP_SUSFS" = true ]; then
-          {indent}  if [ "$(basename "$PWD")" = "susfs4ksu" ]; then
-          {indent}    cd ..
-          {indent}  fi
-          {indent}  echo "Overlaying CCTV18 susfs4oki common kernel payload while keeping proven KSUN glue"
-          {indent}  rm -rf susfs4oki
-          {indent}  CCTV18_REF="{cctv18_ref}"
-          {indent}  if git ls-remote --heads https://github.com/cctv18/susfs4oki.git "$CCTV18_REF" | grep -q .; then
-          {indent}    git clone --depth 1 --branch "$CCTV18_REF" https://github.com/cctv18/susfs4oki.git susfs4oki
-          {indent}  else
-          {indent}    git clone https://github.com/cctv18/susfs4oki.git susfs4oki
-          {indent}    ( cd susfs4oki && git checkout --force "$CCTV18_REF" )
-          {indent}  fi
-          {indent}  echo "CCTV18_SUSFS_COMMIT_SHA=$(git -C susfs4oki rev-parse HEAD)" >> "$GITHUB_ENV"
-          {indent}  echo "CCTV18_SUSFS_REF=$CCTV18_REF" >> "$GITHUB_ENV"
-          {indent}  echo "✅ CCTV18 source: $(git -C susfs4oki rev-parse --short HEAD)"
-          {indent}
-          {indent}  # Overlay common kernel-side payload only.
-          {indent}  # Keep susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch from the proven KSUN 33129 stack.
-          {indent}  test -d susfs4oki/kernel_patches/fs || {{ echo "::error::CCTV18 fs payload missing"; find susfs4oki -maxdepth 3 -type f | sort | head -120; exit 1; }}
-          {indent}  test -d susfs4oki/kernel_patches/include/linux || {{ echo "::error::CCTV18 include/linux payload missing"; find susfs4oki -maxdepth 3 -type f | sort | head -120; exit 1; }}
-          {indent}  cp -af susfs4oki/kernel_patches/fs/. susfs4ksu/kernel_patches/fs/
-          {indent}  cp -af susfs4oki/kernel_patches/include/linux/. susfs4ksu/kernel_patches/include/linux/
-          {indent}
-          {indent}  CCTV18_MAIN_PATCH=""
-          {indent}  for f in \
-          {indent}    susfs4oki/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch \
-          {indent}    susfs4oki/kernel_patches/50_add_susfs_in_kernel-android15-6.6.patch \
-          {indent}    susfs4oki/kernel_patches/50_add_susfs_in_kernel-6.6.patch; do
-          {indent}    if [ -f "$f" ]; then CCTV18_MAIN_PATCH="$f"; break; fi
-          {indent}  done
-          {indent}  if [ -z "$CCTV18_MAIN_PATCH" ]; then
-          {indent}    echo "::error::Could not find CCTV18 android15-6.6 common kernel patch"
-          {indent}    find susfs4oki/kernel_patches -maxdepth 2 -type f | sort
-          {indent}    exit 1
-          {indent}  fi
-          {indent}  cp -f "$CCTV18_MAIN_PATCH" susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch
-          {indent}  echo "✅ CCTV18 common SUSFS patch overlaid: $CCTV18_MAIN_PATCH"
-          {indent}  echo "✅ Retaining proven KSUN glue patch from the working 33129 stack"
-          {indent}  cd susfs4ksu
-          {indent}fi
-          {indent}cd ..
-          {indent}echo "✅ Dependencies cloned""".lstrip('\n')
-
-          matches = list(pattern.finditer(text))
-          if len(matches) != 1:
-              raise SystemExit(f'Expected exactly one dependencies end anchor, found {len(matches)}. Action layout changed.')
-          m = matches[0]
-          indent = m.group('indent')
-          replacement = overlay_template.format(indent=indent, cctv18_ref=cctv18_ref)
-          text = text[:m.start()] + replacement + text[m.end():]
-          p.write_text(text)
-          print('Inserted robust CCTV18 common payload overlay before Apply SUSFS patches.')
-          INNERPY
-          grep -nE 'CCTV18|susfs4oki|Retaining proven KSUN|CCTV18_MAIN_PATCH|Dependencies cloned' "$ACTION_FILE" || true
-
-
-      - name: 04 Install host tools
+      - name: 02 Install host build dependencies
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get -o Acquire::Retries=3 update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            git curl ca-certificates build-essential clang lld flex bison \
-            libelf-dev libssl-dev libncurses-dev zlib1g-dev liblz4-tool \
-            libxml2-utils rsync unzip zip dwarves file python3 ccache jq bc dos2unix kmod libdw-dev
+            aria2 ca-certificates curl wget git unzip zip tar xz-utils zstd rsync file jq \
+            build-essential gcc g++ make bc bison flex gawk python3 python-is-python3 \
+            libssl-dev libelf-dev libncurses-dev zlib1g-dev liblz4-tool dwarves \
+            ccache clang lld llvm patch kmod
           sudo apt-get clean
+          echo "Runner: $(uname -a)"
+          ccache --version || true
 
-      - name: 05 Resolve build timestamp
-        id: time
+      - name: 03 Fetch clean CCTV18 build assets, OP13 source, Clang18 and build-tools
         shell: bash
         run: |
           set -euo pipefail
-          IN='${{ inputs.BUILD_TIME }}'
-          if [ -z "$IN" ]; then
-            OUT=''
-          elif [ "$IN" = 'F' ]; then
-            OUT="$(date -u '+%a %b %d %H:%M:%S UTC %Y')"
-          else
-            OUT="$IN"
-          fi
-          echo "build_time=$OUT" >> "$GITHUB_OUTPUT"
-          echo "Resolved BUILD_TIME: ${OUT:-<engine default>}"
+          rm -rf kernel_workspace cctv18_assets _ox_debug artifacts
+          mkdir -p kernel_workspace _ox_debug artifacts
 
-      - name: 06 Prepare OP13 config JSON
-        id: config
-        shell: bash
-        env:
-          PROFILE: ${{ inputs.feature_profile }}
-          SUSFS_IN: ${{ inputs.susfs }}
-          HMBIRD_IN: ${{ inputs.hmbird }}
-          DS_IN: ${{ inputs.droidspaces }}
-          BBR_IN: ${{ inputs.bbr }}
-          BBG_IN: ${{ inputs.bbg }}
-          TTL_IN: ${{ inputs.ttl_ipset }}
-          UNICODE_IN: ${{ inputs.unicode_fix }}
-          NTSYNC_IN: ${{ inputs.ntsync }}
-          STOCK_IN: ${{ inputs.stock_mimic }}
-        run: |
-          set -euo pipefail
-          base='configs/oos16/OP13.json'
-          test -f "$base"
+          echo "Cloning CCTV18 build assets only: https://github.com/${CCTV18_BUILD_REPO}"
+          git clone --depth=1 "https://github.com/${CCTV18_BUILD_REPO}.git" cctv18_assets
+          git -C cctv18_assets rev-parse HEAD | tee _ox_debug/cctv18_build_assets_commit.txt
 
-          profile_hmbird=false
-          profile_ds=false
-          case "$PROFILE" in
-            release_match|advanced_daily) profile_hmbird=true; profile_ds=true ;;
-            battery_daily|minimal_debug) profile_hmbird=false; profile_ds=false ;;
-            *) echo "::error::Unknown profile: $PROFILE"; exit 1 ;;
-          esac
-
-          choose_bool() {
-            local value="$1"
-            local auto_default="$2"
-            case "$value" in
-              On) echo true ;;
-              Off) echo false ;;
-              Auto) echo "$auto_default" ;;
-              *) echo "::error::Bad boolean choice: $value"; exit 1 ;;
-            esac
-          }
-
-          hmbird_bool="$(choose_bool "$HMBIRD_IN" "$profile_hmbird")"
-          ds_bool="$(choose_bool "$DS_IN" "$profile_ds")"
-          susfs_bool="$(choose_bool "$SUSFS_IN" true)"
-          bbr_bool="$(choose_bool "$BBR_IN" true)"
-          bbg_bool="$(choose_bool "$BBG_IN" true)"
-          ttl_bool="$(choose_bool "$TTL_IN" true)"
-          unicode_bool="$(choose_bool "$UNICODE_IN" true)"
-          ntsync_bool="$(choose_bool "$NTSYNC_IN" true)"
-
-          if [ "$STOCK_IN" = 'On' ]; then
-            uname_suffix="$STOCK_UNAME_SUFFIX"
-          else
-            uname_suffix='ox1d3x3-ksun'
-          fi
-
-          jq -c \
-            --argjson hmbird "$hmbird_bool" \
-            --argjson ds "$ds_bool" \
-            --argjson susfs "$susfs_bool" \
-            --argjson bbr "$bbr_bool" \
-            --argjson bbg "$bbg_bool" \
-            --argjson ttl "$ttl_bool" \
-            --argjson ipset "$ttl_bool" \
-            --argjson unicode "$unicode_bool" \
-            --argjson ntsync "$ntsync_bool" \
-            --arg uname "$uname_suffix" \
-            '.hmbird=$hmbird | .ds=$ds | .susfs=$susfs | .bbr=$bbr | .bbg=$bbg | .ttl=$ttl | .ip_set=$ipset | .unicode=$unicode | .ntsync=$ntsync | .uname=$uname' \
-            "$base" > /tmp/op13_config.json
-
-          echo "Prepared config:"
-          jq '.' /tmp/op13_config.json
-          echo "config_json=$(cat /tmp/op13_config.json)" >> "$GITHUB_OUTPUT"
-
-      - name: 07 Build OP13 KSUN + SUSFS
-        id: build
-        uses: ./.github/actions
-        with:
-          op_config_json: ${{ steps.config.outputs.config_json }}
-          ksu_type: KSUN
-          ksu_branch_or_hash: ${{ inputs.ksun_ref }}
-          susfs_commit_hash_or_branch: '85bcfac5edc8ba7808581e8d0a3ca9c7deca78e4'
-          optimize_level: ${{ inputs.optimize_level }}
-          build_timestamp: ${{ steps.time.outputs.build_time }}
-          clean: ${{ inputs.clean_build }}
-
-
-      - name: 08 Inject OX installer branding
-        if: ${{ steps.build.outcome == 'success' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          zip_path="$(find OP13/artifacts -maxdepth 1 -type f -name '*.zip' -print -quit 2>/dev/null || true)"
-          if [ -z "$zip_path" ]; then
-            echo "::error::No AK3 zip found for branding injection."
+          cd kernel_workspace
+          echo "Downloading CCTV18 OP13 common kernel source ref: ${{ inputs.cctv18_kernel_ref }}"
+          aria2c -s16 -x16 -k1M \
+            "https://github.com/${CCTV18_COMMON_REPO}/archive/refs/heads/${{ inputs.cctv18_kernel_ref }}.zip" \
+            -o common.zip
+          unzip -q common.zip
+          src_dir="$(find . -maxdepth 1 -type d -name 'android_kernel_common_oneplus_sm8750-*' -print -quit)"
+          if [ -z "$src_dir" ]; then
+            echo "::error::Could not locate extracted CCTV18 common kernel directory."
+            find . -maxdepth 2 -type d | sort
             exit 1
           fi
-          echo "Branding AK3 zip: $zip_path"
-          work="$(mktemp -d)"
-          unzip -q "$zip_path" -d "$work"
+          mv "$src_dir" common
+          rm -f common.zip
 
-          cat > "$work/banner" <<'EOF'
-            ____        __  _____     ______     ____
-           / __ \_  __ / / |__  /____/ / __ \   / __ \
-          / / / / |/_// /   /_ </ __  / /_/ /  / / / /
-          / /_/ />  < / /  ___/ / /_/ / _, _/  / /_/ /
-          \____/_/|_/_/  /____/\__,_/_/ |_|   \____/
+          echo "Downloading CCTV18 LLVM/Clang18 toolchain and build-tools"
+          aria2c -s16 -x16 -k1M \
+            "https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/${CCTV18_TOOLCHAIN_RELEASE}/clang-r510928.zip" \
+            -o clang.zip
+          unzip -q clang.zip -d clang18
+          rm -f clang.zip
 
-          OX1D3X3 OP13 KSUN + SUSFS Daily Driver
-          EOF
+          aria2c -s16 -x16 -k1M \
+            "https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/${CCTV18_TOOLCHAIN_RELEASE}/build-tools.zip" \
+            -o build-tools.zip
+          unzip -q build-tools.zip
+          rm -f build-tools.zip
 
-          cat > "$work/INSTALL_INFO.txt" <<EOF
-          OX1D3X3 OP13 KSUN + SUSFS Daily Driver
+          echo "Removing ABI export guard files and dirty suffix noise"
+          rm -f common/android/abi_gki_protected_exports_* || true
+          for f in common/scripts/setlocalversion; do
+            [ -f "$f" ] || continue
+            sed -i 's/ -dirty//g' "$f"
+            sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f" || true
+          done
 
-          Device        : OnePlus 13 / OP13 / sun / OOS16 / android15-6.6
-          Root backend  : KernelSU Next / KSUN
-          SUSFS stack   : CCTV18 common SUSFS + proven KSUN glue
-          KSU ref       : ${{ inputs.ksun_ref }}
-          SUSFS ref     : ${{ inputs.susfs_ref }}
-          Profile       : ${{ inputs.feature_profile }}
-          Optimisation  : ${{ inputs.optimize_level }}
-          Stock mimic   : ${{ inputs.stock_mimic }}
-          Build time    : ${{ steps.time.outputs.build_time }}
+          echo "CCTV18 clean source layout:" | tee ../_ox_debug/source-tree.txt
+          find . -maxdepth 2 -type d | sort | tee -a ../_ox_debug/source-tree.txt
 
-          Daily-driver notes:
-          - battery_daily keeps HMBIRD and Droidspaces off through Auto defaults.
-          - release_match mirrors the proven KSUN/SUSFS release feature set.
-          - Keep a stock boot image ready before testing any custom kernel.
-          - Test LSPosed, susfs4ksu, Microsoft Authenticator, camera, Play Store, calls, Wi-Fi, mobile data and overnight drain.
-          EOF
+      - name: 04 Configure ccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.clean_ccache }}" = "true" ]; then
+            rm -rf "$CCACHE_DIR"
+          fi
+          mkdir -p "$CCACHE_DIR"
+          ccache -M "$CCACHE_MAXSIZE"
+          ccache -o compression=true
+          ccache -z || true
+          ccache -s || true
 
-          if [ -f "$work/anykernel.sh" ] && ! grep -q 'OX1D3X3 OP13 KSUN' "$work/anykernel.sh"; then
-            awk '
-              { print }
-              $0 == ". tools/ak3-core.sh" {
-                print "";
-                print "# OX installer branding";
-                print "ui_print \" \"";
-                print "ui_print \"╔══════════════════════════════════════╗\"";
-                print "ui_print \"║  OX1D3X3 OP13 KSUN + CCTV18 SUSFS    ║\"";
-                print "ui_print \"║  Daily SUSFS compatibility build  ║\"";
-                print "ui_print \"╚══════════════════════════════════════╝\"";
-                print "ui_print \" \"";
-                print "ui_print \"Device : OnePlus 13 / OP13 / OOS16\"";
-                print "ui_print \"Root   : KernelSU Next\"";
-                print "ui_print \"SUSFS  : CCTV18 common + KSUN glue\"";
-                print "ui_print \" \"";
-              }
-            ' "$work/anykernel.sh" > "$work/anykernel.sh.ox"
-            mv "$work/anykernel.sh.ox" "$work/anykernel.sh"
-            chmod 0755 "$work/anykernel.sh" || true
+      - name: 05 Add KernelSU-Next using CCTV18-compatible dev-susfs path
+        id: ksun
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel_workspace
+          export PATH="$GITHUB_WORKSPACE/kernel_workspace/clang18/bin:$GITHUB_WORKSPACE/kernel_workspace/build-tools/path/linux-x86:$PATH"
+
+          echo "Using CCTV18-compatible KernelSU-Next setup path: pershoot/KernelSU-Next dev-susfs"
+          echo "Requested KSUN ref/arg: ${{ inputs.ksun_ref }}"
+          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/dev-susfs/kernel/setup.sh" | bash -s "${{ inputs.ksun_ref }}"
+
+          if [ -d KernelSU-Next ]; then
+            KSU_TREE="KernelSU-Next"
+          elif [ -d common/KernelSU-Next ]; then
+            KSU_TREE="common/KernelSU-Next"
+          elif [ -d common/drivers/kernelsu ]; then
+            KSU_TREE="common/drivers/kernelsu"
+          else
+            echo "::error::KernelSU-Next tree was not found after setup."
+            find . -maxdepth 4 -type d | sort | sed -n '1,200p'
+            exit 1
+          fi
+          echo "KSU_TREE=$KSU_TREE" | tee -a "$GITHUB_ENV"
+          echo "ksu_tree=$KSU_TREE" >> "$GITHUB_OUTPUT"
+
+          if [ -d "$KSU_TREE/.git" ]; then
+            echo "KSUN commit: $(git -C "$KSU_TREE" rev-parse HEAD)"
+            git -C "$KSU_TREE" rev-parse HEAD > ../_ox_debug/ksun_commit.txt || true
           fi
 
-          tmpzip="${zip_path}.new"
-          rm -f "$tmpzip"
-          (cd "$work" && zip -r9 "$tmpzip" . >/dev/null)
-          mv "$tmpzip" "$zip_path"
-          rm -rf "$work"
-          sha256sum "$zip_path" | tee "${zip_path}.sha256"
-          echo "✅ OX installer branding injected"
+          if [ -f common/drivers/kernelsu/kernel/Kbuild ]; then
+            KSU_VERSION=$(expr $(curl -sI "https://api.github.com/repos/pershoot/KernelSU-Next/commits?sha=dev-susfs&per_page=1" | grep -i "link:" | sed -n 's/.*page=\([0-9]*\)>; rel="last".*/\1/p') "+" 30000 2>/dev/null || echo 33129)
+            KSU_TAG=$(curl -sL "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/tags" | grep -o '"name": *"[^"]*"' | head -n 1 | sed 's/"name": "//;s/"//')
+            [ -n "$KSU_TAG" ] || KSU_TAG="v3.2.0"
+            sed -i "s/KSU_VERSION_FALLBACK := .*/KSU_VERSION_FALLBACK := $KSU_VERSION/g" common/drivers/kernelsu/kernel/Kbuild || true
+            sed -i "s/KSU_VERSION_TAG_FALLBACK := .*/KSU_VERSION_TAG_FALLBACK := $KSU_TAG/g" common/drivers/kernelsu/kernel/Kbuild || true
+            echo "KSUVER=$KSU_VERSION" >> "$GITHUB_ENV"
+            echo "KSUTAG=$KSU_TAG" >> "$GITHUB_ENV"
+            echo "ksuver=$KSU_VERSION" >> "$GITHUB_OUTPUT"
+            echo "ksutag=$KSU_TAG" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: 09 Verify output and collect artifact list
+          # CCTV18's own workflow applies its local APK signature patch for KernelSU-Next manager compatibility.
+          if [ -f "$GITHUB_WORKSPACE/cctv18_assets/other_patch/apk_sign.patch" ] && [ -d common/drivers/kernelsu ]; then
+            echo "Applying CCTV18 apk_sign.patch from cctv18/oppo_oplus_realme_sm8750 only"
+            ( cd common/drivers/kernelsu && patch -p2 -N -F 3 < "$GITHUB_WORKSPACE/cctv18_assets/other_patch/apk_sign.patch" ) || true
+          fi
+
+      - name: 06 Apply CCTV18-only SUSFS kernel integration
+        if: ${{ inputs.susfs_enable == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel_workspace
+          rm -rf susfs4ksu
+          echo "Cloning CCTV18 SUSFS only: cctv18/susfs4oki @ ${{ inputs.susfs_ref }}"
+          git clone --depth=1 --branch "${{ inputs.susfs_ref }}" https://github.com/cctv18/susfs4oki.git susfs4ksu
+          git -C susfs4ksu rev-parse HEAD | tee ../_ox_debug/cctv18_susfs_commit.txt
+
+          SUSFS_PATCH="susfs4ksu/kernel_patches/50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch"
+          if [ ! -f "$SUSFS_PATCH" ]; then
+            echo "::error::CCTV18 SUSFS common patch not found: $SUSFS_PATCH"
+            find susfs4ksu/kernel_patches -maxdepth 2 -type f | sort
+            exit 1
+          fi
+          test -d susfs4ksu/kernel_patches/fs
+          test -d susfs4ksu/kernel_patches/include/linux
+
+          cp -af susfs4ksu/kernel_patches/fs/. common/fs/
+          cp -af susfs4ksu/kernel_patches/include/linux/. common/include/linux/
+          cp -f "$SUSFS_PATCH" common/
+
+          if [ -f "$GITHUB_WORKSPACE/cctv18_assets/other_patch/69_hide_stuff.patch" ]; then
+            cp -f "$GITHUB_WORKSPACE/cctv18_assets/other_patch/69_hide_stuff.patch" common/69_hide_stuff.patch
+          fi
+
+          cd common
+          echo "Applying CCTV18 SUSFS kernel patch"
+          patch -p1 --forward < "50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch"
+
+          if [ -f 69_hide_stuff.patch ]; then
+            echo "Applying CCTV18 69_hide_stuff.patch"
+            patch -p1 -N -F 3 < 69_hide_stuff.patch || true
+          fi
+
+          cd ..
+          if find common -name '*.rej' -print -quit | grep -q .; then
+            echo "::error::Patch rejects found after CCTV18 SUSFS patching. This is not a clean build."
+            find common -name '*.rej' -print | tee ../_ox_debug/patch-rejects.txt
+            exit 1
+          fi
+
+          echo "SUSFS source check:"
+          git -C susfs4ksu remote -v | tee ../_ox_debug/susfs_remote.txt
+
+      - name: 07 Apply CCTV18 optional daily-driver patches when present
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel_workspace/common
+
+          apply_patch_if_found() {
+            local label="$1"; shift
+            local enabled="$1"; shift
+            if [ "$enabled" != "true" ]; then
+              echo "Skipping $label: disabled"
+              return 0
+            fi
+            local found=""
+            for p in "$@"; do
+              if [ -f "$p" ]; then
+                found="$p"
+                break
+              fi
+            done
+            if [ -z "$found" ]; then
+              echo "Optional patch not found for $label; skipping cleanly."
+              return 0
+            fi
+            echo "Applying optional CCTV18 patch for $label: $found"
+            patch -p1 -N -F 3 < "$found" || true
+          }
+
+          apply_patch_if_found "lz4/zstd" "${{ inputs.lz4_zstd }}" \
+            "$GITHUB_WORKSPACE/cctv18_assets/other_patch/lz4_zstd_6.6.patch" \
+            "$GITHUB_WORKSPACE/cctv18_assets/other_patch/lz4_zstd.patch" \
+            "$GITHUB_WORKSPACE/cctv18_assets/zram_patch/lz4_zstd_6.6.patch"
+
+          apply_patch_if_found "ADIOS" "${{ inputs.adios }}" \
+            "$GITHUB_WORKSPACE/cctv18_assets/other_patch/adios_6.6.patch" \
+            "$GITHUB_WORKSPACE/cctv18_assets/other_patch/adios.patch"
+
+          apply_patch_if_found "Baseband Guard" "${{ inputs.baseband_guard }}" \
+            "$GITHUB_WORKSPACE/cctv18_assets/other_patch/baseband_guard_6.6.patch" \
+            "$GITHUB_WORKSPACE/cctv18_assets/other_patch/baseband_guard.patch"
+
+          if find . -name '*.rej' -print -quit | grep -q .; then
+            echo "::error::Patch rejects found after optional CCTV18 patching."
+            find . -name '*.rej' -print | tee "$GITHUB_WORKSPACE/_ox_debug/patch-rejects.txt"
+            exit 1
+          fi
+
+      - name: 08 Build OP13 clean CCTV18 KSUN kernel
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel_workspace/common
+
+          export PATH="$GITHUB_WORKSPACE/kernel_workspace/clang18/bin:$GITHUB_WORKSPACE/kernel_workspace/build-tools/path/linux-x86:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CC="ccache clang"
+          export HOSTCC=gcc
+          export HOSTCXX=g++
+          export KBUILD_BUILD_USER="ox1d3x3"
+          export KBUILD_BUILD_HOST="cctv18-clean"
+          export KBUILD_BUILD_TIMESTAMP="$(date -u '+%a %b %d %H:%M:%S UTC %Y')"
+          export CCACHE_DIR="$CCACHE_DIR"
+          export CCACHE_BASEDIR="$GITHUB_WORKSPACE/kernel_workspace"
+          export CCACHE_NOHASHDIR=true
+          export CCACHE_COMPILERCHECK=none
+
+          echo "Toolchain check:"
+          which clang || true
+          clang --version | head -5 || true
+
+          echo "Generating gki_defconfig"
+          make O=out LLVM=1 LLVM_IAS=1 ARCH=arm64 gki_defconfig
+
+          cfg="out/.config"
+          if [ ! -f "$cfg" ]; then
+            echo "::error::Missing generated .config"
+            exit 1
+          fi
+
+          cfg_sym() { local s="$1"; echo "${s#CONFIG_}"; }
+          set_cfg_y() { scripts/config --file "$cfg" -e "$(cfg_sym "$1")" || true; }
+          set_cfg_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
+          set_cfg_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
+
+          echo "Applying clean daily-driver config"
+          set_cfg_y CONFIG_KSU
+          if [ "${{ inputs.susfs_enable }}" = "true" ]; then
+            set_cfg_y CONFIG_KSU_SUSFS
+            set_cfg_y CONFIG_KSU_SUSFS_SUS_PATH
+            set_cfg_y CONFIG_KSU_SUSFS_SUS_MOUNT
+            set_cfg_y CONFIG_KSU_SUSFS_SUS_KSTAT
+            set_cfg_y CONFIG_KSU_SUSFS_SPOOF_UNAME
+            set_cfg_y CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+            set_cfg_y CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+            set_cfg_y CONFIG_KSU_SUSFS_OPEN_REDIRECT
+            set_cfg_y CONFIG_KSU_SUSFS_SUS_MAP
+            set_cfg_n CONFIG_KSU_SUSFS_ENABLE_LOG
+          fi
+
+          set_cfg_str CONFIG_LOCALVERSION "-${{ inputs.kernel_name }}"
+          set_cfg_n CONFIG_LOCALVERSION_AUTO
+          set_cfg_y CONFIG_LTO_CLANG_THIN
+          set_cfg_n CONFIG_LTO_NONE
+
+          case "${{ inputs.optimise }}" in
+            O2)
+              set_cfg_y CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
+              set_cfg_n CONFIG_CC_OPTIMIZE_FOR_SIZE
+              ;;
+            O3)
+              set_cfg_y CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3 || true
+              ;;
+          esac
+
+          if [ "${{ inputs.bbr }}" = "true" ]; then
+            set_cfg_y CONFIG_TCP_CONG_BBR
+            set_cfg_y CONFIG_DEFAULT_BBR || true
+          fi
+          if [ "${{ inputs.better_net }}" = "true" ]; then
+            set_cfg_y CONFIG_NETFILTER_XT_MATCH_ADDRTYPE
+            set_cfg_y CONFIG_NETFILTER_XT_MATCH_COMMENT
+            set_cfg_y CONFIG_NETFILTER_XT_MATCH_CONNTRACK
+            set_cfg_y CONFIG_NETFILTER_XT_TARGET_MARK
+            set_cfg_y CONFIG_IP_SET
+            set_cfg_y CONFIG_IP_SET_HASH_IP
+            set_cfg_y CONFIG_IP_SET_HASH_NET
+            set_cfg_y CONFIG_NETFILTER_XT_MATCH_SET
+            set_cfg_y CONFIG_NETFILTER_XT_TARGET_TTL
+            set_cfg_y CONFIG_NETFILTER_XT_MATCH_TTL
+          fi
+          if [ "${{ inputs.droidspaces }}" = "true" ]; then
+            set_cfg_y CONFIG_NTSYNC || true
+            set_cfg_y CONFIG_TMPFS_XATTR || true
+            set_cfg_y CONFIG_TMPFS_POSIX_ACL || true
+          fi
+          if [ "${{ inputs.profile }}" = "minimal_debug" ]; then
+            set_cfg_n CONFIG_TCP_CONG_BBR
+            set_cfg_n CONFIG_IP_SET
+            set_cfg_n CONFIG_NTSYNC
+          fi
+
+          yes "" | make O=out LLVM=1 LLVM_IAS=1 ARCH=arm64 olddefconfig
+          cp -f out/.config "$GITHUB_WORKSPACE/_ox_debug/final.config"
+
+          echo "KSU/SUSFS final config scan:"
+          grep -E 'CONFIG_KSU|CONFIG_LOCALVERSION|CONFIG_TCP_CONG_BBR|CONFIG_IP_SET|CONFIG_NTSYNC|CONFIG_LTO' out/.config | tee "$GITHUB_WORKSPACE/_ox_debug/config-scan.txt" || true
+
+          echo "Building Image"
+          make -j"$(nproc --all)" O=out LLVM=1 LLVM_IAS=1 ARCH=arm64 Image
+
+          image="out/arch/arm64/boot/Image"
+          if [ ! -s "$image" ]; then
+            echo "::error::Kernel Image was not produced."
+            find out -maxdepth 5 -type f -name 'Image*' -printf '%p %s bytes\n' || true
+            exit 1
+          fi
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_v66"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_v66" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_v66.sha256"
+
+          uts="unknown"
+          if [ -f out/include/generated/utsrelease.h ]; then
+            cp -f out/include/generated/utsrelease.h "$GITHUB_WORKSPACE/_ox_debug/utsrelease.h"
+            uts="$(sed -n 's/^#define UTS_RELEASE "\(.*\)"/\1/p' out/include/generated/utsrelease.h | head -n1)"
+          fi
+          echo "UTS_RELEASE=$uts" | tee "$GITHUB_WORKSPACE/_ox_debug/uts.txt"
+          echo "uts=$uts" >> "$GITHUB_OUTPUT"
+
+          ccache -s | tee "$GITHUB_WORKSPACE/_ox_debug/ccache-final.txt" || true
+
+      - name: 09 Package AnyKernel3 flashable ZIP
+        if: ${{ inputs.package_ak3 == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf ak3_work
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3_work
+          rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md ak3_work/LICENSE || true
+          cp -f artifacts/Image_OP13_KSUN_CCTV18_clean_v66 ak3_work/Image
+
+          if [ -f ak3_work/anykernel.sh ]; then
+            sed -i 's/^do.devicecheck=.*/do.devicecheck=1/' ak3_work/anykernel.sh || true
+            sed -i 's/^device.name1=.*/device.name1=sun/' ak3_work/anykernel.sh || true
+            sed -i 's/^device.name2=.*/device.name2=OP13/' ak3_work/anykernel.sh || true
+            sed -i 's/^device.name3=.*/device.name3=OnePlus13/' ak3_work/anykernel.sh || true
+            sed -i 's/^device.name4=.*/device.name4=PJZ110/' ak3_work/anykernel.sh || true
+            awk 'NR==1 {print; print "ui_print \"\""; print "ui_print \"OX1D3X3 OP13 KSUN + CCTV18 CLEAN SUSFS v66\""; print "ui_print \"SUSFS source: cctv18/susfs4oki only\""; print "ui_print \"No WildKernels SUSFS patch tree mixed\""; print "ui_print \"\""; next} {print}' ak3_work/anykernel.sh > ak3_work/anykernel.sh.new
+            mv ak3_work/anykernel.sh.new ak3_work/anykernel.sh
+            chmod 0755 ak3_work/anykernel.sh
+          fi
+
+          cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
+          OX1D3X3 OP13 KSUN + CCTV18 CLEAN SUSFS v66
+          Device: OnePlus 13 / sun / PJZ110
+          Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ inputs.cctv18_kernel_ref }}
+          Build assets: cctv18/oppo_oplus_realme_sm8750
+          Root: KernelSU-Next via pershoot/KernelSU-Next dev-susfs path, ref=${{ inputs.ksun_ref }}
+          SUSFS: cctv18/susfs4oki only, ref=${{ inputs.susfs_ref }}
+          WildKernels SUSFS patch tree: NOT USED
+          Profile: ${{ inputs.profile }}
+          UTS_RELEASE: ${{ steps.build.outputs.uts }}
+          Built UTC: $(date -u '+%Y-%m-%d %H:%M:%S')
+          EOF
+
+          zip_name="AK3_OP13_KSUN_CCTV18_clean_v66_${{ github.run_number }}.zip"
+          ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
+          sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
+
+      - name: 10 Clean-source audit and debug collection
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          echo "Build outcome: ${{ steps.build.outcome }}"
-          echo "Engine kernel_version output: ${{ steps.build.outputs.kernel_version }}"
-          echo "KSU version output: ${{ steps.build.outputs.ksu_version }}"
-          echo "SUSFS version output: ${{ steps.build.outputs.susfs_version }}"
-          echo "ZIP name output: ${{ steps.build.outputs.zip_name }}"
-          echo "\nArtifact tree preview:"
-          find . -maxdepth 7 \( -name '*.zip' -o -name 'Image' -o -name '*.log' -o -name '*.txt' -o -name 'utsrelease.h' \) -printf '%p %s bytes\n' | sort | tail -160 || true
+          mkdir -p _ox_debug
+          {
+            echo "Workflow: OP13 KSUN CCTV18 Clean Daily v66"
+            echo "Profile: ${{ inputs.profile }}"
+            echo "KSUN ref: ${{ inputs.ksun_ref }}"
+            echo "SUSFS enabled: ${{ inputs.susfs_enable }}"
+            echo "SUSFS ref: ${{ inputs.susfs_ref }}"
+            echo "CCTV18 kernel ref: ${{ inputs.cctv18_kernel_ref }}"
+            echo "Kernel name: ${{ inputs.kernel_name }}"
+            echo "No WildKernels SUSFS patch tree is cloned or used by this workflow."
+            echo "UTS: ${{ steps.build.outputs.uts }}"
+          } | tee _ox_debug/build-summary.txt
 
-          # IMPORTANT:
-          # The composite build action output named `kernel_version` is the source family
-          # string such as android15-6.6.89. It is NOT the final Linux UTS_RELEASE.
-          # Previous v57 incorrectly compared that output with EXPECTED_UTS and failed
-          # even though the kernel and AK3 zip were created successfully.
-          actual_uts=""
-          uts_file=""
-          candidates=(
-            "OP13/kernel_platform/common/out/include/generated/utsrelease.h"
-            "OP13/kernel_platform/common/out/include/generated/compile.h"
-            "OP13/kernel_platform/common/include/generated/utsrelease.h"
-          )
-          for candidate in "${candidates[@]}"; do
-            if [ -f "$candidate" ]; then
-              uts_file="$candidate"
-              break
-            fi
-          done
-
-          if [ -z "$uts_file" ]; then
-            uts_file="$(find OP13/kernel_platform/common -path '*/include/generated/utsrelease.h' -print -quit 2>/dev/null || true)"
+          if [ -d kernel_workspace/susfs4ksu ]; then
+            git -C kernel_workspace/susfs4ksu remote -v | tee _ox_debug/susfs_remote_final.txt || true
+          fi
+          if [ -d cctv18_assets ]; then
+            git -C cctv18_assets remote -v | tee _ox_debug/cctv18_assets_remote.txt || true
           fi
 
-          if [ -n "$uts_file" ] && [ -f "$uts_file" ]; then
-            echo "Found UTS file: $uts_file"
-            cat "$uts_file" || true
-            actual_uts="$(sed -n 's/^#define UTS_RELEASE "\(.*\)"/\1/p' "$uts_file" | head -n1)"
-          fi
+          find kernel_workspace/common -name '*.rej' -o -name '*.orig' 2>/dev/null | sort | tee _ox_debug/rejects-orig-files.txt || true
+          find artifacts _ox_debug -maxdepth 3 -type f -printf '%p %s bytes\n' 2>/dev/null | sort | tee _ox_debug/artifact-preview.txt || true
 
-          echo "Actual UTS_RELEASE: ${actual_uts:-<not found>}"
-          echo "Expected stock UTS: $EXPECTED_UTS"
-
-          if [ '${{ inputs.stock_mimic }}' = 'On' ] && [ '${{ steps.build.outcome }}' = 'success' ]; then
-            if [ -n "$actual_uts" ]; then
-              if [ "$actual_uts" != "$EXPECTED_UTS" ]; then
-                echo "::warning::Actual UTS_RELEASE differs from expected stock mimic. Expected $EXPECTED_UTS but got $actual_uts"
-              else
-                echo "✅ UTS_RELEASE matches stock mimic target."
-              fi
-            else
-              echo "::warning::Could not locate generated utsrelease.h. Not failing because the build action kernel_version output is not UTS_RELEASE."
-            fi
-          fi
-
-          if [ '${{ steps.build.outcome }}' = 'success' ]; then
-            zip_path="$(find OP13/artifacts -maxdepth 1 -type f -name '*.zip' -print -quit 2>/dev/null || true)"
-            if [ -z "$zip_path" ]; then
-              echo "::error::Build succeeded but no AK3 zip was found under OP13/artifacts."
-              exit 1
-            fi
-            echo "✅ Flashable AK3 zip found: $zip_path"
-            sha256sum "$zip_path" | tee "${zip_path}.sha256"
-          fi
-
-      - name: 10 Upload kernel artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: 11 Upload artifacts
+        if: always() && (inputs.debug_artifacts == true || success())
+        uses: actions/upload-artifact@v7
         with:
-          name: OX_OP13_KSUN_CCTV18_SUSFS_DAILY_v63_${{ github.run_number }}
+          name: OP13-KSUN-CCTV18-CLEAN-v66-${{ github.run_number }}
           path: |
-            OP13/artifacts/**
-            **/*.zip
-            **/kernel_build_full.log
-            **/*.rej
+            artifacts/**
+            _ox_debug/**
           if-no-files-found: warn
+          compression-level: 6
           retention-days: 14
 
-      - name: 11 Final build summary
+      - name: 12 Final status
         if: always()
         shell: bash
         run: |
-          {
-            echo '## OX OP13 KSUN + CCTV18 SUSFS Daily v63'
-            echo ''
-            echo '| Item | Value |'
-            echo '|---|---|'
-            echo "| Status | ${{ job.status }} |"
-            echo "| Profile | ${{ inputs.feature_profile }} |"
-            echo "| KSUN ref | ${{ inputs.ksun_ref }} |"
-            echo "| SUSFS ref | ${{ inputs.susfs_ref }} |"
-            echo "| Build engine | pinned matched engine |"
-            echo "| Patchset | CCTV18 common SUSFS overlaid onto proven KSUN glue path |"
-            echo "| Engine kernel_version output | ${{ steps.build.outputs.kernel_version }} |"
-            echo "| Expected UTS | $EXPECTED_UTS |"
-            echo "| KSUN version | ${{ steps.build.outputs.ksu_version }} |"
-            echo "| SUSFS version | ${{ steps.build.outputs.susfs_version }} |"
-            echo "| ZIP | ${{ steps.build.outputs.zip_name }} |"
-          } >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          if [ ! -s artifacts/Image_OP13_KSUN_CCTV18_clean_v66 ]; then
+            echo "::error::Clean CCTV18 KSUN build failed before producing Image. Download the debug artifact."
+            exit 1
+          fi
+          echo "✅ Clean OP13 KSUN + CCTV18 SUSFS build completed."
+          echo "No WildKernels SUSFS patch tree was used."
