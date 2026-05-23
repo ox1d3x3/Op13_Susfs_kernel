@@ -31,6 +31,14 @@ on:
         required: true
         type: string
         default: "oki-android15-6.6"
+      susfs_patch_mode:
+        description: "strict fails on any reject; cctv18_compatible permits the known fs/proc/task_mmu.c reject exactly like CCTV18 upstream flow."
+        required: true
+        type: choice
+        options:
+          - cctv18_compatible
+          - strict
+        default: cctv18_compatible
       cctv18_kernel_ref:
         description: "CCTV18 OP13 6.6.89 kernel-source branch/ref."
         required: true
@@ -99,7 +107,7 @@ on:
         default: true
 
 concurrency:
-  group: op13-ksun-cctv18-clean-v66-${{ github.ref }}
+  group: op13-ksun-cctv18-clean-v67-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -284,7 +292,30 @@ jobs:
 
           cd common
           echo "Applying CCTV18 SUSFS kernel patch"
-          patch -p1 --forward < "50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch"
+          set +e
+          patch -p1 -N -F 3 < "50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch" 2>&1 | tee "$GITHUB_WORKSPACE/_ox_debug/cctv18-susfs-patch.log"
+          susfs_patch_rc=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$susfs_patch_rc" -ne 0 ]; then
+            echo "CCTV18 SUSFS patch returned rc=$susfs_patch_rc. Checking reject scope..." | tee -a "$GITHUB_WORKSPACE/_ox_debug/cctv18-susfs-patch.log"
+            find . -name '*.rej' -print | sort | tee "$GITHUB_WORKSPACE/_ox_debug/patch-rejects-after-susfs.txt"
+
+            reject_count="$(wc -l < "$GITHUB_WORKSPACE/_ox_debug/patch-rejects-after-susfs.txt" | tr -d ' ')"
+            only_task_mmu="false"
+            if [ "$reject_count" = "1" ] && grep -qx './fs/proc/task_mmu.c.rej' "$GITHUB_WORKSPACE/_ox_debug/patch-rejects-after-susfs.txt"; then
+              only_task_mmu="true"
+            fi
+
+            if [ "${{ inputs.susfs_patch_mode }}" = "cctv18_compatible" ] && [ "$only_task_mmu" = "true" ]; then
+              echo "::warning::Only known CCTV18 fs/proc/task_mmu.c reject found. Continuing in cctv18_compatible mode, without importing any non-CCTV18 SUSFS patch source."
+              cp -f ./fs/proc/task_mmu.c.rej "$GITHUB_WORKSPACE/_ox_debug/fs_proc_task_mmu.c.rej" || true
+              rm -f ./fs/proc/task_mmu.c.rej
+            else
+              echo "::error::Unexpected CCTV18 SUSFS patch rejects. strict mode or non-task_mmu reject detected."
+              exit 1
+            fi
+          fi
 
           if [ -f 69_hide_stuff.patch ]; then
             echo "Applying CCTV18 69_hide_stuff.patch"
@@ -293,7 +324,7 @@ jobs:
 
           cd ..
           if find common -name '*.rej' -print -quit | grep -q .; then
-            echo "::error::Patch rejects found after CCTV18 SUSFS patching. This is not a clean build."
+            echo "::error::Unexpected patch rejects remain after CCTV18 SUSFS patching."
             find common -name '*.rej' -print | tee ../_ox_debug/patch-rejects.txt
             exit 1
           fi
@@ -462,8 +493,8 @@ jobs:
             exit 1
           fi
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
-          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_v66"
-          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_v66" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_v66.sha256"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_v67"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_v67" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_v67.sha256"
 
           uts="unknown"
           if [ -f out/include/generated/utsrelease.h ]; then
@@ -483,7 +514,7 @@ jobs:
           rm -rf ak3_work
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3_work
           rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md ak3_work/LICENSE || true
-          cp -f artifacts/Image_OP13_KSUN_CCTV18_clean_v66 ak3_work/Image
+          cp -f artifacts/Image_OP13_KSUN_CCTV18_clean_v67 ak3_work/Image
 
           if [ -f ak3_work/anykernel.sh ]; then
             sed -i 's/^do.devicecheck=.*/do.devicecheck=1/' ak3_work/anykernel.sh || true
@@ -491,25 +522,26 @@ jobs:
             sed -i 's/^device.name2=.*/device.name2=OP13/' ak3_work/anykernel.sh || true
             sed -i 's/^device.name3=.*/device.name3=OnePlus13/' ak3_work/anykernel.sh || true
             sed -i 's/^device.name4=.*/device.name4=PJZ110/' ak3_work/anykernel.sh || true
-            awk 'NR==1 {print; print "ui_print \"\""; print "ui_print \"OX1D3X3 OP13 KSUN + CCTV18 CLEAN SUSFS v66\""; print "ui_print \"SUSFS source: cctv18/susfs4oki only\""; print "ui_print \"No WildKernels SUSFS patch tree mixed\""; print "ui_print \"\""; next} {print}' ak3_work/anykernel.sh > ak3_work/anykernel.sh.new
+            awk 'NR==1 {print; print "ui_print \"\""; print "ui_print \"OX1D3X3 OP13 KSUN + CCTV18 CLEAN SUSFS v67\""; print "ui_print \"SUSFS source: cctv18/susfs4oki only\""; print "ui_print \"No WildKernels SUSFS patch tree mixed\""; print "ui_print \"\""; next} {print}' ak3_work/anykernel.sh > ak3_work/anykernel.sh.new
             mv ak3_work/anykernel.sh.new ak3_work/anykernel.sh
             chmod 0755 ak3_work/anykernel.sh
           fi
 
           cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
-          OX1D3X3 OP13 KSUN + CCTV18 CLEAN SUSFS v66
+          OX1D3X3 OP13 KSUN + CCTV18 CLEAN SUSFS v67
           Device: OnePlus 13 / sun / PJZ110
           Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ inputs.cctv18_kernel_ref }}
           Build assets: cctv18/oppo_oplus_realme_sm8750
           Root: KernelSU-Next via pershoot/KernelSU-Next dev-susfs path, ref=${{ inputs.ksun_ref }}
           SUSFS: cctv18/susfs4oki only, ref=${{ inputs.susfs_ref }}
+          SUSFS patch mode: ${{ inputs.susfs_patch_mode }}
           WildKernels SUSFS patch tree: NOT USED
           Profile: ${{ inputs.profile }}
           UTS_RELEASE: ${{ steps.build.outputs.uts }}
           Built UTC: $(date -u '+%Y-%m-%d %H:%M:%S')
           EOF
 
-          zip_name="AK3_OP13_KSUN_CCTV18_clean_v66_${{ github.run_number }}.zip"
+          zip_name="AK3_OP13_KSUN_CCTV18_clean_v67_${{ github.run_number }}.zip"
           ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -520,11 +552,12 @@ jobs:
           set -euo pipefail
           mkdir -p _ox_debug
           {
-            echo "Workflow: OP13 KSUN CCTV18 Clean Daily v66"
+            echo "Workflow: OP13 KSUN CCTV18 Clean Daily v67"
             echo "Profile: ${{ inputs.profile }}"
             echo "KSUN ref: ${{ inputs.ksun_ref }}"
             echo "SUSFS enabled: ${{ inputs.susfs_enable }}"
             echo "SUSFS ref: ${{ inputs.susfs_ref }}"
+            echo "SUSFS patch mode: ${{ inputs.susfs_patch_mode }}"
             echo "CCTV18 kernel ref: ${{ inputs.cctv18_kernel_ref }}"
             echo "Kernel name: ${{ inputs.kernel_name }}"
             echo "No WildKernels SUSFS patch tree is cloned or used by this workflow."
@@ -545,7 +578,7 @@ jobs:
         if: always() && (inputs.debug_artifacts == true || success())
         uses: actions/upload-artifact@v7
         with:
-          name: OP13-KSUN-CCTV18-CLEAN-v66-${{ github.run_number }}
+          name: OP13-KSUN-CCTV18-CLEAN-v67-${{ github.run_number }}
           path: |
             artifacts/**
             _ox_debug/**
@@ -558,7 +591,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -s artifacts/Image_OP13_KSUN_CCTV18_clean_v66 ]; then
+          if [ ! -s artifacts/Image_OP13_KSUN_CCTV18_clean_v67 ]; then
             echo "::error::Clean CCTV18 KSUN build failed before producing Image. Download the debug artifact."
             exit 1
           fi
