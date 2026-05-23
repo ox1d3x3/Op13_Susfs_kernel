@@ -5,7 +5,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: op13-ksun-susfs-v52-${{ github.ref }}
+  group: op13-ksun-susfs-v53-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -16,7 +16,7 @@ env:
   KERNEL_VERSION: "6.6"
   EXPECTED_UTS: "6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k"
   STOCK_UNAME_SUFFIX: "8-g7e1f3c083cc6-abogki467167594-4k"
-  DEFAULT_ENGINE_REF: "main"
+  DEFAULT_ENGINE_REF: "14d04c1ed0753280330ccabd773e903f76c9a038"
   DEFAULT_KSUN_REF: "dev"
 
 on:
@@ -32,13 +32,8 @@ on:
           - battery_daily
           - advanced_daily
           - minimal_debug
-      engine_ref:
-        description: "WildKernels build engine ref. Use main for latest compatible engine, or paste a full commit SHA for replay."
-        type: string
-        required: false
-        default: "main"
       ksun_ref:
-        description: "KernelSU Next ref. Use dev for Wild-style compatibility, or paste a full commit only for controlled testing."
+        description: "KernelSU Next ref. Use dev for Wild-style compatibility. Only paste a commit for controlled replay."
         type: string
         required: false
         default: "dev"
@@ -147,7 +142,7 @@ on:
 
 jobs:
   build:
-    name: OP13 KSUN v52 ${{ inputs.feature_profile }}
+    name: OP13 KSUN v53 ${{ inputs.feature_profile }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -155,11 +150,11 @@ jobs:
       # -------------------------------------------------------------------------
       # 01. Checkout full WildKernels build engine as the workspace
       # -------------------------------------------------------------------------
-      - name: Checkout clean KSUN/SUSFS build engine
+      - name: Checkout pinned WildKernels KSUN/SUSFS engine
         uses: actions/checkout@v4
         with:
           repository: WildKernels/OnePlus_KernelSU_SUSFS
-          ref: ${{ inputs.engine_ref || env.DEFAULT_ENGINE_REF }}
+          ref: ${{ env.DEFAULT_ENGINE_REF }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -168,7 +163,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "Workspace: $GITHUB_WORKSPACE"
-          echo "Requested engine ref: ${{ inputs.engine_ref || env.DEFAULT_ENGINE_REF }}"
+          echo "Requested engine ref: ${{ env.DEFAULT_ENGINE_REF }}"
           echo "Resolved engine commit: $(git rev-parse HEAD)"
           echo "Top-level tree:"
           find . -maxdepth 2 -type d | sort | sed 's#^./#  #' | head -80
@@ -188,7 +183,7 @@ jobs:
             fi
           done
           if [[ "$missing" -ne 0 ]]; then
-            echo "::error::Required WildKernels build-engine files are missing. Use engine_ref=main or a valid full commit."
+            echo "::error::Pinned WildKernels engine layout is missing required files. Do not use current main here; this workflow is intentionally pinned to the known old composite-action layout."
             exit 1
           fi
 
@@ -342,12 +337,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
           {
-            echo "## OP13 KSUN SUSFS v52 Build Matrix"
+            echo "## OP13 KSUN SUSFS v53 Build Matrix"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
             echo "| Profile | $profile |"
-            echo "| Engine ref requested | ${{ inputs.engine_ref || env.DEFAULT_ENGINE_REF }} |"
+            echo "| Engine ref | ${DEFAULT_ENGINE_REF} |"
             echo "| Engine commit | $(git rev-parse HEAD) |"
             echo "| KSUN ref | ${{ inputs.ksun_ref }} |"
             echo "| SUSFS | $susfs |"
@@ -420,7 +415,7 @@ jobs:
         if: always() && inputs.debug_artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: OP13_KSUN_SUSFS_v52_${{ inputs.feature_profile }}_${{ github.run_number }}
+          name: OP13_KSUN_SUSFS_v53_${{ inputs.feature_profile }}_${{ github.run_number }}
           if-no-files-found: warn
           retention-days: 14
           path: |
