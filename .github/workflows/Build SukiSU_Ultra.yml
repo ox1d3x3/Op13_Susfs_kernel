@@ -11,8 +11,8 @@ env:
   CCTV18_COMMON_REPO: cctv18/android_kernel_common_oneplus_sm8750
   CCTV18_KERNEL_REF: oneplus/sm8750_v_16.0.0_oneplus_13_6.6.89
   CCTV18_TOOLCHAIN_RELEASE: LLVM-Clang18-r510928
-  CCACHE_DIR: ${{ github.workspace }}/.ccache_op13_sukisu_cctv18_v75
-  CCACHE_MAXSIZE: 3G
+  CCACHE_DIR: ${{ github.workspace }}/.ccache_op13_sukisu_cctv18
+  CCACHE_MAXSIZE: 8G
 
 on:
   workflow_dispatch:
@@ -147,7 +147,7 @@ on:
         type: string
         default: "op13-cctv18-sukisu"
 concurrency:
-  group: op13-sukisu-cctv18-inline-v75-${{ github.ref }}
+  group: op13-sukisu-cctv18-inline-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -223,10 +223,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-op13-sukisu-ultra-v75-${{ inputs.profile }}-${{ inputs.SUSFS }}-${{ inputs.sukisu_ref }}-${{ github.ref_name }}
+          key: ccache-${{ runner.os }}-op13-sukisu-ultra-cctv18-${{ inputs.SUSFS }}-${{ inputs.sukisu_ref }}-${{ inputs.hook_mode }}-${{ github.ref_name }}
           restore-keys: |
-            ccache-${{ runner.os }}-op13-sukisu-ultra-v75-${{ inputs.profile }}-${{ inputs.SUSFS }}-
-            ccache-${{ runner.os }}-op13-sukisu-ultra-v75-
+            ccache-${{ runner.os }}-op13-sukisu-ultra-cctv18-${{ inputs.SUSFS }}-${{ inputs.sukisu_ref }}-
+            ccache-${{ runner.os }}-op13-sukisu-ultra-cctv18-
 
 
       - name: "Install build dependencies"
@@ -606,7 +606,7 @@ jobs:
           set_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
           set_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
 
-          echo "==> Applying v75 SukiSU Ultra daily-driver config profile: ${{ inputs.profile }}"
+          echo "==> Applying v76 SukiSU Ultra daily-driver config profile: ${{ inputs.profile }}"
           set_y CONFIG_KSU
           set_y CONFIG_KSU_MANUAL_SU
 
@@ -853,8 +853,8 @@ jobs:
             exit 1
           fi
 
-          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v75"
-          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v75" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v75.sha256"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v76"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v76" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v76.sha256"
 
           uts="unknown"
           if [ -f out/include/generated/utsrelease.h ]; then
@@ -872,7 +872,7 @@ jobs:
           rm -rf ak3_work
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3_work
           rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
-          cp -f artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v75 ak3_work/Image
+          cp -f artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v76 ak3_work/Image
 
           cat > ak3_work/anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
@@ -990,7 +990,7 @@ jobs:
           chmod 0755 ak3_work/anykernel.sh
 
           cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
-          OX1D3X3 OP13 SukiSU Ultra + CCTV18 INLINE SUSFS v75
+          OX1D3X3 OP13 SukiSU Ultra + CCTV18 INLINE SUSFS v76
           Device: OnePlus 13 / sun / PJZ110
           Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ env.CCTV18_KERNEL_REF }}
           Build assets: cctv18/oppo_oplus_realme_sm8750
@@ -1009,7 +1009,7 @@ jobs:
           EOF
           sed -i 's/^          //' ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt
 
-          zip_name="AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v75_${{ github.run_number }}_FLASH_THIS.zip"
+          zip_name="AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v76_${{ github.run_number }}_FLASH_THIS.zip"
           ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -1043,7 +1043,7 @@ jobs:
           cat > "$MOD/module.prop" <<EOF
           id=ox_op13_zram_lz4
           name=OX OP13 ZRAM LZ4 Tuner
-          version=v75
+          version=v76
           versionCode=70
           author=ox1d3x3
           description=Safe OP13 ZRAM helper. Prefers ${{ inputs.zram_comp }} if supported. Skips destructive reset when zram is already active.
@@ -1138,7 +1138,7 @@ jobs:
           chmod 0755 "$MOD/post-fs-data.sh" "$MOD/service.sh" "$MOD/uninstall.sh" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/update-binary"
           sed -i 's/^          //' "$MOD"/*.sh "$MOD/module.prop" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/"* || true
 
-          zip_name="OP13_ZRAM_LZ4_Tuner_v75_${{ github.run_number }}.zip"
+          zip_name="OP13_ZRAM_LZ4_Tuner_v76_${{ github.run_number }}.zip"
           ( cd "$MOD" && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -1187,7 +1187,7 @@ jobs:
 
           if [ -f "$GITHUB_STEP_SUMMARY" ]; then
             {
-              echo "# OP13 SukiSU Ultra + CCTV18 Inline StockLike Daily v75"
+              echo "# OP13 SukiSU Ultra + CCTV18 Inline StockLike Daily v76"
               echo ""
               echo "## Verdict"
               echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
@@ -1204,7 +1204,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v75-${{ github.run_number }}
+          name: OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v76-${{ github.run_number }}
           path: |
             artifacts/**
             _ox_debug/**
@@ -1217,11 +1217,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -s artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v75 ]; then
-            echo "::error::Build failed before producing Image. Download OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v75 debug artifact."
+          if [ ! -s artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v76 ]; then
+            echo "::error::Build failed before producing Image. Download OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v76 debug artifact."
             exit 1
           fi
-          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v75_*_FLASH_THIS.zip >/dev/null 2>&1; then
+          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v76_*_FLASH_THIS.zip >/dev/null 2>&1; then
             echo "::error::Image built but AnyKernel3 flashable ZIP was not produced."
             exit 1
           fi
