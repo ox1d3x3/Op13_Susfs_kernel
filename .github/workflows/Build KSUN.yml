@@ -1,11 +1,11 @@
 name: OP13 KSUN
 
 permissions:
-  contents: read
-  actions: read
+  contents: write
+  actions: write
 
 concurrency:
-  group: op13-ksun-susfs-v54-${{ github.ref }}
+  group: op13-ksun-susfs-v55-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -129,7 +129,7 @@ on:
           - "On"
           - "Off"
       clean_build:
-        description: "Clean build without ccache reuse"
+        description: "Clean build without ccache/LTO cache restore"
         type: boolean
         required: true
         default: false
@@ -146,14 +146,16 @@ on:
 
 jobs:
   build:
-    name: OP13 KSUN v54 ${{ inputs.feature_profile }}
+    name: OP13 KSUN v55 ${{ inputs.feature_profile }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
       # -------------------------------------------------------------------------
-      # 01. Preflight only. Do not checkout old Wild tree and do not use the old
-      #     root composite action. v54 calls current modular build-kernel action.
+      # 01. Preflight. This workflow calls the current Wild modular build-kernel
+      #     action remotely, but prepares the same required caller-side cache env
+      #     as Wild's own workflow. v54 missed CCACHE_DIR/LDCACHE_DIR, which made
+      #     the action's cache restore path input empty and caused the 24s fail.
       # -------------------------------------------------------------------------
       - name: Print workflow context
         shell: bash
@@ -170,17 +172,52 @@ jobs:
           echo "Engine      : WildKernels/OnePlus_KernelSU_SUSFS/.github/actions/build-kernel@main"
           df -hT
 
-      - name: Install minimal host tools
+      - name: Install host tools
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            ca-certificates curl git jq unzip zip
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            git curl ca-certificates build-essential clang lld flex bison \
+            libelf-dev libssl-dev libncurses-dev zlib1g-dev liblz4-tool \
+            libxml2-utils rsync unzip zip dwarves file python3 ccache jq bc \
+            dos2unix kmod libdw-dev elfutils pigz zstd aria2 gh
+          sudo apt-get clean
+          echo "✅ Host tools installed"
+
+      - name: Configure ccache and LTO cache environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::Configure ccache/LTO cache environment"
+          CACHE_DIR="${GITHUB_WORKSPACE}/.ccache"
+          LDCACHE_DIR="${GITHUB_WORKSPACE}/.ld_cache"
+          mkdir -p "$CACHE_DIR" "$LDCACHE_DIR"
+
+          {
+            echo "CCACHE_DIR=$CACHE_DIR"
+            echo "LDCACHE_DIR=$LDCACHE_DIR"
+            echo "CCACHE_MAXSIZE=12G"
+            echo "CCACHE_COMPILERCHECK=content"
+            echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
+            echo "CCACHE_NOHASHDIR=true"
+            echo "CCACHE_IGNOREOPTIONS=--sysroot*"
+            echo "CCACHE_COMPRESSION=true"
+            echo "CCACHE_COMPRESSION_LEVEL=3"
+            echo "CCACHE_DIRECT=true"
+            echo "CCACHE_FILE_CLONE=true"
+            echo "CCACHE_INODE_CACHE=true"
+            echo "CCACHE_IS_KERNEL_COMPILING=true"
+            echo "CCACHE_UMASK=002"
+            echo "CCACHE_SLOPPINESS=file_macro,time_macros,include_file_mtime,include_file_ctime,pch_defines,system_headers,locale"
+          } >> "$GITHUB_ENV"
+
+          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+          ccache -p || true
+          echo "::endgroup::"
 
       # -------------------------------------------------------------------------
       # 02. Resolve timestamp and OP13 config JSON inline.
-      #     This avoids mixing old action code with mismatched local resources.
       # -------------------------------------------------------------------------
       - name: Resolve build timestamp
         id: timestamp
@@ -256,8 +293,6 @@ jobs:
             uname_value="OP13-KSUN"
           fi
 
-          # OP13 OOS16 config mirrors Wild's OP13 profile, but is constructed
-          # inline so the current remote build-kernel action owns all resources.
           jq -nc \
             --argjson hmbird "$hmbird" \
             --argjson susfs "$susfs" \
@@ -315,7 +350,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
           {
-            echo "## OP13 KSUN SUSFS v54 Build Matrix"
+            echo "## OP13 KSUN SUSFS v55 Build Matrix"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
@@ -333,11 +368,12 @@ jobs:
             echo "| NTSYNC | $ntsync |"
             echo "| Uname suffix | $uname_value |"
             echo "| Build timestamp | ${{ steps.timestamp.outputs.value || 'build-engine default' }} |"
+            echo "| CCACHE_DIR | ${GITHUB_WORKSPACE}/.ccache |"
+            echo "| LDCACHE_DIR | ${GITHUB_WORKSPACE}/.ld_cache |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # -------------------------------------------------------------------------
-      # 03. Build with current Wild modular action. This avoids the old root
-      #     action, old setup.sh assumptions, and workspace resource mismatch.
+      # 03. Build with current Wild modular action.
       # -------------------------------------------------------------------------
       - name: Build OP13 KSUN SUSFS kernel
         id: build_kernel
@@ -354,7 +390,7 @@ jobs:
           github_token: ${{ github.token }}
 
       # -------------------------------------------------------------------------
-      # 04. Post-build discovery, summary, and artifact upload
+      # 04. Post-build discovery, summary, and artifact upload.
       # -------------------------------------------------------------------------
       - name: Discover build outputs
         if: always()
@@ -369,6 +405,8 @@ jobs:
           find "$GITHUB_WORKSPACE" -maxdepth 6 -type d -name artifacts -print -exec find {} -maxdepth 3 -type f -printf '%p %s bytes\n' \; || true
           echo "Debug artifacts preview:"
           find "$GITHUB_WORKSPACE" -maxdepth 5 -type d -name debug_artifacts -print -exec find {} -maxdepth 3 -type f -printf '%p %s bytes\n' \; || true
+          echo "ccache preview:"
+          ccache -s || true
 
       - name: Final build summary
         if: always()
@@ -397,7 +435,7 @@ jobs:
         if: always() && inputs.debug_artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: OP13_KSUN_SUSFS_v54_${{ inputs.feature_profile }}_${{ github.run_number }}
+          name: OP13_KSUN_SUSFS_v55_${{ inputs.feature_profile }}_${{ github.run_number }}
           if-no-files-found: warn
           retention-days: 14
           path: |
