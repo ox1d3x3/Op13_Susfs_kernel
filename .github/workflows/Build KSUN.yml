@@ -1,8 +1,17 @@
 name: OP13 KSUN
 
-permissions:
-  contents: read
-  actions: read
+env:
+  TZ: Asia/Shanghai
+  ANDROID_VERSION: android15
+  KERNEL_VERSION: "6.6"
+  SUB_VERSION: "89"
+  DEVICE_NAME: OP13
+  DEVICE_CODENAME: sun
+  CCTV18_BUILD_REPO: cctv18/oppo_oplus_realme_sm8750
+  CCTV18_COMMON_REPO: cctv18/android_kernel_common_oneplus_sm8750
+  CCTV18_TOOLCHAIN_RELEASE: LLVM-Clang18-r510928
+  CCACHE_DIR: ${{ github.workspace }}/.ccache_op13_ksun_cctv18_v76
+  CCACHE_MAXSIZE: 3G
 
 on:
   workflow_dispatch:
@@ -153,35 +162,88 @@ on:
         default: true
 
 concurrency:
-  group: op13-ksun-cctv18-clean-v72-${{ github.ref }}
+  group: op13-ksun-cctv18-clean-v76-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  TZ: Asia/Shanghai
-  ANDROID_VERSION: android15
-  KERNEL_VERSION: "6.6"
-  SUB_VERSION: "89"
-  DEVICE_NAME: OP13
-  DEVICE_CODENAME: sun
-  CCTV18_BUILD_REPO: cctv18/oppo_oplus_realme_sm8750
-  CCTV18_COMMON_REPO: cctv18/android_kernel_common_oneplus_sm8750
-  CCTV18_TOOLCHAIN_RELEASE: LLVM-Clang18-r510928
-  CCACHE_DIR: ${{ github.workspace }}/.ccache_op13_ksun_cctv18_v72
-  CCACHE_MAXSIZE: 3G
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   build:
     name: "${{ inputs.profile }} | KSUN=${{ inputs.ksun_ref }} | CCTV18 SUSFS=${{ inputs.susfs_enable }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 360
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
 
     steps:
-      - name: 01 Checkout workflow repo
+      - name: "Runner disk preflight"
+        id: disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Memory and swap:"
+          free -h || true
+          echo ""
+          echo "Disk usage:"
+          df -hT || true
+          root_free_mb="$(df -Pm / | awk 'NR==2 {print $4}' || echo 0)"
+          echo "root_free_mb=$root_free_mb" >> "$GITHUB_OUTPUT"
+          if [ "$root_free_mb" -lt 25000 ]; then
+            echo "use_cleanup=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "use_cleanup=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: "Extra disk cleanup"
+        if: steps.disk.outputs.use_cleanup == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost /usr/local/share/powershell /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune -a -f || true
+          sudo docker system prune -af || true
+          sudo apt-get clean || true
+          df -hT || true
+
+      - name: "Checkout"
         uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
-      - name: 02 Install host dependencies
+      - name: "Git auth for non-interactive clones"
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config --global credential.helper store
+          git config --global core.askPass true
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: "Setup ccache directory"
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$CCACHE_DIR"
+          echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
+
+      - name: "Restore ccache"
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-op13-ksun-cctv18-v76-${{ inputs.profile }}-${{ inputs.susfs_enable }}-${{ inputs.ksun_ref }}-${{ github.ref_name }}
+          restore-keys: |
+            ccache-${{ runner.os }}-op13-ksun-cctv18-v76-${{ inputs.profile }}-${{ inputs.susfs_enable }}-
+            ccache-${{ runner.os }}-op13-ksun-cctv18-v76-
+
+      - name: "Install build dependencies"
         shell: bash
         run: |
           set -euo pipefail
@@ -195,7 +257,7 @@ jobs:
           echo "Runner: $(uname -a)"
           ccache --version || true
 
-      - name: 03 Fetch clean CCTV18 OP13 source, build assets and Clang18
+      - name: "Sync kernel sources"
         shell: bash
         run: |
           set -euo pipefail
@@ -244,7 +306,7 @@ jobs:
           echo "==> Source layout" | tee ../_ox_debug/source-layout.txt
           find . -maxdepth 2 -type d | sort | tee -a ../_ox_debug/source-layout.txt
 
-      - name: 04 Configure ccache
+      - name: "Configure ccache limits"
         shell: bash
         run: |
           set -euo pipefail
@@ -257,7 +319,7 @@ jobs:
           ccache -z || true
           ccache -s || true
 
-      - name: 05 Add KernelSU-Next using CCTV18-compatible dev-susfs path
+      - name: "Integrate KernelSU-Next"
         id: ksun
         shell: bash
         run: |
@@ -308,7 +370,7 @@ jobs:
             ( cd common/drivers/kernelsu && patch -p2 -N -F 3 < "$GITHUB_WORKSPACE/cctv18_assets/other_patch/apk_sign.patch" ) || true
           fi
 
-      - name: 06 Apply CCTV18-only SUSFS integration
+      - name: "Apply CCTV18-only SUSFS"
         if: ${{ inputs.susfs_enable == true }}
         shell: bash
         run: |
@@ -380,7 +442,7 @@ jobs:
             exit 1
           fi
 
-      - name: 07 Apply minimal CCTV18 optional patches only if clean
+      - name: "Apply optional CCTV18 feature patches"
         shell: bash
         run: |
           set -euo pipefail
@@ -426,7 +488,7 @@ jobs:
             exit 1
           fi
 
-      - name: 08 Configure stock-like daily-driver defconfig
+      - name: "Enable features via defconfig"
         shell: bash
         run: |
           set -euo pipefail
@@ -457,7 +519,7 @@ jobs:
           set_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
           set_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
 
-          echo "==> Applying v72 daily-driver config profile: ${{ inputs.profile }}"
+          echo "==> Applying v76 daily-driver config profile: ${{ inputs.profile }}"
           set_y CONFIG_KSU
 
           echo "==> Requested KernelSU hook/audit mode: ${{ inputs.hook_mode }}"
@@ -504,7 +566,7 @@ jobs:
           if [ "${{ inputs.stock_mimic }}" = "true" ]; then
             set_str CONFIG_LOCALVERSION "-${{ inputs.kernel_name }}"
           else
-            set_str CONFIG_LOCALVERSION "-${{ inputs.kernel_name }}-ox-v72"
+            set_str CONFIG_LOCALVERSION "-${{ inputs.kernel_name }}-ox-v76"
           fi
           set_n CONFIG_LOCALVERSION_AUTO
 
@@ -646,7 +708,7 @@ jobs:
           echo "==> Final config scan"
           grep -E 'CONFIG_KSU|CONFIG_LOCALVERSION|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_BBR|CONFIG_IP_SET|CONFIG_NTSYNC|CONFIG_LTO|CONFIG_CC_OPTIMIZE|CONFIG_NETFILTER_XT_TARGET_TTL|CONFIG_ADIOS|CONFIG_BBG|CONFIG_BASEBAND|CONFIG_ZRAM|CONFIG_ZSMALLOC|CONFIG_CRYPTO_LZ4|CONFIG_LZ4|CONFIG_ZSTD' out/.config | tee "$GITHUB_WORKSPACE/_ox_debug/config-scan.txt" || true
 
-      - name: 09 Build OP13 KSUN CCTV18 clean Image
+      - name: "Build kernel"
         id: build
         shell: bash
         run: |
@@ -676,8 +738,8 @@ jobs:
             exit 1
           fi
 
-          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v72"
-          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v72" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v72.sha256"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v76"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v76" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v76.sha256"
 
           uts="unknown"
           if [ -f out/include/generated/utsrelease.h ]; then
@@ -688,7 +750,7 @@ jobs:
           echo "uts=$uts" >> "$GITHUB_OUTPUT"
           ccache -s | tee "$GITHUB_WORKSPACE/_ox_debug/ccache-final.txt" || true
 
-      - name: 10 Package fixed AnyKernel3 flashable ZIP with OX install banner
+      - name: "Package AnyKernel3"
         if: ${{ inputs.package_ak3 == true }}
         shell: bash
         run: |
@@ -696,7 +758,7 @@ jobs:
           rm -rf ak3_work
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3_work
           rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
-          cp -f artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v72 ak3_work/Image
+          cp -f artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v76 ak3_work/Image
 
           cat > ak3_work/anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
@@ -814,7 +876,7 @@ jobs:
           chmod 0755 ak3_work/anykernel.sh
 
           cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
-          OX1D3X3 OP13 KSUN + CCTV18 CLEAN SUSFS v72
+          OX1D3X3 OP13 KSUN + CCTV18 CLEAN SUSFS v76
           Device: OnePlus 13 / sun / PJZ110
           Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ inputs.cctv18_kernel_ref }}
           Build assets: cctv18/oppo_oplus_realme_sm8750
@@ -832,7 +894,7 @@ jobs:
           EOF
           sed -i 's/^          //' ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt
 
-          zip_name="AK3_OP13_KSUN_CCTV18_clean_stocklike_v72_${{ github.run_number }}_FLASH_THIS.zip"
+          zip_name="AK3_OP13_KSUN_CCTV18_clean_stocklike_v76_${{ github.run_number }}_FLASH_THIS.zip"
           ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -854,7 +916,7 @@ jobs:
             echo "::error::OX install info banner was not packaged."
             exit 1
           fi
-      - name: 11 Package separate ZRAM LZ4 tuner ZIP
+      - name: "Build flashable ZRAM module"
         if: ${{ inputs.package_zram_tuner_zip == true }}
         shell: bash
         run: |
@@ -866,8 +928,8 @@ jobs:
           cat > "$MOD/module.prop" <<EOF
           id=ox_op13_zram_lz4
           name=OX OP13 ZRAM LZ4 Tuner
-          version=v72
-          versionCode=70
+          version=v76
+          versionCode=76
           author=ox1d3x3
           description=Safe OP13 ZRAM helper. Prefers ${{ inputs.zram_comp }} if supported. Skips destructive reset when zram is already active.
           EOF
@@ -961,18 +1023,18 @@ jobs:
           chmod 0755 "$MOD/post-fs-data.sh" "$MOD/service.sh" "$MOD/uninstall.sh" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/update-binary"
           sed -i 's/^          //' "$MOD"/*.sh "$MOD/module.prop" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/"* || true
 
-          zip_name="OP13_ZRAM_LZ4_Tuner_v72_${{ github.run_number }}.zip"
+          zip_name="OP13_ZRAM_LZ4_Tuner_v76_${{ github.run_number }}.zip"
           ( cd "$MOD" && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
-      - name: 12 Clean-source audit and debug collection
+      - name: "Clean-source audit and debug collection"
         if: always()
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p _ox_debug artifacts
           {
-            echo "Workflow: OP13 KSUN CCTV18 Clean StockLike Daily v72"
+            echo "Workflow: OP13 KSUN CCTV18 Clean StockLike Daily v76"
             echo "Profile: ${{ inputs.profile }}"
             echo "KSUN ref: ${{ inputs.ksun_ref }}"
             echo "SUSFS enabled: ${{ inputs.susfs_enable }}"
@@ -1003,7 +1065,7 @@ jobs:
 
           if [ -f "$GITHUB_STEP_SUMMARY" ]; then
             {
-              echo "# OP13 KSUN + CCTV18 Clean StockLike Daily v72"
+              echo "# OP13 KSUN + CCTV18 Clean StockLike Daily v76"
               echo ""
               echo "## Verdict"
               echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
@@ -1016,11 +1078,11 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: 13 Upload build and debug artifacts
+      - name: "Upload build outputs"
         if: always() && (inputs.upload_debug == true || success())
         uses: actions/upload-artifact@v6
         with:
-          name: OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v72-${{ github.run_number }}
+          name: OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v76-${{ github.run_number }}
           path: |
             artifacts/**
             _ox_debug/**
@@ -1028,16 +1090,16 @@ jobs:
           compression-level: 6
           retention-days: 14
 
-      - name: 14 Final status
+      - name: "Summary"
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -s artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v72 ]; then
-            echo "::error::Build failed before producing Image. Download OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v72 debug artifact."
+          if [ ! -s artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v76 ]; then
+            echo "::error::Build failed before producing Image. Download OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v76 debug artifact."
             exit 1
           fi
-          if [ "${{ inputs.package_ak3 }}" = "true" ] && ! ls artifacts/AK3_OP13_KSUN_CCTV18_clean_stocklike_v72_*_FLASH_THIS.zip >/dev/null 2>&1; then
+          if [ "${{ inputs.package_ak3 }}" = "true" ] && ! ls artifacts/AK3_OP13_KSUN_CCTV18_clean_stocklike_v76_*_FLASH_THIS.zip >/dev/null 2>&1; then
             echo "::error::Image built but AnyKernel3 flashable ZIP was not produced."
             exit 1
           fi
