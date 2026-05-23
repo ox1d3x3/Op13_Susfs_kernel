@@ -42,14 +42,14 @@ on:
           - native_cctv18
         default: audited_cctv18
       hook_mode:
-        description: "KernelSU hook mode. inline_susfs forces CONFIG_KSU_NONE_HOOK for SUSFS inline style; hybrid_compat keeps KSUN/CCTV18 default behaviour."
+        description: "KernelSU hook/audit mode. cctv18_susfs_auto is recommended for clean KSUN dev-susfs; strict_none_hook_test only passes if the KSUN tree exposes CONFIG_KSU_NONE_HOOK."
         required: true
         type: choice
         options:
-          - inline_susfs
+          - cctv18_susfs_auto
           - hybrid_compat
-          - auto
-        default: inline_susfs
+          - strict_none_hook_test
+        default: cctv18_susfs_auto
       cctv18_kernel_ref:
         description: "CCTV18 OP13 6.6.89 source branch/ref."
         required: true
@@ -153,7 +153,7 @@ on:
         default: true
 
 concurrency:
-  group: op13-ksun-cctv18-clean-v71-${{ github.ref }}
+  group: op13-ksun-cctv18-clean-v72-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -166,7 +166,7 @@ env:
   CCTV18_BUILD_REPO: cctv18/oppo_oplus_realme_sm8750
   CCTV18_COMMON_REPO: cctv18/android_kernel_common_oneplus_sm8750
   CCTV18_TOOLCHAIN_RELEASE: LLVM-Clang18-r510928
-  CCACHE_DIR: ${{ github.workspace }}/.ccache_op13_ksun_cctv18_v71
+  CCACHE_DIR: ${{ github.workspace }}/.ccache_op13_ksun_cctv18_v72
   CCACHE_MAXSIZE: 3G
 
 jobs:
@@ -457,25 +457,23 @@ jobs:
           set_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
           set_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
 
-          echo "==> Applying v71 daily-driver config profile: ${{ inputs.profile }}"
+          echo "==> Applying v72 daily-driver config profile: ${{ inputs.profile }}"
           set_y CONFIG_KSU
 
-          echo "==> Requested KernelSU hook mode: ${{ inputs.hook_mode }}"
+          echo "==> Requested KernelSU hook/audit mode: ${{ inputs.hook_mode }}"
           case "${{ inputs.hook_mode }}" in
-            inline_susfs)
-              # For SUSFS inline-style builds, KernelSU should not also select manual/kprobe hook mode.
-              # These symbols are set only if the active KSUN tree exposes them; olddefconfig will drop unknown ones.
-              set_y CONFIG_KSU_NONE_HOOK
-              set_n CONFIG_KSU_MANUAL_HOOK
-              set_n CONFIG_KSU_KPROBES_HOOK
-              set_n CONFIG_KSU_WITH_KPROBES
-              ;;
-            hybrid_compat)
-              # Keep KernelSU-Next/CCTV18 default selection. This is the safest fallback if inline symbols are unavailable.
+            cctv18_susfs_auto)
+              # Clean CCTV18 KSUN lane uses pershoot KernelSU-Next dev-susfs.
+              # That Kconfig does not expose CONFIG_KSU_NONE_HOOK; KSU depends on KPROBES || SUSFS.
+              # Therefore the correct clean audit is CONFIG_KSU=y + CONFIG_KSU_SUSFS=y, not forcing a foreign hook selector.
               true
               ;;
-            auto)
-              # Prefer inline SUSFS, but do not hard-fail if the branch does not expose the symbols.
+            hybrid_compat)
+              # Keep KernelSU-Next/CCTV18 default selection with no artificial hook selector forcing.
+              true
+              ;;
+            strict_none_hook_test)
+              # Test-only: only useful if you change KSUN source to a tree that actually exposes CONFIG_KSU_NONE_HOOK.
               set_y CONFIG_KSU_NONE_HOOK
               set_n CONFIG_KSU_MANUAL_HOOK
               set_n CONFIG_KSU_KPROBES_HOOK
@@ -506,7 +504,7 @@ jobs:
           if [ "${{ inputs.stock_mimic }}" = "true" ]; then
             set_str CONFIG_LOCALVERSION "-${{ inputs.kernel_name }}"
           else
-            set_str CONFIG_LOCALVERSION "-${{ inputs.kernel_name }}-ox-v71"
+            set_str CONFIG_LOCALVERSION "-${{ inputs.kernel_name }}-ox-v72"
           fi
           set_n CONFIG_LOCALVERSION_AUTO
 
@@ -607,15 +605,40 @@ jobs:
 
           cp -f out/.config "$GITHUB_WORKSPACE/_ox_debug/final.config"
 
-          echo "==> Final hook mode audit" | tee "$GITHUB_WORKSPACE/_ox_debug/hook-mode-audit.txt"
-          grep -E 'CONFIG_KSU(_NONE_HOOK|_MANUAL_HOOK|_KPROBES_HOOK|_WITH_KPROBES|_SUSFS)=' out/.config | tee -a "$GITHUB_WORKSPACE/_ox_debug/hook-mode-audit.txt" || true
-          if [ "${{ inputs.hook_mode }}" = "inline_susfs" ]; then
-            if ! grep -q '^CONFIG_KSU_NONE_HOOK=y' out/.config; then
-              echo "::error::Requested inline_susfs, but CONFIG_KSU_NONE_HOOK=y is not present after olddefconfig. This KSUN ref did not expose/accept the inline hook config."
+          echo "==> Final KSUN/SUSFS hook audit" | tee "$GITHUB_WORKSPACE/_ox_debug/hook-mode-audit.txt"
+          {
+            echo "Requested hook/audit mode: ${{ inputs.hook_mode }}"
+            echo "Detected KSUN hook selector symbols, if any:"
+            grep -E 'CONFIG_KSU(_NONE_HOOK|_MANUAL_HOOK|_KPROBES_HOOK|_WITH_KPROBES|_SUSFS)=' out/.config || true
+            echo "Detected generic KPROBES state:"
+            grep -E 'CONFIG_KPROBES=' out/.config || true
+            echo "KernelSU Kconfig hook selector availability:"
+            if grep -Rqs 'config KSU_NONE_HOOK' ../KernelSU-Next/kernel ./drivers/kernelsu 2>/dev/null; then
+              echo "KSU_NONE_HOOK symbol exists in this KSUN tree"
+            else
+              echo "KSU_NONE_HOOK symbol NOT exposed by this clean CCTV18/pershoot dev-susfs KSUN tree"
+            fi
+          } | tee -a "$GITHUB_WORKSPACE/_ox_debug/hook-mode-audit.txt"
+
+          if ! grep -q '^CONFIG_KSU=y' out/.config; then
+            echo "::error::CONFIG_KSU=y missing after olddefconfig."
+            exit 1
+          fi
+
+          if [ "${{ inputs.susfs_enable }}" = "true" ]; then
+            if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
+              echo "::error::CONFIG_KSU_SUSFS=y missing after olddefconfig. This is the real blocker for clean CCTV18 SUSFS."
               exit 1
             fi
-            if grep -q '^CONFIG_KSU_MANUAL_HOOK=y' out/.config || grep -q '^CONFIG_KSU_KPROBES_HOOK=y' out/.config || grep -q '^CONFIG_KSU_WITH_KPROBES=y' out/.config; then
-              echo "::error::Requested inline_susfs, but a KernelSU manual/kprobe hook option is still enabled."
+          fi
+
+          if [ "${{ inputs.hook_mode }}" = "strict_none_hook_test" ]; then
+            if ! grep -Rqs 'config KSU_NONE_HOOK' ../KernelSU-Next/kernel ./drivers/kernelsu 2>/dev/null; then
+              echo "::error::strict_none_hook_test requested, but this clean KSUN dev-susfs tree does not expose CONFIG_KSU_NONE_HOOK. Use cctv18_susfs_auto for this branch."
+              exit 1
+            fi
+            if ! grep -q '^CONFIG_KSU_NONE_HOOK=y' out/.config; then
+              echo "::error::strict_none_hook_test requested, but CONFIG_KSU_NONE_HOOK=y is not present after olddefconfig."
               exit 1
             fi
           fi
@@ -653,8 +676,8 @@ jobs:
             exit 1
           fi
 
-          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v71"
-          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v71" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v71.sha256"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v72"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v72" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v72.sha256"
 
           uts="unknown"
           if [ -f out/include/generated/utsrelease.h ]; then
@@ -673,7 +696,7 @@ jobs:
           rm -rf ak3_work
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3_work
           rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
-          cp -f artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v71 ak3_work/Image
+          cp -f artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v72 ak3_work/Image
 
           cat > ak3_work/anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
@@ -730,6 +753,7 @@ jobs:
           ui_print 'PJZ110 | KernelSU-Next [StockLike Daily] + CCTV18 SUSFS'
           ui_print 'Kernel : 6.6.89-${{ inputs.kernel_name }}'
           ui_print 'Hook   : ${{ inputs.hook_mode }}'
+          ui_print 'Audit  : CONFIG_KSU + CONFIG_KSU_SUSFS required'
           ui_print 'Build  : #${{ github.run_number }} (${{ inputs.kernel_name }})'
           ui_print 'Builder: @Ox1d3x3'
           ui_print 'Credits: @cctv18, KernelSU-Next, osm0sis, @mrcxlinux'
@@ -790,7 +814,7 @@ jobs:
           chmod 0755 ak3_work/anykernel.sh
 
           cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
-          OX1D3X3 OP13 KSUN + CCTV18 CLEAN SUSFS v71
+          OX1D3X3 OP13 KSUN + CCTV18 CLEAN SUSFS v72
           Device: OnePlus 13 / sun / PJZ110
           Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ inputs.cctv18_kernel_ref }}
           Build assets: cctv18/oppo_oplus_realme_sm8750
@@ -808,7 +832,7 @@ jobs:
           EOF
           sed -i 's/^          //' ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt
 
-          zip_name="AK3_OP13_KSUN_CCTV18_clean_stocklike_v71_${{ github.run_number }}_FLASH_THIS.zip"
+          zip_name="AK3_OP13_KSUN_CCTV18_clean_stocklike_v72_${{ github.run_number }}_FLASH_THIS.zip"
           ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -842,7 +866,7 @@ jobs:
           cat > "$MOD/module.prop" <<EOF
           id=ox_op13_zram_lz4
           name=OX OP13 ZRAM LZ4 Tuner
-          version=v71
+          version=v72
           versionCode=70
           author=ox1d3x3
           description=Safe OP13 ZRAM helper. Prefers ${{ inputs.zram_comp }} if supported. Skips destructive reset when zram is already active.
@@ -937,7 +961,7 @@ jobs:
           chmod 0755 "$MOD/post-fs-data.sh" "$MOD/service.sh" "$MOD/uninstall.sh" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/update-binary"
           sed -i 's/^          //' "$MOD"/*.sh "$MOD/module.prop" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/"* || true
 
-          zip_name="OP13_ZRAM_LZ4_Tuner_v71_${{ github.run_number }}.zip"
+          zip_name="OP13_ZRAM_LZ4_Tuner_v72_${{ github.run_number }}.zip"
           ( cd "$MOD" && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -948,7 +972,7 @@ jobs:
           set -euo pipefail
           mkdir -p _ox_debug artifacts
           {
-            echo "Workflow: OP13 KSUN CCTV18 Clean StockLike Daily v71"
+            echo "Workflow: OP13 KSUN CCTV18 Clean StockLike Daily v72"
             echo "Profile: ${{ inputs.profile }}"
             echo "KSUN ref: ${{ inputs.ksun_ref }}"
             echo "SUSFS enabled: ${{ inputs.susfs_enable }}"
@@ -979,7 +1003,7 @@ jobs:
 
           if [ -f "$GITHUB_STEP_SUMMARY" ]; then
             {
-              echo "# OP13 KSUN + CCTV18 Clean StockLike Daily v71"
+              echo "# OP13 KSUN + CCTV18 Clean StockLike Daily v72"
               echo ""
               echo "## Verdict"
               echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
@@ -996,7 +1020,7 @@ jobs:
         if: always() && (inputs.upload_debug == true || success())
         uses: actions/upload-artifact@v6
         with:
-          name: OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v71-${{ github.run_number }}
+          name: OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v72-${{ github.run_number }}
           path: |
             artifacts/**
             _ox_debug/**
@@ -1009,11 +1033,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -s artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v71 ]; then
-            echo "::error::Build failed before producing Image. Download OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v71 debug artifact."
+          if [ ! -s artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v72 ]; then
+            echo "::error::Build failed before producing Image. Download OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v72 debug artifact."
             exit 1
           fi
-          if [ "${{ inputs.package_ak3 }}" = "true" ] && ! ls artifacts/AK3_OP13_KSUN_CCTV18_clean_stocklike_v71_*_FLASH_THIS.zip >/dev/null 2>&1; then
+          if [ "${{ inputs.package_ak3 }}" = "true" ] && ! ls artifacts/AK3_OP13_KSUN_CCTV18_clean_stocklike_v72_*_FLASH_THIS.zip >/dev/null 2>&1; then
             echo "::error::Image built but AnyKernel3 flashable ZIP was not produced."
             exit 1
           fi
