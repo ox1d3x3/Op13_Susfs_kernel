@@ -101,7 +101,7 @@ on:
         default: true
 
 concurrency:
-  group: ox-op13-ksun-cctv18-susfs-v61-${{ github.ref }}
+  group: ox-op13-ksun-cctv18-susfs-v62-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -119,11 +119,13 @@ env:
   # Pinning this restores the patchset used for KSUN 33129 + SUSFS v2.1.0.
   ENGINE_KERNEL_PATCHES_REF: '6ac23b65150f5f505018403361779fa7a8a728b0'
   DEFAULT_KSUN_REF: '551ad80473f60e052917aec08abf5323b6ab2f7c'
+  # Proven KSUN/SUSFS glue payload. CCTV18 common kernel patches are overlaid on top.
+  SIMONPUNK_GLUE_REF: '85bcfac5edc8ba7808581e8d0a3ca9c7deca78e4'
   DEFAULT_SUSFS_REF: 'oki-android15-6.6'
 
 jobs:
   build:
-    name: OX OP13 KSUN CCTV18 SUSFS experimental
+    name: OX OP13 KSUN CCTV18 SUSFS daily
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -195,46 +197,66 @@ jobs:
           grep -nE 'kernel_patches|TheWildJames/kernel_patches|WildKernels/kernel_patches|6ac23b6' "$ACTION_FILE" || true
 
 
-          echo "Patching SUSFS source to CCTV18 susfs4oki for experimental KSUN test..."
+          echo "Patching build engine to overlay CCTV18 common SUSFS payload while retaining proven KSUN glue..."
           python3 - <<'INNERPY'
           from pathlib import Path
 
           p = Path('.github/actions/action.yml')
           text = p.read_text()
 
-          def replace_shell_line(text: str, needle: str, replacement_lines: list[str], label: str) -> str:
-              out = []
-              count = 0
-              for line in text.splitlines():
-                  if needle in line:
-                      indent = line[:len(line) - len(line.lstrip())]
-                      out.extend(indent + repl for repl in replacement_lines)
-                      count += 1
-                  else:
-                      out.append(line)
-              if count != 1:
-                  raise SystemExit(f'Expected to replace exactly one {label} line, replaced {count}. Action layout changed.')
-              return '\n'.join(out) + '\n'
+          marker = 'echo " Commit: $SUSFS_COMMIT_SHA"'
+          overlay_lines = [
+              'echo " Commit: $SUSFS_COMMIT_SHA"',
+              'echo "Overlaying CCTV18 susfs4oki common kernel payload"',
+              'cd ..',
+              'rm -rf susfs4oki',
+              'CCTV18_REF="${{ inputs.susfs_ref }}"',
+              'if git ls-remote --heads https://github.com/cctv18/susfs4oki.git "$CCTV18_REF" | grep -q .; then',
+              '  git clone --depth 1 --branch "$CCTV18_REF" https://github.com/cctv18/susfs4oki.git susfs4oki',
+              'else',
+              '  git clone https://github.com/cctv18/susfs4oki.git susfs4oki',
+              '  ( cd susfs4oki && git checkout --force "$CCTV18_REF" )',
+              'fi',
+              'echo "CCTV18_SUSFS_COMMIT_SHA=$(git -C susfs4oki rev-parse HEAD)" >> "$GITHUB_ENV"',
+              'echo "CCTV18_SUSFS_REF=$CCTV18_REF" >> "$GITHUB_ENV"',
+              'echo "✅ CCTV18 source: $(git -C susfs4oki rev-parse --short HEAD)"',
+              '# Overlay only the common kernel-side SUSFS implementation.',
+              '# Keep the proven KSUN 33129 glue/fix-patch path from the working stack.',
+              'cp -af susfs4oki/kernel_patches/fs/. susfs4ksu/kernel_patches/fs/',
+              'cp -af susfs4oki/kernel_patches/include/linux/. susfs4ksu/kernel_patches/include/linux/',
+              'CCTV18_MAIN_PATCH=""',
+              'for f in \\',
+              '  susfs4oki/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch \\',
+              '  susfs4oki/kernel_patches/50_add_susfs_in_kernel-android15-6.6.patch \\',
+              '  susfs4oki/kernel_patches/50_add_susfs_in_kernel-6.6.patch; do',
+              '  if [ -f "$f" ]; then CCTV18_MAIN_PATCH="$f"; break; fi',
+              'done',
+              'if [ -z "$CCTV18_MAIN_PATCH" ]; then',
+              '  echo "::error::Could not find CCTV18 android15-6.6 common kernel patch"',
+              '  find susfs4oki/kernel_patches -maxdepth 2 -type f | sort',
+              '  exit 1',
+              'fi',
+              'cp -f "$CCTV18_MAIN_PATCH" susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch',
+              'echo "✅ CCTV18 common SUSFS patch overlaid: $CCTV18_MAIN_PATCH"',
+              'echo "✅ Retaining proven KSUN glue patch from Simonpunk/Wild working stack"',
+              'cd susfs4ksu',
+          ]
 
-          text = replace_shell_line(
-              text,
-              'retry_clone "https://gitlab.com/simonpunk/susfs4ksu.git" "master" 0',
-              [
-                  'echo "Using CCTV18 susfs4oki source for SUSFS"',
-                  'rm -rf susfs4ksu',
-                  'if git ls-remote --heads https://github.com/cctv18/susfs4oki.git "$SUSFS_BRANCH" | grep -q .; then',
-                  '  git clone --depth 1 --branch "$SUSFS_BRANCH" https://github.com/cctv18/susfs4oki.git susfs4ksu',
-                  'else',
-                  '  git clone https://github.com/cctv18/susfs4oki.git susfs4ksu',
-                  '  ( cd susfs4ksu && git checkout --force "$SUSFS_BRANCH" )',
-                  'fi',
-                  'echo "✅ CCTV18 SUSFS source: $(git -C susfs4ksu rev-parse --short HEAD)"',
-              ],
-              'SUSFS clone',
-          )
-          p.write_text(text)
+          count = text.count(marker)
+          if count != 1:
+              raise SystemExit(f'Expected exactly one SUSFS commit marker, found {count}. Action layout changed.')
+          indent = None
+          out=[]
+          for line in text.splitlines():
+              if marker in line:
+                  indent = line[:len(line)-len(line.lstrip())]
+                  out.extend(indent + x for x in overlay_lines)
+              else:
+                  out.append(line)
+          p.write_text('\n'.join(out)+'\n')
           INNERPY
-          grep -nE 'susfs4oki|susfs4ksu.git|Using CCTV18' "$ACTION_FILE" || true
+          grep -nE 'CCTV18|susfs4oki|Retaining proven KSUN|CCTV18_MAIN_PATCH' "$ACTION_FILE" || true
+
 
       - name: 04 Install host tools
         shell: bash
@@ -341,7 +363,7 @@ jobs:
           op_config_json: ${{ steps.config.outputs.config_json }}
           ksu_type: KSUN
           ksu_branch_or_hash: ${{ inputs.ksun_ref }}
-          susfs_commit_hash_or_branch: ${{ inputs.susfs_ref }}
+          susfs_commit_hash_or_branch: '85bcfac5edc8ba7808581e8d0a3ca9c7deca78e4'
           optimize_level: ${{ inputs.optimize_level }}
           build_timestamp: ${{ steps.time.outputs.build_time }}
           clean: ${{ inputs.clean_build }}
@@ -376,7 +398,7 @@ jobs:
 
           Device        : OnePlus 13 / OP13 / sun / OOS16 / android15-6.6
           Root backend  : KernelSU Next / KSUN
-          SUSFS stack   : CCTV18 susfs4oki experimental SUSFS
+          SUSFS stack   : CCTV18 common SUSFS + proven KSUN glue
           KSU ref       : ${{ inputs.ksun_ref }}
           SUSFS ref     : ${{ inputs.susfs_ref }}
           Profile       : ${{ inputs.feature_profile }}
@@ -400,12 +422,12 @@ jobs:
                 print "ui_print \" \"";
                 print "ui_print \"╔══════════════════════════════════════╗\"";
                 print "ui_print \"║  OX1D3X3 OP13 KSUN + CCTV18 SUSFS    ║\"";
-                print "ui_print \"║  Experimental SUSFS compatibility build  ║\"";
+                print "ui_print \"║  Daily SUSFS compatibility build  ║\"";
                 print "ui_print \"╚══════════════════════════════════════╝\"";
                 print "ui_print \" \"";
                 print "ui_print \"Device : OnePlus 13 / OP13 / OOS16\"";
                 print "ui_print \"Root   : KernelSU Next\"";
-                print "ui_print \"SUSFS  : CCTV18 susfs4oki experimental\"";
+                print "ui_print \"SUSFS  : CCTV18 common + KSUN glue\"";
                 print "ui_print \" \"";
               }
             ' "$work/anykernel.sh" > "$work/anykernel.sh.ox"
@@ -492,7 +514,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: OX_OP13_KSUN_CCTV18_SUSFS_EXPERIMENTAL_v61_${{ github.run_number }}
+          name: OX_OP13_KSUN_CCTV18_SUSFS_DAILY_v62_${{ github.run_number }}
           path: |
             OP13/artifacts/**
             **/*.zip
@@ -506,7 +528,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo '## OX OP13 KSUN + CCTV18 SUSFS Experimental v61'
+            echo '## OX OP13 KSUN + CCTV18 SUSFS Daily v62'
             echo ''
             echo '| Item | Value |'
             echo '|---|---|'
@@ -515,7 +537,7 @@ jobs:
             echo "| KSUN ref | ${{ inputs.ksun_ref }} |"
             echo "| SUSFS ref | ${{ inputs.susfs_ref }} |"
             echo "| Build engine | pinned matched engine |"
-            echo "| Patchset | pinned KSUN patchset + CCTV18 SUSFS source experiment |"
+            echo "| Patchset | CCTV18 common SUSFS overlaid onto proven KSUN glue path |"
             echo "| Engine kernel_version output | ${{ steps.build.outputs.kernel_version }} |"
             echo "| Expected UTS | $EXPECTED_UTS |"
             echo "| KSUN version | ${{ steps.build.outputs.ksu_version }} |"
