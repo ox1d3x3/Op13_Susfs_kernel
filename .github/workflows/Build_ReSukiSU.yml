@@ -594,7 +594,7 @@ jobs:
           set_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
           set_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
 
-          echo "==> Applying v79 ReSukiSU daily-driver config profile: ${{ inputs.profile }}"
+          echo "==> Applying v80 ReSukiSU daily-driver config profile: ${{ inputs.profile }}"
           set_y CONFIG_KSU
           
           if [ "${{ inputs.kpm_enable }}" = "true" ]; then
@@ -829,8 +829,8 @@ jobs:
             exit 1
           fi
 
-          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v79"
-          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v79" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v79.sha256"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v80"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v80" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v80.sha256"
 
           uts="unknown"
           if [ -f out/include/generated/utsrelease.h ]; then
@@ -848,7 +848,7 @@ jobs:
           rm -rf ak3_work
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3_work
           rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
-          cp -f artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v79 ak3_work/Image
+          cp -f artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v80 ak3_work/Image
 
           cat > ak3_work/anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
@@ -966,7 +966,7 @@ jobs:
           chmod 0755 ak3_work/anykernel.sh
 
           cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
-          OX1D3X3 OP13 ReSukiSU + CCTV18 INLINE SUSFS v79
+          OX1D3X3 OP13 ReSukiSU + CCTV18 INLINE SUSFS v80
           Device: OnePlus 13 / sun / PJZ110
           Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ env.CCTV18_KERNEL_REF }}
           Build assets: cctv18/oppo_oplus_realme_sm8750
@@ -985,7 +985,7 @@ jobs:
           EOF
           sed -i 's/^          //' ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt
 
-          zip_name="AK3_OP13_ReSukiSU_CCTV18_inline_stocklike_v79_${{ github.run_number }}_FLASH_THIS.zip"
+          zip_name="AK3_OP13_ReSukiSU_CCTV18_inline_stocklike_v80_${{ github.run_number }}_FLASH_THIS.zip"
           ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -1003,7 +1003,7 @@ jobs:
             echo "::error::OX1D3X3 custom install banner was not packaged."
             exit 1
           fi
-          if ! unzip -p "artifacts/$zip_name" anykernel.sh | grep -q 'ReSukiSU \[StockLike Daily\]'; then
+          if ! unzip -p "artifacts/$zip_name" anykernel.sh | grep -Fq 'ReSukiSU [Inline StockLike Daily]'; then
             echo "::error::OX install info banner was not packaged."
             exit 1
           fi
@@ -1019,7 +1019,7 @@ jobs:
           cat > "$MOD/module.prop" <<EOF
           id=ox_op13_zram_lz4
           name=OX OP13 ZRAM LZ4 Tuner
-          version=v79
+          version=v80
           versionCode=70
           author=ox1d3x3
           description=Safe OP13 ZRAM helper. Prefers ${{ inputs.zram_comp }} if supported. Skips destructive reset when zram is already active.
@@ -1114,7 +1114,7 @@ jobs:
           chmod 0755 "$MOD/post-fs-data.sh" "$MOD/service.sh" "$MOD/uninstall.sh" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/update-binary"
           sed -i 's/^          //' "$MOD"/*.sh "$MOD/module.prop" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/"* || true
 
-          zip_name="OP13_ZRAM_LZ4_Tuner_v79_${{ github.run_number }}.zip"
+          zip_name="OP13_ZRAM_LZ4_Tuner_v80_${{ github.run_number }}.zip"
           ( cd "$MOD" && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -1163,7 +1163,7 @@ jobs:
 
           if [ -f "$GITHUB_STEP_SUMMARY" ]; then
             {
-              echo "# OP13 ReSukiSU + CCTV18 Inline StockLike Daily v79"
+              echo "# OP13 ReSukiSU + CCTV18 Inline StockLike Daily v80"
               echo ""
               echo "## Verdict"
               echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
@@ -1180,7 +1180,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: OP13-RESUKISU-CCTV18-INLINE-STOCKLIKE-v79-${{ github.run_number }}
+          name: OP13-RESUKISU-CCTV18-INLINE-STOCKLIKE-v80-${{ github.run_number }}
           path: |
             artifacts/**
             _ox_debug/**
@@ -1193,11 +1193,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -s artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v79 ]; then
-            echo "::error::Build failed before producing Image. Download OP13-RESUKISU-CCTV18-INLINE-STOCKLIKE-v79 debug artifact."
+          if [ ! -s artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v80 ]; then
+            echo "::error::Build failed before producing Image. Download OP13-RESUKISU-CCTV18-INLINE-STOCKLIKE-v80 debug artifact."
             exit 1
           fi
-          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_ReSukiSU_CCTV18_inline_stocklike_v79_*_FLASH_THIS.zip >/dev/null 2>&1; then
+          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_ReSukiSU_CCTV18_inline_stocklike_v80_*_FLASH_THIS.zip >/dev/null 2>&1; then
             echo "::error::Image built but AnyKernel3 flashable ZIP was not produced."
             exit 1
           fi
