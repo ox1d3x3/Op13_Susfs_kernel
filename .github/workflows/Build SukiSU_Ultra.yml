@@ -24,10 +24,10 @@ on:
         options: [stock_daily, stock_plus, minimal_safe, debug_only]
         default: stock_daily
       sukisu_ref:
-        description: "SukiSU Ultra ref. Use auto-susfs unless testing a specific ref."
+        description: "SukiSU Ultra ref. builtin is recommended for clean inline SUSFS daily-driver."
         required: true
         type: string
-        default: "auto-susfs"
+        default: "builtin"
       kpm_enable:
         description: "Enable SukiSU KPM support. Kernel support only; no random KPM modules bundled."
         required: true
@@ -424,6 +424,61 @@ jobs:
               cat "$GITHUB_WORKSPACE/_ox_debug/sukisu-apk-sign-dryrun.log" || true
             fi
           fi
+      - name: "SukiSU Ultra compile compatibility repairs"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel_workspace
+          mkdir -p "$GITHUB_WORKSPACE/_ox_debug"
+
+          echo "==> Checking SukiSU Ultra sulog USER_ARG_NULL pointer compatibility"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          candidates = [
+              Path('common/drivers/kernelsu/sulog/event.c'),
+              Path('common/KernelSU/kernel/sulog/event.c'),
+              Path('KernelSU/kernel/sulog/event.c'),
+              Path('KernelSU/sulog/event.c'),
+              Path('drivers/kernelsu/sulog/event.c'),
+          ]
+
+          patched = []
+          for path in candidates:
+              if not path.exists():
+                  continue
+              src = path.read_text(encoding='utf-8', errors='ignore')
+              original = src
+
+              # Current SukiSU Ultra builtin can define USER_ARG_NULL as a compound struct literal,
+              # while ksu_sulog_capture() expects struct user_arg_ptr * for argv_user.
+              # Make only this narrow compile fix, and only when the exact bad call shape exists.
+              src = re.sub(
+                  r'ksu_sulog_capture\(\s*KSU_SULOG_EVENT_IOCTL_GRANT_ROOT\s*,\s*NULL\s*,\s*USER_ARG_NULL\s*,\s*gfp\s*\)',
+                  'ksu_sulog_capture(KSU_SULOG_EVENT_IOCTL_GRANT_ROOT, NULL, &USER_ARG_NULL, gfp)',
+                  src,
+              )
+
+              if src != original:
+                  path.write_text(src, encoding='utf-8')
+                  patched.append(str(path))
+
+          out = Path('../_ox_debug/sukisu-compile-compat.txt')
+          if patched:
+              out.write_text('patched=' + ','.join(patched) + '\n', encoding='utf-8')
+              print('Patched SukiSU sulog USER_ARG_NULL call in:')
+              for p in patched:
+                  print(' -', p)
+          else:
+              out.write_text('patched=none\n', encoding='utf-8')
+              print('No SukiSU sulog USER_ARG_NULL compile fix needed.')
+          PY
+
+          if [ -f common/drivers/kernelsu/sulog/event.c ]; then
+            grep -n "KSU_SULOG_EVENT_IOCTL_GRANT_ROOT" common/drivers/kernelsu/sulog/event.c | tee -a "$GITHUB_WORKSPACE/_ox_debug/sukisu-compile-compat.txt" || true
+          fi
+
       - name: "Apply SUSFS"
         if: ${{ inputs.SUSFS == 'On' }}
         shell: bash
@@ -606,7 +661,7 @@ jobs:
           set_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
           set_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
 
-          echo "==> Applying v76 SukiSU Ultra daily-driver config profile: ${{ inputs.profile }}"
+          echo "==> Applying v77 SukiSU Ultra daily-driver config profile: ${{ inputs.profile }}"
           set_y CONFIG_KSU
           set_y CONFIG_KSU_MANUAL_SU
 
@@ -853,8 +908,8 @@ jobs:
             exit 1
           fi
 
-          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v76"
-          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v76" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v76.sha256"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v77"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v77" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v77.sha256"
 
           uts="unknown"
           if [ -f out/include/generated/utsrelease.h ]; then
@@ -872,7 +927,7 @@ jobs:
           rm -rf ak3_work
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3_work
           rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
-          cp -f artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v76 ak3_work/Image
+          cp -f artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v77 ak3_work/Image
 
           cat > ak3_work/anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
@@ -990,7 +1045,7 @@ jobs:
           chmod 0755 ak3_work/anykernel.sh
 
           cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
-          OX1D3X3 OP13 SukiSU Ultra + CCTV18 INLINE SUSFS v76
+          OX1D3X3 OP13 SukiSU Ultra + CCTV18 INLINE SUSFS v77
           Device: OnePlus 13 / sun / PJZ110
           Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ env.CCTV18_KERNEL_REF }}
           Build assets: cctv18/oppo_oplus_realme_sm8750
@@ -1009,7 +1064,7 @@ jobs:
           EOF
           sed -i 's/^          //' ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt
 
-          zip_name="AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v76_${{ github.run_number }}_FLASH_THIS.zip"
+          zip_name="AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v77_${{ github.run_number }}_FLASH_THIS.zip"
           ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -1043,7 +1098,7 @@ jobs:
           cat > "$MOD/module.prop" <<EOF
           id=ox_op13_zram_lz4
           name=OX OP13 ZRAM LZ4 Tuner
-          version=v76
+          version=v77
           versionCode=70
           author=ox1d3x3
           description=Safe OP13 ZRAM helper. Prefers ${{ inputs.zram_comp }} if supported. Skips destructive reset when zram is already active.
@@ -1138,7 +1193,7 @@ jobs:
           chmod 0755 "$MOD/post-fs-data.sh" "$MOD/service.sh" "$MOD/uninstall.sh" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/update-binary"
           sed -i 's/^          //' "$MOD"/*.sh "$MOD/module.prop" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/"* || true
 
-          zip_name="OP13_ZRAM_LZ4_Tuner_v76_${{ github.run_number }}.zip"
+          zip_name="OP13_ZRAM_LZ4_Tuner_v77_${{ github.run_number }}.zip"
           ( cd "$MOD" && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -1187,7 +1242,7 @@ jobs:
 
           if [ -f "$GITHUB_STEP_SUMMARY" ]; then
             {
-              echo "# OP13 SukiSU Ultra + CCTV18 Inline StockLike Daily v76"
+              echo "# OP13 SukiSU Ultra + CCTV18 Inline StockLike Daily v77"
               echo ""
               echo "## Verdict"
               echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
@@ -1204,7 +1259,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v76-${{ github.run_number }}
+          name: OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v77-${{ github.run_number }}
           path: |
             artifacts/**
             _ox_debug/**
@@ -1217,11 +1272,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -s artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v76 ]; then
-            echo "::error::Build failed before producing Image. Download OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v76 debug artifact."
+          if [ ! -s artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v77 ]; then
+            echo "::error::Build failed before producing Image. Download OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v77 debug artifact."
             exit 1
           fi
-          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v76_*_FLASH_THIS.zip >/dev/null 2>&1; then
+          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v77_*_FLASH_THIS.zip >/dev/null 2>&1; then
             echo "::error::Image built but AnyKernel3 flashable ZIP was not produced."
             exit 1
           fi
