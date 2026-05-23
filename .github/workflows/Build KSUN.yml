@@ -8,17 +8,17 @@ on:
   workflow_dispatch:
     inputs:
       feature_profile:
-        description: 'Feature profile'
+        description: 'Build profile'
         required: true
         type: choice
         options:
-          - wild_match
+          - release_match
           - battery_daily
           - advanced_daily
           - minimal_debug
-        default: wild_match
+        default: battery_daily
       ksun_ref:
-        description: 'KernelSU-Next ref. First test should stay pinned to known working 33129 commit.'
+        description: 'KernelSU-Next ref. Default is the proven OP13 KSUN 33129 commit.'
         required: true
         default: '551ad80473f60e052917aec08abf5323b6ab2f7c'
       susfs:
@@ -28,9 +28,9 @@ on:
         options: ['On', 'Off']
         default: 'On'
       susfs_ref:
-        description: 'SUSFS ref for android15-6.6. First test should stay pinned to v2.1.0-r2 mapping.'
+        description: 'CCTV18 susfs4oki ref. Default is oki-android15-6.6.'
         required: false
-        default: '85bcfac5edc8ba7808581e8d0a3ca9c7deca78e4'
+        default: 'oki-android15-6.6'
       optimize_level:
         description: 'Compiler optimisation level'
         required: true
@@ -101,7 +101,7 @@ on:
         default: true
 
 concurrency:
-  group: op13-ksun-susfs-v58-${{ github.ref }}
+  group: ox-op13-ksun-cctv18-susfs-v60-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -112,27 +112,27 @@ env:
   KERNEL_VERSION: '6.6'
   EXPECTED_UTS: '6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k'
   STOCK_UNAME_SUFFIX: '8-g7e1f3c083cc6-abogki467167594-4k'
-  WILD_ENGINE_REPO: WildKernels/OnePlus_KernelSU_SUSFS
-  WILD_ENGINE_REF: '14d04c1ed0753280330ccabd773e903f76c9a038'
+  ENGINE_REPO: WildKernels/OnePlus_KernelSU_SUSFS
+  ENGINE_REF: '14d04c1ed0753280330ccabd773e903f76c9a038'
   # This is the missing part from previous broken wrappers:
-  # old Wild action clones kernel_patches live from main, which drifted after v2.1.0-r2.
+  # old build action clones kernel_patches live from main, which drifted after v2.1.0-r2.
   # Pinning this restores the patchset used for KSUN 33129 + SUSFS v2.1.0.
-  WILD_KERNEL_PATCHES_REF: '6ac23b65150f5f505018403361779fa7a8a728b0'
+  ENGINE_KERNEL_PATCHES_REF: '6ac23b65150f5f505018403361779fa7a8a728b0'
   DEFAULT_KSUN_REF: '551ad80473f60e052917aec08abf5323b6ab2f7c'
-  DEFAULT_SUSFS_REF: '85bcfac5edc8ba7808581e8d0a3ca9c7deca78e4'
+  DEFAULT_SUSFS_REF: 'oki-android15-6.6'
 
 jobs:
   build:
-    name: OP13 OOS16 KSUN SUSFS stable daily
+    name: OX OP13 KSUN CCTV18 SUSFS experimental
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
-      - name: 01 Checkout pinned Wild engine and resources
+      - name: 01 Checkout pinned KSUN build engine
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.WILD_ENGINE_REPO }}
-          ref: ${{ env.WILD_ENGINE_REF }}
+          repository: ${{ env.ENGINE_REPO }}
+          ref: ${{ env.ENGINE_REF }}
           fetch-depth: 1
 
       - name: 02 Preflight and explain pinned stack
@@ -140,15 +140,15 @@ jobs:
         run: |
           set -euo pipefail
           echo "Workspace: $GITHUB_WORKSPACE"
-          echo "Wild engine commit: $(git rev-parse HEAD)"
-          echo "Pinned kernel_patches ref: $WILD_KERNEL_PATCHES_REF"
+          echo "Build engine commit: $(git rev-parse HEAD)"
+          echo "Pinned patchset ref: $ENGINE_KERNEL_PATCHES_REF"
           test -f .github/actions/action.yml
           test -f configs/oos16/OP13.json
           test -f manifests/oos16/oneplus_13_w.xml
           echo "== Top level =="
           find . -maxdepth 2 -type d | sort | sed 's#^./#  #' | head -80
 
-      - name: 03 Patch Wild engine to use the matching v2.1.0-r2 kernel_patches tree
+      - name: 03 Patch build engine to use the matching v2.1.0-r2 kernel_patches tree
         shell: bash
         run: |
           set -euo pipefail
@@ -177,6 +177,27 @@ jobs:
           echo "After patch, kernel_patches clone lines:"
           grep -nE 'kernel_patches|TheWildJames/kernel_patches|WildKernels/kernel_patches|6ac23b6' "$ACTION_FILE" || true
 
+
+          echo "Patching SUSFS source to CCTV18 susfs4oki for experimental KSUN test..."
+          python3 - <<'INNERPY'
+          from pathlib import Path
+          p = Path('.github/actions/action.yml')
+          s = p.read_text()
+          old = 'retry_clone "https://gitlab.com/simonpunk/susfs4ksu.git" "master" 0'
+          new = '''echo "Using CCTV18 susfs4oki source for SUSFS"
+          rm -rf susfs4ksu
+          if git ls-remote --heads https://github.com/cctv18/susfs4oki.git "$SUSFS_BRANCH" | grep -q .; then
+            git clone --depth 1 --branch "$SUSFS_BRANCH" https://github.com/cctv18/susfs4oki.git susfs4ksu
+          else
+            git clone https://github.com/cctv18/susfs4oki.git susfs4ksu
+          fi'''
+          if old not in s:
+              raise SystemExit('Could not find SUSFS clone line to replace. Action layout changed.')
+          s = s.replace(old, new)
+          p.write_text(s)
+          INNERPY
+          grep -nE 'susfs4oki|susfs4ksu.git|Using CCTV18' "$ACTION_FILE" || true
+
       - name: 04 Install host tools
         shell: bash
         run: |
@@ -185,7 +206,7 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             git curl ca-certificates build-essential clang lld flex bison \
             libelf-dev libssl-dev libncurses-dev zlib1g-dev liblz4-tool \
-            libxml2-utils rsync unzip dwarves file python3 ccache jq bc dos2unix kmod libdw-dev
+            libxml2-utils rsync unzip zip dwarves file python3 ccache jq bc dos2unix kmod libdw-dev
           sudo apt-get clean
 
       - name: 05 Resolve build timestamp
@@ -226,7 +247,7 @@ jobs:
           profile_hmbird=false
           profile_ds=false
           case "$PROFILE" in
-            wild_match|advanced_daily) profile_hmbird=true; profile_ds=true ;;
+            release_match|advanced_daily) profile_hmbird=true; profile_ds=true ;;
             battery_daily|minimal_debug) profile_hmbird=false; profile_ds=false ;;
             *) echo "::error::Unknown profile: $PROFILE"; exit 1 ;;
           esac
@@ -287,7 +308,82 @@ jobs:
           build_timestamp: ${{ steps.time.outputs.build_time }}
           clean: ${{ inputs.clean_build }}
 
-      - name: 08 Verify output and collect artifact list
+
+      - name: 08 Inject OX installer branding
+        if: ${{ steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip_path="$(find OP13/artifacts -maxdepth 1 -type f -name '*.zip' -print -quit 2>/dev/null || true)"
+          if [ -z "$zip_path" ]; then
+            echo "::error::No AK3 zip found for branding injection."
+            exit 1
+          fi
+          echo "Branding AK3 zip: $zip_path"
+          work="$(mktemp -d)"
+          unzip -q "$zip_path" -d "$work"
+
+          cat > "$work/banner" <<'EOF'
+            ____        __  _____     ______     ____
+           / __ \_  __ / / |__  /____/ / __ \   / __ \
+          / / / / |/_// /   /_ </ __  / /_/ /  / / / /
+          / /_/ />  < / /  ___/ / /_/ / _, _/  / /_/ /
+          \____/_/|_/_/  /____/\__,_/_/ |_|   \____/
+
+          OX1D3X3 OP13 KSUN + SUSFS Daily Driver
+          EOF
+
+          cat > "$work/INSTALL_INFO.txt" <<EOF
+          OX1D3X3 OP13 KSUN + SUSFS Daily Driver
+
+          Device        : OnePlus 13 / OP13 / sun / OOS16 / android15-6.6
+          Root backend  : KernelSU Next / KSUN
+          SUSFS stack   : CCTV18 susfs4oki experimental SUSFS
+          KSU ref       : ${{ inputs.ksun_ref }}
+          SUSFS ref     : ${{ inputs.susfs_ref }}
+          Profile       : ${{ inputs.feature_profile }}
+          Optimisation  : ${{ inputs.optimize_level }}
+          Stock mimic   : ${{ inputs.stock_mimic }}
+          Build time    : ${{ steps.time.outputs.build_time }}
+
+          Daily-driver notes:
+          - battery_daily keeps HMBIRD and Droidspaces off through Auto defaults.
+          - release_match mirrors the proven KSUN/SUSFS release feature set.
+          - Keep a stock boot image ready before testing any custom kernel.
+          - Test LSPosed, susfs4ksu, Microsoft Authenticator, camera, Play Store, calls, Wi-Fi, mobile data and overnight drain.
+          EOF
+
+          if [ -f "$work/anykernel.sh" ] && ! grep -q 'OX1D3X3 OP13 KSUN' "$work/anykernel.sh"; then
+            awk '
+              { print }
+              $0 == ". tools/ak3-core.sh" {
+                print "";
+                print "# OX installer branding";
+                print "ui_print \" \"";
+                print "ui_print \"╔══════════════════════════════════════╗\"";
+                print "ui_print \"║  OX1D3X3 OP13 KSUN + CCTV18 SUSFS    ║\"";
+                print "ui_print \"║  Experimental SUSFS compatibility build  ║\"";
+                print "ui_print \"╚══════════════════════════════════════╝\"";
+                print "ui_print \" \"";
+                print "ui_print \"Device : OnePlus 13 / OP13 / OOS16\"";
+                print "ui_print \"Root   : KernelSU Next\"";
+                print "ui_print \"SUSFS  : CCTV18 susfs4oki experimental\"";
+                print "ui_print \" \"";
+              }
+            ' "$work/anykernel.sh" > "$work/anykernel.sh.ox"
+            mv "$work/anykernel.sh.ox" "$work/anykernel.sh"
+            chmod 0755 "$work/anykernel.sh" || true
+          fi
+
+          tmpzip="${zip_path}.new"
+          rm -f "$tmpzip"
+          (cd "$work" && zip -r9 "$tmpzip" . >/dev/null)
+          mv "$tmpzip" "$zip_path"
+          rm -rf "$work"
+          sha256sum "$zip_path" | tee "${zip_path}.sha256"
+          echo "✅ OX installer branding injected"
+
+      - name: 09 Verify output and collect artifact list
         if: always()
         shell: bash
         run: |
@@ -301,7 +397,7 @@ jobs:
           find . -maxdepth 7 \( -name '*.zip' -o -name 'Image' -o -name '*.log' -o -name '*.txt' -o -name 'utsrelease.h' \) -printf '%p %s bytes\n' | sort | tail -160 || true
 
           # IMPORTANT:
-          # The Wild composite action output named `kernel_version` is the source family
+          # The composite build action output named `kernel_version` is the source family
           # string such as android15-6.6.89. It is NOT the final Linux UTS_RELEASE.
           # Previous v57 incorrectly compared that output with EXPECTED_UTS and failed
           # even though the kernel and AK3 zip were created successfully.
@@ -340,7 +436,7 @@ jobs:
                 echo "✅ UTS_RELEASE matches stock mimic target."
               fi
             else
-              echo "::warning::Could not locate generated utsrelease.h. Not failing because the Wild action kernel_version output is not UTS_RELEASE."
+              echo "::warning::Could not locate generated utsrelease.h. Not failing because the build action kernel_version output is not UTS_RELEASE."
             fi
           fi
 
@@ -354,11 +450,11 @@ jobs:
             sha256sum "$zip_path" | tee "${zip_path}.sha256"
           fi
 
-      - name: 09 Upload kernel artifacts
+      - name: 10 Upload kernel artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: OP13_KSUN_SUSFS_STABLE_DAILY_v58_${{ github.run_number }}
+          name: OX_OP13_KSUN_CCTV18_SUSFS_EXPERIMENTAL_v60_${{ github.run_number }}
           path: |
             OP13/artifacts/**
             **/*.zip
@@ -367,12 +463,12 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: 10 Final build summary
+      - name: 11 Final build summary
         if: always()
         shell: bash
         run: |
           {
-            echo '## OP13 KSUN + SUSFS Stable Daily v58'
+            echo '## OX OP13 KSUN + CCTV18 SUSFS Experimental v60'
             echo ''
             echo '| Item | Value |'
             echo '|---|---|'
@@ -380,8 +476,8 @@ jobs:
             echo "| Profile | ${{ inputs.feature_profile }} |"
             echo "| KSUN ref | ${{ inputs.ksun_ref }} |"
             echo "| SUSFS ref | ${{ inputs.susfs_ref }} |"
-            echo "| Engine | $WILD_ENGINE_REPO@$WILD_ENGINE_REF |"
-            echo "| kernel_patches | WildKernels/kernel_patches@$WILD_KERNEL_PATCHES_REF |"
+            echo "| Build engine | pinned matched engine |"
+            echo "| Patchset | pinned KSUN patchset + CCTV18 SUSFS source experiment |"
             echo "| Engine kernel_version output | ${{ steps.build.outputs.kernel_version }} |"
             echo "| Expected UTS | $EXPECTED_UTS |"
             echo "| KSUN version | ${{ steps.build.outputs.ksu_version }} |"
