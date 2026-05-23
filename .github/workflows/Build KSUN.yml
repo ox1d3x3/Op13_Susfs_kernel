@@ -101,7 +101,7 @@ on:
         default: true
 
 concurrency:
-  group: ox-op13-ksun-cctv18-susfs-v62-${{ github.ref }}
+  group: ox-op13-ksun-cctv18-susfs-v63-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -163,6 +163,7 @@ jobs:
 
           p = Path('.github/actions/action.yml')
           text = p.read_text()
+          cctv18_ref = '${{ inputs.susfs_ref }}'
 
           def replace_shell_line(text: str, needle: str, replacement_lines: list[str], label: str) -> str:
               out = []
@@ -200,62 +201,74 @@ jobs:
           echo "Patching build engine to overlay CCTV18 common SUSFS payload while retaining proven KSUN glue..."
           python3 - <<'INNERPY'
           from pathlib import Path
+          import re
 
           p = Path('.github/actions/action.yml')
           text = p.read_text()
 
-          marker = 'echo " Commit: $SUSFS_COMMIT_SHA"'
-          overlay_lines = [
-              'echo " Commit: $SUSFS_COMMIT_SHA"',
-              'echo "Overlaying CCTV18 susfs4oki common kernel payload"',
-              'cd ..',
-              'rm -rf susfs4oki',
-              'CCTV18_REF="${{ inputs.susfs_ref }}"',
-              'if git ls-remote --heads https://github.com/cctv18/susfs4oki.git "$CCTV18_REF" | grep -q .; then',
-              '  git clone --depth 1 --branch "$CCTV18_REF" https://github.com/cctv18/susfs4oki.git susfs4oki',
-              'else',
-              '  git clone https://github.com/cctv18/susfs4oki.git susfs4oki',
-              '  ( cd susfs4oki && git checkout --force "$CCTV18_REF" )',
-              'fi',
-              'echo "CCTV18_SUSFS_COMMIT_SHA=$(git -C susfs4oki rev-parse HEAD)" >> "$GITHUB_ENV"',
-              'echo "CCTV18_SUSFS_REF=$CCTV18_REF" >> "$GITHUB_ENV"',
-              'echo "✅ CCTV18 source: $(git -C susfs4oki rev-parse --short HEAD)"',
-              '# Overlay only the common kernel-side SUSFS implementation.',
-              '# Keep the proven KSUN 33129 glue/fix-patch path from the working stack.',
-              'cp -af susfs4oki/kernel_patches/fs/. susfs4ksu/kernel_patches/fs/',
-              'cp -af susfs4oki/kernel_patches/include/linux/. susfs4ksu/kernel_patches/include/linux/',
-              'CCTV18_MAIN_PATCH=""',
-              'for f in \\',
-              '  susfs4oki/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch \\',
-              '  susfs4oki/kernel_patches/50_add_susfs_in_kernel-android15-6.6.patch \\',
-              '  susfs4oki/kernel_patches/50_add_susfs_in_kernel-6.6.patch; do',
-              '  if [ -f "$f" ]; then CCTV18_MAIN_PATCH="$f"; break; fi',
-              'done',
-              'if [ -z "$CCTV18_MAIN_PATCH" ]; then',
-              '  echo "::error::Could not find CCTV18 android15-6.6 common kernel patch"',
-              '  find susfs4oki/kernel_patches -maxdepth 2 -type f | sort',
-              '  exit 1',
-              'fi',
-              'cp -f "$CCTV18_MAIN_PATCH" susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch',
-              'echo "✅ CCTV18 common SUSFS patch overlaid: $CCTV18_MAIN_PATCH"',
-              'echo "✅ Retaining proven KSUN glue patch from Simonpunk/Wild working stack"',
-              'cd susfs4ksu',
-          ]
+          # Insert the overlay at the end of the action's "Clone AnyKernel3 and Other Dependencies" step.
+          # Do NOT search for the SUSFS commit echo line; that text changed between action snapshots.
+          # The stable anchor is the final `cd ..` immediately before `echo "✅ Dependencies cloned"`.
+          pattern = re.compile(r'(?m)^(?P<indent>\s*)cd \.\.\n(?P=indent)echo "✅ Dependencies cloned"')
 
-          count = text.count(marker)
-          if count != 1:
-              raise SystemExit(f'Expected exactly one SUSFS commit marker, found {count}. Action layout changed.')
-          indent = None
-          out=[]
-          for line in text.splitlines():
-              if marker in line:
-                  indent = line[:len(line)-len(line.lstrip())]
-                  out.extend(indent + x for x in overlay_lines)
-              else:
-                  out.append(line)
-          p.write_text('\n'.join(out)+'\n')
+          overlay_template = """
+          {indent}# OX CCTV18 common SUSFS overlay
+          {indent}# Current directory is normally susfs4ksu here when OP_SUSFS=true.
+          {indent}if [ "$OP_SUSFS" = true ]; then
+          {indent}  if [ "$(basename "$PWD")" = "susfs4ksu" ]; then
+          {indent}    cd ..
+          {indent}  fi
+          {indent}  echo "Overlaying CCTV18 susfs4oki common kernel payload while keeping proven KSUN glue"
+          {indent}  rm -rf susfs4oki
+          {indent}  CCTV18_REF="{cctv18_ref}"
+          {indent}  if git ls-remote --heads https://github.com/cctv18/susfs4oki.git "$CCTV18_REF" | grep -q .; then
+          {indent}    git clone --depth 1 --branch "$CCTV18_REF" https://github.com/cctv18/susfs4oki.git susfs4oki
+          {indent}  else
+          {indent}    git clone https://github.com/cctv18/susfs4oki.git susfs4oki
+          {indent}    ( cd susfs4oki && git checkout --force "$CCTV18_REF" )
+          {indent}  fi
+          {indent}  echo "CCTV18_SUSFS_COMMIT_SHA=$(git -C susfs4oki rev-parse HEAD)" >> "$GITHUB_ENV"
+          {indent}  echo "CCTV18_SUSFS_REF=$CCTV18_REF" >> "$GITHUB_ENV"
+          {indent}  echo "✅ CCTV18 source: $(git -C susfs4oki rev-parse --short HEAD)"
+          {indent}
+          {indent}  # Overlay common kernel-side payload only.
+          {indent}  # Keep susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch from the proven KSUN 33129 stack.
+          {indent}  test -d susfs4oki/kernel_patches/fs || {{ echo "::error::CCTV18 fs payload missing"; find susfs4oki -maxdepth 3 -type f | sort | head -120; exit 1; }}
+          {indent}  test -d susfs4oki/kernel_patches/include/linux || {{ echo "::error::CCTV18 include/linux payload missing"; find susfs4oki -maxdepth 3 -type f | sort | head -120; exit 1; }}
+          {indent}  cp -af susfs4oki/kernel_patches/fs/. susfs4ksu/kernel_patches/fs/
+          {indent}  cp -af susfs4oki/kernel_patches/include/linux/. susfs4ksu/kernel_patches/include/linux/
+          {indent}
+          {indent}  CCTV18_MAIN_PATCH=""
+          {indent}  for f in \
+          {indent}    susfs4oki/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch \
+          {indent}    susfs4oki/kernel_patches/50_add_susfs_in_kernel-android15-6.6.patch \
+          {indent}    susfs4oki/kernel_patches/50_add_susfs_in_kernel-6.6.patch; do
+          {indent}    if [ -f "$f" ]; then CCTV18_MAIN_PATCH="$f"; break; fi
+          {indent}  done
+          {indent}  if [ -z "$CCTV18_MAIN_PATCH" ]; then
+          {indent}    echo "::error::Could not find CCTV18 android15-6.6 common kernel patch"
+          {indent}    find susfs4oki/kernel_patches -maxdepth 2 -type f | sort
+          {indent}    exit 1
+          {indent}  fi
+          {indent}  cp -f "$CCTV18_MAIN_PATCH" susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch
+          {indent}  echo "✅ CCTV18 common SUSFS patch overlaid: $CCTV18_MAIN_PATCH"
+          {indent}  echo "✅ Retaining proven KSUN glue patch from the working 33129 stack"
+          {indent}  cd susfs4ksu
+          {indent}fi
+          {indent}cd ..
+          {indent}echo "✅ Dependencies cloned""".lstrip('\n')
+
+          matches = list(pattern.finditer(text))
+          if len(matches) != 1:
+              raise SystemExit(f'Expected exactly one dependencies end anchor, found {len(matches)}. Action layout changed.')
+          m = matches[0]
+          indent = m.group('indent')
+          replacement = overlay_template.format(indent=indent, cctv18_ref=cctv18_ref)
+          text = text[:m.start()] + replacement + text[m.end():]
+          p.write_text(text)
+          print('Inserted robust CCTV18 common payload overlay before Apply SUSFS patches.')
           INNERPY
-          grep -nE 'CCTV18|susfs4oki|Retaining proven KSUN|CCTV18_MAIN_PATCH' "$ACTION_FILE" || true
+          grep -nE 'CCTV18|susfs4oki|Retaining proven KSUN|CCTV18_MAIN_PATCH|Dependencies cloned' "$ACTION_FILE" || true
 
 
       - name: 04 Install host tools
@@ -514,7 +527,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: OX_OP13_KSUN_CCTV18_SUSFS_DAILY_v62_${{ github.run_number }}
+          name: OX_OP13_KSUN_CCTV18_SUSFS_DAILY_v63_${{ github.run_number }}
           path: |
             OP13/artifacts/**
             **/*.zip
@@ -528,7 +541,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo '## OX OP13 KSUN + CCTV18 SUSFS Daily v62'
+            echo '## OX OP13 KSUN + CCTV18 SUSFS Daily v63'
             echo ''
             echo '| Item | Value |'
             echo '|---|---|'
