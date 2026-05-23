@@ -5,7 +5,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: op13-ksun-susfs-${{ github.ref }}
+  group: op13-ksun-susfs-v52-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -16,15 +16,14 @@ env:
   KERNEL_VERSION: "6.6"
   EXPECTED_UTS: "6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k"
   STOCK_UNAME_SUFFIX: "8-g7e1f3c083cc6-abogki467167594-4k"
-  DEFAULT_KSUN_REF: "551ad80473f60e052917aec08abf5323b6ab2f7c"
-  DEFAULT_SUSFS_REF: "85bcfac5edc8ba7808581e8d0a3ca9c7deca78e4"
-  WILD_ENGINE_REF: "14d04c1ed0753280330ccabd773e903f76c9a038"
+  DEFAULT_ENGINE_REF: "main"
+  DEFAULT_KSUN_REF: "dev"
 
 on:
   workflow_dispatch:
     inputs:
       feature_profile:
-        description: "Profile: wild_match = closest known-good KSUN release, battery_daily = safer daily, advanced_daily = battery + Droidspaces, minimal_debug = smallest test"
+        description: "Profile: wild_match = Wild OP13-style, battery_daily = safer daily, advanced_daily = Droidspaces only, minimal_debug = smallest KSUN test"
         type: choice
         required: true
         default: wild_match
@@ -33,13 +32,18 @@ on:
           - battery_daily
           - advanced_daily
           - minimal_debug
-      ksun_ref:
-        description: "KernelSU Next ref/commit. Default matches the known-good OP13/OOS16 release family."
+      engine_ref:
+        description: "WildKernels build engine ref. Use main for latest compatible engine, or paste a full commit SHA for replay."
         type: string
         required: false
-        default: "551ad80473f60e052917aec08abf5323b6ab2f7c"
+        default: "main"
+      ksun_ref:
+        description: "KernelSU Next ref. Use dev for Wild-style compatibility, or paste a full commit only for controlled testing."
+        type: string
+        required: false
+        default: "dev"
       susfs:
-        description: "Enable SUSFS. Keep On for MS Authenticator + root hiding tests."
+        description: "Enable SUSFS. Keep On for MS Authenticator/root-hiding tests."
         type: choice
         required: true
         default: "On"
@@ -47,10 +51,10 @@ on:
           - "On"
           - "Off"
       susfs_ref:
-        description: "SUSFS ref/commit. Default is android15-6.6 SUSFS v2.1.0 release-family commit."
+        description: "SUSFS ref. Leave blank to let the Wild engine choose the matching android15-6.6 branch."
         type: string
         required: false
-        default: "85bcfac5edc8ba7808581e8d0a3ca9c7deca78e4"
+        default: ""
       optimize_level:
         description: "Compiler optimisation. O2 is safer for daily use; O3 is testing only."
         type: choice
@@ -60,10 +64,18 @@ on:
           - O2
           - O3
       BUILD_TIME:
-        description: "Build timestamp. Use F for current UTC time, blank for build-engine default, or paste stock-like timestamp."
+        description: "Build timestamp. Use F for current UTC time, blank for engine default, or paste stock-like timestamp."
         type: string
         required: false
         default: "F"
+      stock_mimic:
+        description: "Use stock-like OP13 UTS suffix. Keep On for your PJZ110 daily-driver tests."
+        type: choice
+        required: true
+        default: "On"
+        options:
+          - "On"
+          - "Off"
       hmbird:
         description: "HMBIRD/Fengchi. Auto follows selected profile."
         type: choice
@@ -123,50 +135,65 @@ on:
           - "On"
           - "Off"
       clean_build:
-        description: "Clean build without cache reuse"
+        description: "Clean build without ccache reuse"
         type: boolean
         required: true
         default: false
       debug_artifacts:
-        description: "Upload build debug/artifact folders if produced"
+        description: "Upload build/debug artifacts if produced"
         type: boolean
         required: true
         default: true
 
 jobs:
   build:
-    name: OP13 KSUN v51 ${{ inputs.feature_profile }}
+    name: OP13 KSUN v52 ${{ inputs.feature_profile }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
       # -------------------------------------------------------------------------
-      # 01. Checkout the complete pinned build engine as the actual workspace
+      # 01. Checkout full WildKernels build engine as the workspace
       # -------------------------------------------------------------------------
-      - name: Checkout pinned KSUN/SUSFS build engine
+      - name: Checkout clean KSUN/SUSFS build engine
         uses: actions/checkout@v4
         with:
           repository: WildKernels/OnePlus_KernelSU_SUSFS
-          ref: ${{ env.WILD_ENGINE_REF }}
-          fetch-depth: 0
+          ref: ${{ inputs.engine_ref || env.DEFAULT_ENGINE_REF }}
+          fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify complete local build engine tree
+      - name: Verify build engine layout
         shell: bash
         run: |
           set -euo pipefail
           echo "Workspace: $GITHUB_WORKSPACE"
-          git rev-parse HEAD
-          test "$(git rev-parse HEAD)" = "${WILD_ENGINE_REF}"
-          test -f .github/actions/action.yml
-          test -f configs/oos16/OP13.json
-          test -f manifests/oos16/oneplus_13_w.xml
-          test -d kernel_patches
-          test -d .github/actions
-          echo "✅ Complete pinned engine tree is present."
+          echo "Requested engine ref: ${{ inputs.engine_ref || env.DEFAULT_ENGINE_REF }}"
+          echo "Resolved engine commit: $(git rev-parse HEAD)"
+          echo "Top-level tree:"
+          find . -maxdepth 2 -type d | sort | sed 's#^./#  #' | head -80
+
+          required=(
+            ".github/actions/action.yml"
+            "configs/oos16/OP13.json"
+            "manifests/oos16/oneplus_13_w.xml"
+          )
+          missing=0
+          for p in "${required[@]}"; do
+            if [[ -e "$p" ]]; then
+              echo "OK: $p"
+            else
+              echo "MISSING: $p"
+              missing=1
+            fi
+          done
+          if [[ "$missing" -ne 0 ]]; then
+            echo "::error::Required WildKernels build-engine files are missing. Use engine_ref=main or a valid full commit."
+            exit 1
+          fi
 
       # -------------------------------------------------------------------------
-      # 02. Preflight and runner diagnostics
+      # 02. Preflight and host tools
       # -------------------------------------------------------------------------
       - name: Print build context
         shell: bash
@@ -176,24 +203,25 @@ jobs:
           echo "Repository  : ${GITHUB_REPOSITORY}"
           echo "Workflow    : ${GITHUB_WORKFLOW}"
           echo "Run ID      : ${GITHUB_RUN_ID}"
-          echo "Engine ref  : ${WILD_ENGINE_REF}"
+          echo "Engine SHA  : $(git rev-parse HEAD)"
           echo "Profile     : ${{ inputs.feature_profile }}"
           echo "KSUN ref    : ${{ inputs.ksun_ref }}"
-          echo "SUSFS       : ${{ inputs.susfs }} / ${{ inputs.susfs_ref }}"
+          echo "SUSFS       : ${{ inputs.susfs }} / ${{ inputs.susfs_ref || 'auto' }}"
           echo "Expected UTS: ${EXPECTED_UTS}"
           df -hT
 
-      - name: Install host tools
+      - name: Install minimal host tools
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison build-essential ca-certificates ccache curl flex git \
-            jq kmod libelf-dev libssl-dev lld make openssl python3 unzip zip
+            jq kmod libdw-dev libelf-dev libssl-dev lld make openssl \
+            python3 rsync unzip zip
 
       # -------------------------------------------------------------------------
-      # 03. Resolve profile, timestamp, and OP13 configuration
+      # 03. Resolve profile, timestamp, and OP13 config JSON
       # -------------------------------------------------------------------------
       - name: Resolve build timestamp
         id: timestamp
@@ -211,7 +239,7 @@ jobs:
           echo "value=$resolved" >> "$GITHUB_OUTPUT"
           echo "Build timestamp resolved: ${resolved:-build-engine default}"
 
-      - name: Resolve feature matrix and config JSON
+      - name: Resolve OP13 feature matrix
         id: config
         shell: bash
         run: |
@@ -251,6 +279,11 @@ jobs:
             Off) ds=false ;;
           esac
 
+          if [[ "$profile" == "minimal_debug" ]]; then
+            hmbird=false
+            ds=false
+          fi
+
           susfs=$(bool_on '${{ inputs.susfs }}')
           bbr=$(bool_on '${{ inputs.bbr }}')
           bbg=$(bool_on '${{ inputs.bbg }}')
@@ -258,32 +291,13 @@ jobs:
           unicode=$(bool_on '${{ inputs.unicode_fix }}')
           ntsync=$(bool_on '${{ inputs.ntsync }}')
 
-          if [[ "$profile" == "minimal_debug" ]]; then
-            hmbird=false
-            ds=false
+          if [[ '${{ inputs.stock_mimic }}' == 'On' ]]; then
+            uname_value="${STOCK_UNAME_SUFFIX}"
+          else
+            uname_value="$(jq -r '.uname // "OP-WILD"' configs/oos16/OP13.json)"
           fi
 
-          susfs_ref='${{ inputs.susfs_ref }}'
-          if [[ "$susfs" != "true" ]]; then
-            susfs_ref=""
-          fi
-
-          jq -n -c \
-            --arg model "OP13" \
-            --arg soc "sun" \
-            --arg branch "wild/sm8750" \
-            --arg manifest "oneplus_13_w.xml" \
-            --arg android_version "android15" \
-            --arg kernel_version "6.6" \
-            --arg os_version "OOS16" \
-            --arg lto "thin" \
-            --arg zyc_compiler "https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240723-release/Clang-19.0.0git-20240723.tar.gz" \
-            --arg c_compiler "kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin" \
-            --arg rust_compiler "" \
-            --arg bindgen "" \
-            --arg uname "${STOCK_UNAME_SUFFIX}" \
-            --argjson rust_build false \
-            --argjson disk_cleanup false \
+          jq -c \
             --argjson hmbird "$hmbird" \
             --argjson susfs "$susfs" \
             --argjson ds "$ds" \
@@ -293,8 +307,26 @@ jobs:
             --argjson ip_set "$ttl_ipset" \
             --argjson unicode "$unicode" \
             --argjson ntsync "$ntsync" \
-            '{model:$model,soc:$soc,branch:$branch,manifest:$manifest,android_version:$android_version,kernel_version:$kernel_version,os_version:$os_version,lto:$lto,zyc_compiler:$zyc_compiler,c_compiler:$c_compiler,rust_compiler:$rust_compiler,bindgen:$bindgen,rust_build:$rust_build,disk_cleanup:$disk_cleanup,hmbird:$hmbird,susfs:$susfs,ds:$ds,bbg:$bbg,bbr:$bbr,ttl:$ttl,ip_set:$ip_set,unicode:$unicode,ntsync:$ntsync,uname:$uname}' \
-            > /tmp/op13_config.json
+            --arg uname "$uname_value" \
+            '. + {
+              hmbird: $hmbird,
+              susfs: $susfs,
+              ds: $ds,
+              bbg: $bbg,
+              bbr: $bbr,
+              ttl: $ttl,
+              ip_set: $ip_set,
+              unicode: $unicode,
+              ntsync: $ntsync,
+              uname: $uname,
+              bindgen: (.bindgen // "")
+            }' \
+            configs/oos16/OP13.json > /tmp/op13_config.json
+
+          susfs_ref='${{ inputs.susfs_ref }}'
+          if [[ "$susfs" != "true" ]]; then
+            susfs_ref=""
+          fi
 
           echo "Resolved OP13 config:"
           jq . /tmp/op13_config.json
@@ -310,15 +342,16 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
           {
-            echo "## OP13 KSUN SUSFS v51 Build Matrix"
+            echo "## OP13 KSUN SUSFS v52 Build Matrix"
             echo ""
             echo "| Item | Value |"
             echo "|---|---|"
             echo "| Profile | $profile |"
-            echo "| Engine ref | ${WILD_ENGINE_REF} |"
+            echo "| Engine ref requested | ${{ inputs.engine_ref || env.DEFAULT_ENGINE_REF }} |"
+            echo "| Engine commit | $(git rev-parse HEAD) |"
             echo "| KSUN ref | ${{ inputs.ksun_ref }} |"
             echo "| SUSFS | $susfs |"
-            echo "| SUSFS ref | ${susfs_ref:-disabled} |"
+            echo "| SUSFS ref | ${susfs_ref:-auto/default} |"
             echo "| HMBIRD | $hmbird |"
             echo "| Droidspaces | $ds |"
             echo "| BBR | $bbr |"
@@ -326,12 +359,12 @@ jobs:
             echo "| TTL/IP_SET | $ttl_ipset |"
             echo "| Unicode | $unicode |"
             echo "| NTSYNC | $ntsync |"
-            echo "| Expected UTS | ${EXPECTED_UTS} |"
+            echo "| Uname suffix | $uname_value |"
             echo "| Build timestamp | ${{ steps.timestamp.outputs.value || 'build-engine default' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # -------------------------------------------------------------------------
-      # 04. Build using the pinned local composite action and its matching resources
+      # 04. Build using the checked-out local composite action
       # -------------------------------------------------------------------------
       - name: Build OP13 KSUN SUSFS kernel
         id: build_kernel
@@ -339,7 +372,7 @@ jobs:
         with:
           op_config_json: ${{ steps.config.outputs.json }}
           ksu_type: KSUN
-          ksu_branch_or_hash: ${{ inputs.ksun_ref }}
+          ksu_branch_or_hash: ${{ inputs.ksun_ref || env.DEFAULT_KSUN_REF }}
           susfs_commit_hash_or_branch: ${{ steps.config.outputs.susfs_ref }}
           build_timestamp: ${{ steps.timestamp.outputs.value }}
           optimize_level: ${{ inputs.optimize_level }}
@@ -353,10 +386,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Generated ZIP files:"
-          find "$GITHUB_WORKSPACE" -maxdepth 6 -type f \( -name '*.zip' -o -name '*.sha256' -o -name '*_build_info.txt' -o -name '*_metadata.json' \) -printf '%p %s bytes\n' | sort || true
+          echo "Generated files:"
+          find "$GITHUB_WORKSPACE" -maxdepth 8 -type f \
+            \( -name '*.zip' -o -name '*.sha256' -o -name '*_build_info.txt' -o -name '*_metadata.json' -o -name '*.log' \) \
+            -printf '%p %s bytes\n' | sort || true
           echo "Artifacts folder preview:"
-          find "$GITHUB_WORKSPACE" -maxdepth 4 -type d -name artifacts -print -exec find {} -maxdepth 2 -type f -printf '%p %s bytes\n' \; || true
+          find "$GITHUB_WORKSPACE" -maxdepth 5 -type d -name artifacts -print -exec find {} -maxdepth 3 -type f -printf '%p %s bytes\n' \; || true
 
       - name: Final build summary
         if: always()
@@ -385,7 +420,7 @@ jobs:
         if: always() && inputs.debug_artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: OP13_KSUN_SUSFS_v51_${{ inputs.feature_profile }}_${{ github.run_number }}
+          name: OP13_KSUN_SUSFS_v52_${{ inputs.feature_profile }}_${{ github.run_number }}
           if-no-files-found: warn
           retention-days: 14
           path: |
@@ -395,3 +430,4 @@ jobs:
             **/*.sha256
             **/*_metadata.json
             **/*_build_info.txt
+            **/*.log
