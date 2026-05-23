@@ -101,7 +101,7 @@ on:
         default: true
 
 concurrency:
-  group: ox-op13-ksun-cctv18-susfs-v60-${{ github.ref }}
+  group: ox-op13-ksun-cctv18-susfs-v61-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -158,20 +158,37 @@ jobs:
 
           python3 - <<'PY'
           from pathlib import Path
+
           p = Path('.github/actions/action.yml')
-          s = p.read_text()
-          old = 'retry_clone "https://github.com/TheWildJames/kernel_patches.git"'
-          new = '''retry_clone "https://github.com/WildKernels/kernel_patches.git" "main" 0
-                    (
-                      cd kernel_patches
-                      git fetch --no-tags --depth=1 origin 6ac23b65150f5f505018403361779fa7a8a728b0
-                      git checkout --force 6ac23b65150f5f505018403361779fa7a8a728b0
-                      echo "✅ kernel_patches pinned to $(git rev-parse HEAD)"
-                    )'''
-          if old not in s:
-              raise SystemExit('Could not find kernel_patches clone line to patch. Action layout changed.')
-          s = s.replace(old, new)
-          p.write_text(s)
+          text = p.read_text()
+
+          def replace_shell_line(text: str, needle: str, replacement_lines: list[str], label: str) -> str:
+              out = []
+              count = 0
+              for line in text.splitlines():
+                  if needle in line:
+                      indent = line[:len(line) - len(line.lstrip())]
+                      out.extend(indent + repl for repl in replacement_lines)
+                      count += 1
+                  else:
+                      out.append(line)
+              if count != 1:
+                  raise SystemExit(f'Expected to replace exactly one {label} line, replaced {count}. Action layout changed.')
+              return '\n'.join(out) + '\n'
+
+          text = replace_shell_line(
+              text,
+              'retry_clone "https://github.com/TheWildJames/kernel_patches.git"',
+              [
+                  'echo "Pinning matching kernel_patches tree for KSUN 33129 + SUSFS v2.1.0"',
+                  'rm -rf kernel_patches',
+                  'git clone --no-tags --depth 1 https://github.com/WildKernels/kernel_patches.git kernel_patches',
+                  '( cd kernel_patches && git fetch --no-tags --depth=1 origin "$ENGINE_KERNEL_PATCHES_REF" && git checkout --force "$ENGINE_KERNEL_PATCHES_REF" )',
+                  'echo "✅ kernel_patches pinned to $(git -C kernel_patches rev-parse HEAD)"',
+              ],
+              'kernel_patches clone',
+          )
+          p.write_text(text)
           PY
 
           echo "After patch, kernel_patches clone lines:"
@@ -181,20 +198,41 @@ jobs:
           echo "Patching SUSFS source to CCTV18 susfs4oki for experimental KSUN test..."
           python3 - <<'INNERPY'
           from pathlib import Path
+
           p = Path('.github/actions/action.yml')
-          s = p.read_text()
-          old = 'retry_clone "https://gitlab.com/simonpunk/susfs4ksu.git" "master" 0'
-          new = '''echo "Using CCTV18 susfs4oki source for SUSFS"
-          rm -rf susfs4ksu
-          if git ls-remote --heads https://github.com/cctv18/susfs4oki.git "$SUSFS_BRANCH" | grep -q .; then
-            git clone --depth 1 --branch "$SUSFS_BRANCH" https://github.com/cctv18/susfs4oki.git susfs4ksu
-          else
-            git clone https://github.com/cctv18/susfs4oki.git susfs4ksu
-          fi'''
-          if old not in s:
-              raise SystemExit('Could not find SUSFS clone line to replace. Action layout changed.')
-          s = s.replace(old, new)
-          p.write_text(s)
+          text = p.read_text()
+
+          def replace_shell_line(text: str, needle: str, replacement_lines: list[str], label: str) -> str:
+              out = []
+              count = 0
+              for line in text.splitlines():
+                  if needle in line:
+                      indent = line[:len(line) - len(line.lstrip())]
+                      out.extend(indent + repl for repl in replacement_lines)
+                      count += 1
+                  else:
+                      out.append(line)
+              if count != 1:
+                  raise SystemExit(f'Expected to replace exactly one {label} line, replaced {count}. Action layout changed.')
+              return '\n'.join(out) + '\n'
+
+          text = replace_shell_line(
+              text,
+              'retry_clone "https://gitlab.com/simonpunk/susfs4ksu.git" "master" 0',
+              [
+                  'echo "Using CCTV18 susfs4oki source for SUSFS"',
+                  'rm -rf susfs4ksu',
+                  'if git ls-remote --heads https://github.com/cctv18/susfs4oki.git "$SUSFS_BRANCH" | grep -q .; then',
+                  '  git clone --depth 1 --branch "$SUSFS_BRANCH" https://github.com/cctv18/susfs4oki.git susfs4ksu',
+                  'else',
+                  '  git clone https://github.com/cctv18/susfs4oki.git susfs4ksu',
+                  '  ( cd susfs4ksu && git checkout --force "$SUSFS_BRANCH" )',
+                  'fi',
+                  'echo "✅ CCTV18 SUSFS source: $(git -C susfs4ksu rev-parse --short HEAD)"',
+              ],
+              'SUSFS clone',
+          )
+          p.write_text(text)
           INNERPY
           grep -nE 'susfs4oki|susfs4ksu.git|Using CCTV18' "$ACTION_FILE" || true
 
@@ -454,7 +492,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: OX_OP13_KSUN_CCTV18_SUSFS_EXPERIMENTAL_v60_${{ github.run_number }}
+          name: OX_OP13_KSUN_CCTV18_SUSFS_EXPERIMENTAL_v61_${{ github.run_number }}
           path: |
             OP13/artifacts/**
             **/*.zip
@@ -468,7 +506,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo '## OX OP13 KSUN + CCTV18 SUSFS Experimental v60'
+            echo '## OX OP13 KSUN + CCTV18 SUSFS Experimental v61'
             echo ''
             echo '| Item | Value |'
             echo '|---|---|'
