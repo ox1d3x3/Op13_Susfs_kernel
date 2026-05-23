@@ -4,9 +4,119 @@ permissions:
   contents: write
   actions: write
 
-concurrency:
-  group: op13-ksun-susfs-v55-${{ github.ref }}
-  cancel-in-progress: false
+on:
+  workflow_dispatch:
+    inputs:
+      feature_profile:
+        description: "Profile: wild_match = known Wild-style feature set; battery_daily = safer daily/battery; advanced_daily = extras on; minimal_debug = root/SUSFS minimum"
+        required: true
+        type: choice
+        options:
+          - wild_match
+          - battery_daily
+          - advanced_daily
+          - minimal_debug
+        default: wild_match
+
+      ksun_ref:
+        description: "KernelSU-Next ref. Default is the known-working OP13 Wild release family commit (KSUN 33129)."
+        required: true
+        type: string
+        default: "551ad80473f60e052917aec08abf5323b6ab2f7c"
+
+      susfs:
+        description: "Enable SUSFS"
+        required: true
+        type: choice
+        options: [On, Off]
+        default: On
+
+      susfs_ref:
+        description: "SUSFS ref. Default is the known-working android15-6.6 v2.1.0 commit from Wild OP13 release family."
+        required: false
+        type: string
+        default: "85bcfac5edc8ba7808581e8d0a3ca9c7deca78e4"
+
+      optimize_level:
+        description: "Compiler optimisation level"
+        required: true
+        type: choice
+        options: [O2, O3]
+        default: O2
+
+      hmbird:
+        description: "HMBIRD/FengChi: Auto follows profile"
+        required: true
+        type: choice
+        options: [Auto, On, Off]
+        default: Auto
+
+      droidspaces:
+        description: "Droidspaces: Auto follows profile"
+        required: true
+        type: choice
+        options: [Auto, On, Off]
+        default: Auto
+
+      bbr:
+        description: "Enable BBR"
+        required: true
+        type: choice
+        options: [On, Off]
+        default: On
+
+      bbg:
+        description: "Enable BBG/baseband guard"
+        required: true
+        type: choice
+        options: [On, Off]
+        default: On
+
+      ttl_ipset:
+        description: "Enable TTL + IP_SET"
+        required: true
+        type: choice
+        options: [On, Off]
+        default: On
+
+      unicode_fix:
+        description: "Enable Unicode related config"
+        required: true
+        type: choice
+        options: [On, Off]
+        default: On
+
+      ntsync:
+        description: "Enable NTSYNC"
+        required: true
+        type: choice
+        options: [On, Off]
+        default: On
+
+      stock_mimic:
+        description: "Mimic stock OP13 UTS suffix"
+        required: true
+        type: choice
+        options: [On, Off]
+        default: On
+
+      BUILD_TIME:
+        description: "Kernel build timestamp. F/f = current UTC time. Blank = build engine default."
+        required: false
+        type: string
+        default: "F"
+
+      clean_build:
+        description: "Clean build without ccache"
+        required: true
+        type: boolean
+        default: false
+
+      debug_artifacts:
+        description: "Upload debug logs/artifacts"
+        required: true
+        type: boolean
+        default: true
 
 env:
   DEVICE_MODEL: OP13
@@ -16,309 +126,139 @@ env:
   KERNEL_VERSION: "6.6"
   EXPECTED_UTS: "6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k"
   STOCK_UNAME_SUFFIX: "8-g7e1f3c083cc6-abogki467167594-4k"
-  DEFAULT_KSUN_REF: "dev"
 
-on:
-  workflow_dispatch:
-    inputs:
-      feature_profile:
-        description: "Profile: wild_match = Wild OP13-style, battery_daily = safer daily, advanced_daily = Droidspaces only, minimal_debug = smallest KSUN test"
-        type: choice
-        required: true
-        default: wild_match
-        options:
-          - wild_match
-          - battery_daily
-          - advanced_daily
-          - minimal_debug
-      ksun_ref:
-        description: "KernelSU Next ref. Use dev first. Do not pin until dev builds successfully."
-        type: string
-        required: false
-        default: "dev"
-      susfs:
-        description: "Enable SUSFS. Keep On for MS Authenticator/root-hiding tests."
-        type: choice
-        required: true
-        default: "On"
-        options:
-          - "On"
-          - "Off"
-      susfs_ref:
-        description: "SUSFS ref. Leave blank so current Wild engine chooses matching android15-6.6 branch."
-        type: string
-        required: false
-        default: ""
-      optimize_level:
-        description: "Compiler optimisation. O2 is safer for daily use; O3 is testing only."
-        type: choice
-        required: true
-        default: O2
-        options:
-          - O2
-          - O3
-      BUILD_TIME:
-        description: "Build timestamp. Use F for current UTC time, blank for engine default, or paste stock-like timestamp."
-        type: string
-        required: false
-        default: "F"
-      stock_mimic:
-        description: "Use stock-like OP13 UTS suffix. Keep On for PJZ110 daily-driver tests."
-        type: choice
-        required: true
-        default: "On"
-        options:
-          - "On"
-          - "Off"
-      hmbird:
-        description: "HMBIRD/Fengchi. Auto follows selected profile."
-        type: choice
-        required: true
-        default: Auto
-        options:
-          - Auto
-          - "On"
-          - "Off"
-      droidspaces:
-        description: "Droidspaces. Auto follows selected profile."
-        type: choice
-        required: true
-        default: Auto
-        options:
-          - Auto
-          - "On"
-          - "Off"
-      bbr:
-        description: "BBR TCP congestion control"
-        type: choice
-        required: true
-        default: "On"
-        options:
-          - "On"
-          - "Off"
-      bbg:
-        description: "Baseband Guard"
-        type: choice
-        required: true
-        default: "On"
-        options:
-          - "On"
-          - "Off"
-      ttl_ipset:
-        description: "TTL target + IP_SET + IPv6 NAT support"
-        type: choice
-        required: true
-        default: "On"
-        options:
-          - "On"
-          - "Off"
-      unicode_fix:
-        description: "Unicode path bypass fix"
-        type: choice
-        required: true
-        default: "On"
-        options:
-          - "On"
-          - "Off"
-      ntsync:
-        description: "NTSYNC support"
-        type: choice
-        required: true
-        default: "On"
-        options:
-          - "On"
-          - "Off"
-      clean_build:
-        description: "Clean build without ccache/LTO cache restore"
-        type: boolean
-        required: true
-        default: false
-      debug_artifacts:
-        description: "Upload build/debug artifacts if produced"
-        type: boolean
-        required: true
-        default: true
-      engine_debug:
-        description: "Enable Wild build-engine debug output"
-        type: boolean
-        required: true
-        default: true
+  # Pinned to the old WildKernels action layout that produced the known OP13 KSUN/SUSFS release family.
+  # Do not use "main" here. Current Wild main uses a different modular action layout.
+  WILD_ENGINE_REPO: WildKernels/OnePlus_KernelSU_SUSFS
+  WILD_ENGINE_REF: 14d04c1ed0753280330ccabd773e903f76c9a038
 
 jobs:
   build:
-    name: OP13 KSUN v55 ${{ inputs.feature_profile }}
+    name: OP13 KSUN v56 ${{ inputs.feature_profile }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
-      # -------------------------------------------------------------------------
-      # 01. Preflight. This workflow calls the current Wild modular build-kernel
-      #     action remotely, but prepares the same required caller-side cache env
-      #     as Wild's own workflow. v54 missed CCACHE_DIR/LDCACHE_DIR, which made
-      #     the action's cache restore path input empty and caused the 24s fail.
-      # -------------------------------------------------------------------------
-      - name: Print workflow context
+      - name: 01 - Checkout pinned WildKernels build engine
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WILD_ENGINE_REPO }}
+          ref: ${{ env.WILD_ENGINE_REF }}
+          fetch-depth: 1
+
+      - name: 02 - Verify pinned engine layout
         shell: bash
         run: |
           set -euo pipefail
-          echo "Runner      : $(uname -a)"
-          echo "Repository  : ${GITHUB_REPOSITORY}"
-          echo "Workflow    : ${GITHUB_WORKFLOW}"
-          echo "Run ID      : ${GITHUB_RUN_ID}"
-          echo "Profile     : ${{ inputs.feature_profile }}"
-          echo "KSUN ref    : ${{ inputs.ksun_ref }}"
-          echo "SUSFS       : ${{ inputs.susfs }} / ${{ inputs.susfs_ref || 'auto' }}"
-          echo "Expected UTS: ${EXPECTED_UTS}"
-          echo "Engine      : WildKernels/OnePlus_KernelSU_SUSFS/.github/actions/build-kernel@main"
-          df -hT
 
-      - name: Install host tools
+          echo "Workspace: $GITHUB_WORKSPACE"
+          echo "Pinned engine: ${WILD_ENGINE_REPO}@${WILD_ENGINE_REF}"
+          git rev-parse HEAD
+
+          missing=0
+          for p in \
+            ".github/actions/action.yml" \
+            "configs/oos16/OP13.json" \
+            "manifests/oos16/oneplus_13_w.xml"
+          do
+            if [ -e "$p" ]; then
+              echo "OK: $p"
+            else
+              echo "::error::MISSING: $p"
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Pinned WildKernels engine layout is not the expected old composite-action tree."
+            exit 1
+          fi
+
+      - name: 03 - Install host tools
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            git curl ca-certificates build-essential clang lld flex bison \
-            libelf-dev libssl-dev libncurses-dev zlib1g-dev liblz4-tool \
-            libxml2-utils rsync unzip zip dwarves file python3 ccache jq bc \
-            dos2unix kmod libdw-dev elfutils pigz zstd aria2 gh
-          sudo apt-get clean
-          echo "✅ Host tools installed"
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev build-essential \
+            zip unzip python3 python3-pip curl jq git ccache \
+            aria2 pigz xz-utils rsync file
 
-      - name: Configure ccache and LTO cache environment
+      - name: 04 - Resolve build timestamp
+        id: build_time
         shell: bash
         run: |
           set -euo pipefail
-          echo "::group::Configure ccache/LTO cache environment"
-          CACHE_DIR="${GITHUB_WORKSPACE}/.ccache"
-          LDCACHE_DIR="${GITHUB_WORKSPACE}/.ld_cache"
-          mkdir -p "$CACHE_DIR" "$LDCACHE_DIR"
-
-          {
-            echo "CCACHE_DIR=$CACHE_DIR"
-            echo "LDCACHE_DIR=$LDCACHE_DIR"
-            echo "CCACHE_MAXSIZE=12G"
-            echo "CCACHE_COMPILERCHECK=content"
-            echo "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
-            echo "CCACHE_NOHASHDIR=true"
-            echo "CCACHE_IGNOREOPTIONS=--sysroot*"
-            echo "CCACHE_COMPRESSION=true"
-            echo "CCACHE_COMPRESSION_LEVEL=3"
-            echo "CCACHE_DIRECT=true"
-            echo "CCACHE_FILE_CLONE=true"
-            echo "CCACHE_INODE_CACHE=true"
-            echo "CCACHE_IS_KERNEL_COMPILING=true"
-            echo "CCACHE_UMASK=002"
-            echo "CCACHE_SLOPPINESS=file_macro,time_macros,include_file_mtime,include_file_ctime,pch_defines,system_headers,locale"
-          } >> "$GITHUB_ENV"
-
-          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
-          ccache -p || true
-          echo "::endgroup::"
-
-      # -------------------------------------------------------------------------
-      # 02. Resolve timestamp and OP13 config JSON inline.
-      # -------------------------------------------------------------------------
-      - name: Resolve build timestamp
-        id: timestamp
-        shell: bash
-        run: |
-          set -euo pipefail
-          input='${{ inputs.BUILD_TIME }}'
-          if [[ -z "$input" ]]; then
-            resolved=""
-          elif [[ "$input" == "F" || "$input" == "f" ]]; then
-            resolved="$(LC_ALL=C date -u '+%a %b %e %T UTC %Y')"
+          RAW="${{ inputs.BUILD_TIME }}"
+          if [ -z "$RAW" ]; then
+            TS=""
+          elif [ "$RAW" = "F" ] || [ "$RAW" = "f" ]; then
+            TS="$(date -u '+%a %b %e %T UTC %Y')"
           else
-            resolved="$input"
+            TS="$RAW"
           fi
-          echo "value=$resolved" >> "$GITHUB_OUTPUT"
-          echo "Build timestamp resolved: ${resolved:-build-engine default}"
+          echo "timestamp=$TS" >> "$GITHUB_OUTPUT"
+          echo "Build timestamp resolved: ${TS:-engine default}"
 
-      - name: Resolve OP13 feature matrix
+      - name: 05 - Prepare OP13 feature matrix
         id: config
         shell: bash
         run: |
           set -euo pipefail
 
-          bool_on() { [[ "$1" == "On" ]] && echo true || echo false; }
+          profile="${{ inputs.feature_profile }}"
 
-          profile='${{ inputs.feature_profile }}'
-          case "$profile" in
-            wild_match)
-              default_hmbird=true
-              default_ds=true
-              ;;
-            advanced_daily)
-              default_hmbird=false
-              default_ds=true
-              ;;
-            battery_daily|minimal_debug)
-              default_hmbird=false
-              default_ds=false
-              ;;
-            *)
-              echo "::error::Unknown profile: $profile"
-              exit 1
-              ;;
-          esac
+          bool_onoff() {
+            case "$1" in
+              On|on|true|True|TRUE) echo true ;;
+              Off|off|false|False|FALSE) echo false ;;
+              *) echo "::error::Invalid On/Off value: $1" >&2; exit 1 ;;
+            esac
+          }
 
-          case '${{ inputs.hmbird }}' in
-            Auto) hmbird="$default_hmbird" ;;
-            On) hmbird=true ;;
-            Off) hmbird=false ;;
-          esac
+          auto_feature() {
+            local val="$1"
+            local feature="$2"
+            if [ "$val" = "On" ]; then echo true; return; fi
+            if [ "$val" = "Off" ]; then echo false; return; fi
 
-          case '${{ inputs.droidspaces }}' in
-            Auto) ds="$default_ds" ;;
-            On) ds=true ;;
-            Off) ds=false ;;
-          esac
+            case "$profile:$feature" in
+              wild_match:hmbird|wild_match:droidspaces) echo true ;;
+              advanced_daily:hmbird|advanced_daily:droidspaces) echo true ;;
+              battery_daily:hmbird|battery_daily:droidspaces) echo false ;;
+              minimal_debug:hmbird|minimal_debug:droidspaces) echo false ;;
+              *) echo false ;;
+            esac
+          }
 
-          if [[ "$profile" == "minimal_debug" ]]; then
-            hmbird=false
-            ds=false
-          fi
+          SUSFS_BOOL="$(bool_onoff "${{ inputs.susfs }}")"
+          HMBIRD_BOOL="$(auto_feature "${{ inputs.hmbird }}" hmbird)"
+          DS_BOOL="$(auto_feature "${{ inputs.droidspaces }}" droidspaces)"
+          BBR_BOOL="$(bool_onoff "${{ inputs.bbr }}")"
+          BBG_BOOL="$(bool_onoff "${{ inputs.bbg }}")"
+          TTL_IPSET_BOOL="$(bool_onoff "${{ inputs.ttl_ipset }}")"
+          UNICODE_BOOL="$(bool_onoff "${{ inputs.unicode_fix }}")"
+          NTSYNC_BOOL="$(bool_onoff "${{ inputs.ntsync }}")"
 
-          susfs=$(bool_on '${{ inputs.susfs }}')
-          bbr=$(bool_on '${{ inputs.bbr }}')
-          bbg=$(bool_on '${{ inputs.bbg }}')
-          ttl_ipset=$(bool_on '${{ inputs.ttl_ipset }}')
-          unicode=$(bool_on '${{ inputs.unicode_fix }}')
-          ntsync=$(bool_on '${{ inputs.ntsync }}')
-
-          if [[ '${{ inputs.stock_mimic }}' == 'On' ]]; then
-            uname_value="${STOCK_UNAME_SUFFIX}"
+          if [ "${{ inputs.stock_mimic }}" = "On" ]; then
+            UNAME_SUFFIX="$STOCK_UNAME_SUFFIX"
           else
-            uname_value="OP13-KSUN"
+            UNAME_SUFFIX="ox1d3x3-ksun"
           fi
 
-          jq -nc \
-            --argjson hmbird "$hmbird" \
-            --argjson susfs "$susfs" \
-            --argjson ds "$ds" \
-            --argjson bbg "$bbg" \
-            --argjson bbr "$bbr" \
-            --argjson ttl "$ttl_ipset" \
-            --argjson ip_set "$ttl_ipset" \
-            --argjson unicode "$unicode" \
-            --argjson ntsync "$ntsync" \
-            --arg uname "$uname_value" \
-            '{
-              model: "OP13",
-              soc: "sun",
-              branch: "wild/sm8750",
-              manifest: "oneplus_13_w.xml",
-              android_version: "android15",
-              kernel_version: "6.6",
-              os_version: "OOS16",
-              lto: "thin",
-              zyc_compiler: "https://github.com/ZyCromerZ/Clang/releases/download/19.0.0git-20240723-release/Clang-19.0.0git-20240723.tar.gz",
-              c_compiler: "kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin",
-              rust_compiler: "",
-              bindgen: "",
-              rust_build: false,
-              disk_cleanup: false,
+          # Use the pinned Wild OP13 config as the base, then override the feature choices.
+          jq -c \
+            --argjson hmbird "$HMBIRD_BOOL" \
+            --argjson susfs "$SUSFS_BOOL" \
+            --argjson ds "$DS_BOOL" \
+            --argjson bbg "$BBG_BOOL" \
+            --argjson bbr "$BBR_BOOL" \
+            --argjson ttl "$TTL_IPSET_BOOL" \
+            --argjson ip_set "$TTL_IPSET_BOOL" \
+            --argjson unicode "$UNICODE_BOOL" \
+            --argjson ntsync "$NTSYNC_BOOL" \
+            --arg uname "$UNAME_SUFFIX" \
+            '. + {
               hmbird: $hmbird,
               susfs: $susfs,
               ds: $ds,
@@ -329,122 +269,89 @@ jobs:
               unicode: $unicode,
               ntsync: $ntsync,
               uname: $uname
-            }' > /tmp/op13_config.json
+            }' \
+            configs/oos16/OP13.json > /tmp/op13_config.json
 
-          susfs_ref='${{ inputs.susfs_ref }}'
-          if [[ "$susfs" != "true" ]]; then
-            susfs_ref=""
-          fi
+          echo "op_config_json=$(cat /tmp/op13_config.json)" >> "$GITHUB_OUTPUT"
 
-          echo "Resolved OP13 config:"
-          jq . /tmp/op13_config.json
+          echo "## OP13 KSUN/SUSFS v56 feature matrix" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Item | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Profile | $profile |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Root backend | KernelSU-Next / KSUN |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| KSUN ref | ${{ inputs.ksun_ref }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SUSFS enabled | $SUSFS_BOOL |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| SUSFS ref | ${{ inputs.susfs_ref }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| HMBIRD | $HMBIRD_BOOL |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Droidspaces | $DS_BOOL |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| BBR | $BBR_BOOL |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| BBG | $BBG_BOOL |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| TTL/IP_SET | $TTL_IPSET_BOOL |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Unicode | $UNICODE_BOOL |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| NTSYNC | $NTSYNC_BOOL |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| UTS suffix | $UNAME_SUFFIX |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Config JSON:" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          jq '.' /tmp/op13_config.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-          {
-            echo 'json<<JSON'
-            cat /tmp/op13_config.json
-            echo 'JSON'
-            echo "susfs_ref=$susfs_ref"
-            echo "hmbird=$hmbird"
-            echo "ds=$ds"
-            echo "susfs=$susfs"
-          } >> "$GITHUB_OUTPUT"
-
-          {
-            echo "## OP13 KSUN SUSFS v55 Build Matrix"
-            echo ""
-            echo "| Item | Value |"
-            echo "|---|---|"
-            echo "| Profile | $profile |"
-            echo "| Engine | current Wild modular build-kernel action |"
-            echo "| KSUN ref | ${{ inputs.ksun_ref }} |"
-            echo "| SUSFS | $susfs |"
-            echo "| SUSFS ref | ${susfs_ref:-auto/default} |"
-            echo "| HMBIRD | $hmbird |"
-            echo "| Droidspaces | $ds |"
-            echo "| BBR | $bbr |"
-            echo "| BBG | $bbg |"
-            echo "| TTL/IP_SET | $ttl_ipset |"
-            echo "| Unicode | $unicode |"
-            echo "| NTSYNC | $ntsync |"
-            echo "| Uname suffix | $uname_value |"
-            echo "| Build timestamp | ${{ steps.timestamp.outputs.value || 'build-engine default' }} |"
-            echo "| CCACHE_DIR | ${GITHUB_WORKSPACE}/.ccache |"
-            echo "| LDCACHE_DIR | ${GITHUB_WORKSPACE}/.ld_cache |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      # -------------------------------------------------------------------------
-      # 03. Build with current Wild modular action.
-      # -------------------------------------------------------------------------
-      - name: Build OP13 KSUN SUSFS kernel
+      - name: 06 - Build OP13 KSUN + SUSFS
         id: build_kernel
-        uses: WildKernels/OnePlus_KernelSU_SUSFS/.github/actions/build-kernel@main
+        uses: ./.github/actions
         with:
-          op_config_json: ${{ steps.config.outputs.json }}
+          op_config_json: ${{ steps.config.outputs.op_config_json }}
           ksu_type: KSUN
-          ksu_branch_or_hash: ${{ inputs.ksun_ref || env.DEFAULT_KSUN_REF }}
-          susfs_commit_hash_or_branch: ${{ steps.config.outputs.susfs_ref }}
-          build_timestamp: ${{ steps.timestamp.outputs.value }}
+          ksu_branch_or_hash: ${{ inputs.ksun_ref }}
+          susfs_commit_hash_or_branch: ${{ inputs.susfs_ref }}
+          build_timestamp: ${{ steps.build_time.outputs.timestamp }}
           optimize_level: ${{ inputs.optimize_level }}
           clean: ${{ inputs.clean_build }}
-          debug: ${{ inputs.engine_debug }}
-          github_token: ${{ github.token }}
 
-      # -------------------------------------------------------------------------
-      # 04. Post-build discovery, summary, and artifact upload.
-      # -------------------------------------------------------------------------
-      - name: Discover build outputs
+      - name: 07 - Verify build outputs
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          echo "Generated files:"
-          find "$GITHUB_WORKSPACE" -maxdepth 8 -type f \
-            \( -name '*.zip' -o -name '*.sha256' -o -name '*_build_info.txt' -o -name '*_metadata.json' -o -name '*.log' \) \
-            -printf '%p %s bytes\n' | sort || true
-          echo "Artifacts folder preview:"
-          find "$GITHUB_WORKSPACE" -maxdepth 6 -type d -name artifacts -print -exec find {} -maxdepth 3 -type f -printf '%p %s bytes\n' \; || true
-          echo "Debug artifacts preview:"
-          find "$GITHUB_WORKSPACE" -maxdepth 5 -type d -name debug_artifacts -print -exec find {} -maxdepth 3 -type f -printf '%p %s bytes\n' \; || true
-          echo "ccache preview:"
-          ccache -s || true
 
-      - name: Final build summary
+          echo "## Build outputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Known output-like files:"
+          find . -type f \( \
+            -name '*.zip' -o \
+            -name '*.sha256' -o \
+            -name '*metadata*' -o \
+            -name '*build_info*' -o \
+            -name '*.log' -o \
+            -name '*.txt' \
+          \) | sort | sed 's#^\./##' | tee /tmp/op13_outputs.txt
+
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/op13_outputs.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          if find . -type f -name '*.zip' | grep -q .; then
+            echo "✅ ZIP artifact found" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "⚠️ No ZIP artifact found" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 08 - Upload artifacts
         if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          {
-            echo ""
-            echo "## Build Outputs"
-            echo ""
-            echo "| Output | Value |"
-            echo "|---|---|"
-            echo "| Kernel version | ${{ steps.build_kernel.outputs.kernel_version || 'n/a' }} |"
-            echo "| KSU type | ${{ steps.build_kernel.outputs.ksu_type || 'KSUN' }} |"
-            echo "| KSU version | ${{ steps.build_kernel.outputs.ksu_version || 'n/a' }} |"
-            echo "| SUSFS version | ${{ steps.build_kernel.outputs.susfs_version || 'n/a' }} |"
-            echo "| ZIP name | ${{ steps.build_kernel.outputs.zip_name || 'n/a' }} |"
-            echo "| ZIP SHA256 | ${{ steps.build_kernel.outputs.zip_sha256 || 'n/a' }} |"
-            echo "| Image SHA256 | ${{ steps.build_kernel.outputs.image_sha256 || 'n/a' }} |"
-            echo "| Warnings | ${{ steps.build_kernel.outputs.warnings || 'n/a' }} |"
-            echo "| Build time | ${{ steps.build_kernel.outputs.build_time || 'n/a' }} seconds |"
-            echo "| ccache hit rate | ${{ steps.build_kernel.outputs.ccache_hit_rate || 'n/a' }} |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload OP13 KSUN build artifacts
-        if: always() && inputs.debug_artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: OP13_KSUN_SUSFS_v55_${{ inputs.feature_profile }}_${{ github.run_number }}
+          name: OP13-KSUN-SUSFS-v56-${{ inputs.feature_profile }}
           if-no-files-found: warn
           retention-days: 14
           path: |
             OP13/artifacts/**
             OP13/AnyKernel3/*.zip
             AnyKernel3/*.zip
-            debug_artifacts/**
             **/*OP13*.zip
             **/*.sha256
             **/*_metadata.json
             **/*_build_info.txt
             **/*.log
+            **/*.txt
