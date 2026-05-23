@@ -1,28 +1,5 @@
 name: OP13 SukiSU Ultra
 
-env:
-  TZ: Asia/Shanghai
-  ANDROID_VERSION: android15
-  KERNEL_VERSION: "6.6"
-  OP_MODEL: OP13
-  OP_SOC: sun
-  OP_OS_VERSION: OOS16
-  OP_EXPECTED_UTS: "6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k"
-  OP_STOCK_LOCALVERSION: "-android15-8-g7e1f3c083cc6-abogki467167594-4k"
-  OP13_MANIFEST_REPO: "https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git"  # source manifest repo
-  OP13_MANIFEST_BRANCH: "main"
-  OP13_MANIFEST_FILE: "manifests/oos16/oneplus_13_w.xml"
-  OP13_CLANG_REL: "kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin"
-  SUSFS_REPO: "https://github.com/cctv18/susfs4oki.git"
-  SUSFS_DEFAULT_REF: "oki-android15-6.6"
-  CCACHE_COMPRESS: "true"
-  CCACHE_COMPRESSLEVEL: "6"
-  CCACHE_MAXSIZE: "5G"
-  GIT_TERMINAL_PROMPT: "0"
-  KBUILD_BUILD_USER: OnePlus
-  KBUILD_BUILD_HOST: ubuntu-build
-  KBUILD_BUILD_VERSION: "1"
-
 permissions:
   contents: read
   actions: read
@@ -30,1755 +7,1191 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
-      feature_profile:
-        description: "Preset: battery_daily = stable/battery daily defaults, advanced_daily = battery_daily + advanced extras, minimal_debug = root+susfs only, experimental_max = all extras"
-        type: choice
+      profile:
+        description: "Daily-driver profile. stock_daily is the recommended default."
         required: true
-        default: battery_daily
-        options: [battery_daily, advanced_daily, minimal_debug, experimental_max]
-      sukisu_channel:
-        description: "SukiSU Ultra only. builtin_latest is the only proven buildable SukiSU+CCTV18 path here. Older release tags are blocked because their kernel layout rejects CCTV18 glue."
         type: choice
+        options:
+          - stock_daily
+          - stock_plus
+          - minimal_safe
+          - debug_only
+        default: stock_daily
+      sukisu_ref:
+        description: "SukiSU Ultra ref to checkout. Use auto-susfs for the clean resolver: susfs-main -> susfs-dev -> susfs-test -> builtin -> main."
         required: true
-        default: builtin_latest
-        options: [builtin_latest, main_latest, custom_ref]
-      sukisu_custom_ref:
-        description: "Only used when sukisu_channel=custom_ref. Use builtin/main/commit only if you know it exposes the same SukiSU kernel layout as builtin."
         type: string
-        required: false
-        default: ""
-      susfs:
-        description: "Enable SUSFS kernel integration. Keep On for the daily-driver SUSFS build; Off only for SukiSU-only debug."
-        type: choice
+        default: "auto-susfs"
+      require_sukisu_ref:
+        description: "Fail if a manually supplied SukiSU ref is not checked out. Ignored when sukisu_ref=auto-susfs."
         required: true
-        default: "On"
-        options: ["On", "Off"]
-      susfs_ref:
-        description: "CCTV18 susfs4oki ref/branch. Default is oki-android15-6.6 for OP13 OOS16/android15-6.6."
-        type: string
-        required: false
-        default: "oki-android15-6.6"
-      sus_map:
-        description: "SUSFS SUS_MAP hiding. Off by default for LSPosed/Zygisk stability; enable only if you specifically need proc maps hiding."
-        type: choice
-        required: true
-        default: "Off"
-        options: ["On", "Off"]
-      toolchain:
-        description: "Toolchain. aosp_prebuilt is the only safe default for OP13 OOS16."
-        type: choice
-        required: true
-        default: aosp_prebuilt
-        options: [aosp_prebuilt]
-      bbr:
-        description: "Enable BBR congestion control"
-        type: choice
-        required: true
-        default: "On"
-        options: ["On", "Off"]
-      bbg:
-        description: "Enable Baseband Guard if supported by tree"
-        type: choice
-        required: true
-        default: "On"
-        options: ["On", "Off"]
-      ttl_ipset:
-        description: "Enable TTL/IP_SET/IPv6 NAT netfilter support"
-        type: choice
-        required: true
-        default: "On"
-        options: ["On", "Off"]
-      ntsync:
-        description: "Enable NTSYNC if supported by tree"
-        type: choice
-        required: true
-        default: "On"
-        options: ["On", "Off"]
-      unicode_fix:
-        description: "Enable Unicode path-hardening symbols if supported. Useful for modern Android file/path handling; keep On for this OP13 daily profile."
-        type: choice
-        required: true
-        default: "On"
-        options: ["On", "Off"]
-      droidspaces:
-        description: "Advanced extra: Droidspaces/container support if supported. Off in battery_daily; profile advanced_daily forces it On."
-        type: choice
-        required: true
-        default: "Off"
-        options: ["On", "Off"]
-      adios:
-        description: "Enable ADIOS I/O scheduler if supported. Default On from v26; compiled successfully in the working v24 baseline."
-        type: choice
-        required: true
-        default: "On"
-        options: ["On", "Off"]
-      zram_lz4_support:
-        description: "Enable LZ4/ZRAM support. If zram_module is On, ZRAM/ZSMALLOC are built as modules for the flashable zram zip."
-        type: choice
-        required: true
-        default: "On"
-        options: ["On", "Off"]
-      zram_module:
-        description: "Build flashable zram-module.zip by replacing zram.ko in the known-good template. Default On, matching your older workflow."
-        type: choice
-        required: true
-        default: "On"
-        options: ["On", "Off"]
-      hmbird:
-        description: "Advanced scheduler extra: HMBIRD/Fengchi if supported. Off in battery_daily; profile advanced_daily can force it On for testing."
-        type: choice
-        required: true
-        default: "Off"
-        options: ["On", "Off"]
-      lto:
-        description: "LTO mode. Thin is the recommended OP13 daily-driver setting."
-        type: choice
-        required: true
-        default: thin
-        options: [thin, none]
-      BUILD_TIME:
-        description: "Custom uname/build time. Enter F to use current UTC time; enter stock string to mimic stock."
-        type: string
-        required: false
-        default: "F"
-      BUILD_USER:
-        description: "KBUILD_BUILD_USER"
-        type: string
-        required: false
-        default: "OnePlus"
-      BUILD_HOST:
-        description: "KBUILD_BUILD_HOST"
-        type: string
-        required: false
-        default: "ubuntu-build"
-      clean_build:
-        description: "Disable ccache and force a clean compile"
         type: boolean
-        required: true
-        default: false
-      build_jobs:
-        description: "Build jobs. Use 1 to expose the first real compiler error cleanly; use auto after the issue is fixed."
-        type: string
-        required: false
-        default: "1"
-      enforce_stock_suffix:
-        description: "Fail if UTS_RELEASE does not match stock OP13 suffix"
-        type: boolean
-        required: true
         default: true
-      debug_artifacts:
-        description: "Upload final .config, UTS, image string and patch rejects"
-        type: boolean
+      kpm_enable:
+        description: "Enable SukiSU KPM support. On by default for the advanced SukiSU build; disable only if testing stability issues."
         required: true
+        type: boolean
+        default: true
+      multi_manager_support:
+        description: "Enable SukiSU multi-manager support if the symbol exists. Useful with spoofed manager builds."
+        required: true
+        type: boolean
+        default: true
+      manager_spoof_patch:
+        description: "Apply CCTV18 apk_sign manager compatibility patch if it dry-runs cleanly. CCTV18 source only."
+        required: true
+        type: boolean
+        default: true
+      susfs_enable:
+        description: "Enable CCTV18 susfs4oki only. No WildKernels/TheWildJames SUSFS patch tree is used."
+        required: true
+        type: boolean
+        default: true
+      susfs_ref:
+        description: "CCTV18 susfs4oki branch/ref. OP13 Android 15/16 6.6 should use oki-android15-6.6."
+        required: true
+        type: string
+        default: "oki-android15-6.6"
+      susfs_patch_policy:
+        description: "strict fails on any reject; audited_cctv18 allows only the known task_mmu reject; native_cctv18 audits but continues like CCTV18."
+        required: true
+        type: choice
+        options:
+          - audited_cctv18
+          - strict
+          - native_cctv18
+        default: audited_cctv18
+      hook_mode:
+        description: "SukiSU hook target. inline_susfs is the default goal; sukisu_auto is fallback/testing only."
+        required: true
+        type: choice
+        options:
+          - inline_susfs
+          - sukisu_auto
+          - kprobe_test
+        default: inline_susfs
+      cctv18_kernel_ref:
+        description: "CCTV18 OP13 6.6.89 source branch/ref."
+        required: true
+        type: string
+        default: "oneplus/sm8750_v_16.0.0_oneplus_13_6.6.89"
+      kernel_name:
+        description: "Stock-like LOCALVERSION without leading dash."
+        required: true
+        type: string
+        default: "android15-8-g7e1f3c083cc6-abogki467167594-4k"
+      stock_mimic:
+        description: "Keep uname -r stock-like by using only the supplied kernel_name as LOCALVERSION."
+        required: true
+        type: boolean
+        default: true
+      optimise:
+        description: "O2 is the stable daily-driver default. O3 is test-only."
+        required: true
+        type: choice
+        options:
+          - O2
+          - O3
+        default: O2
+      lz4_zstd_patch:
+        description: "Apply CCTV18 LZ4 1.10/ZSTD patch group when patches exist and dry-run cleanly. Recommended for SukiSU daily-driver."
+        required: true
+        type: boolean
+        default: true
+      lz4kd_patch:
+        description: "Apply CCTV18 LZ4KD patch group when patches exist and dry-run cleanly. Off by default for stability because LZ4/ZSTD is already enabled."
+        required: true
+        type: boolean
+        default: false
+      adios:
+        description: "Apply CCTV18 ADIOS scheduler patch if it exists and dry-run applies cleanly."
+        required: true
+        type: boolean
+        default: true
+      baseband_guard:
+        description: "Apply CCTV18 Baseband Guard patch if it exists and dry-run applies cleanly."
+        required: true
+        type: boolean
+        default: true
+      better_net:
+        description: "Enable netfilter/ipset/TTL support for useful advanced networking without making BBR default."
+        required: true
+        type: boolean
+        default: true
+      bbr_mode:
+        description: "BBR off is default for daily driver. enabled/default are test options."
+        required: true
+        type: choice
+        options:
+          - off
+          - enabled
+          - default
+        default: off
+      zram_lz4:
+        description: "Enable kernel ZRAM + LZ4/LZ4HC/ZSTD support in config. This is config-only, not a random patch mix."
+        required: true
+        type: boolean
+        default: true
+      zram_comp:
+        description: "Preferred ZRAM default compressor when kernel config supports CONFIG_ZRAM_DEF_COMP."
+        required: true
+        type: choice
+        options:
+          - lz4
+          - lzo-rle
+          - zstd
+        default: lz4
+      package_zram_tuner_zip:
+        description: "Create separate KSU/Magisk ZRAM LZ4 tuner zip artifact. Safe/non-invasive by default."
+        required: true
+        type: boolean
+        default: true
+      ntsync:
+        description: "Enable NTSYNC config if available."
+        required: true
+        type: boolean
+        default: true
+      unicode_fix:
+        description: "Apply CCTV18 Unicode-related patch if present and dry-run applies cleanly."
+        required: true
+        type: boolean
+        default: true
+      droidspaces:
+        description: "Enable Droidspaces/container namespace options. Off is safer for normal phone use."
+        required: true
+        type: boolean
+        default: false
+      rekernel:
+        description: "Apply Re:Kernel patch/config when present. Off is safer by default."
+        required: true
+        type: boolean
+        default: false
+      package_ak3:
+        description: "Create fixed AnyKernel3 flashable ZIP plus raw Image."
+        required: true
+        type: boolean
+        default: true
+      clean_ccache:
+        description: "Delete ccache before building. Use only when you suspect cache contamination."
+        required: true
+        type: boolean
+        default: false
+      upload_debug:
+        description: "Always upload logs, final config, rejects, UTS, Image and ZIPs."
+        required: true
+        type: boolean
         default: true
 
 concurrency:
-  group: op13-sukisu-cctv18-adv-stable-v43-${{ github.ref }}
+  group: op13-sukisu-cctv18-inline-v73-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  TZ: Asia/Shanghai
+  ANDROID_VERSION: android15
+  KERNEL_VERSION: "6.6"
+  SUB_VERSION: "89"
+  DEVICE_NAME: OP13
+  DEVICE_CODENAME: sun
+  CCTV18_BUILD_REPO: cctv18/oppo_oplus_realme_sm8750
+  CCTV18_COMMON_REPO: cctv18/android_kernel_common_oneplus_sm8750
+  CCTV18_TOOLCHAIN_RELEASE: LLVM-Clang18-r510928
+  CCACHE_DIR: ${{ github.workspace }}/.ccache_op13_sukisu_cctv18_v73
+  CCACHE_MAXSIZE: 3G
 
 jobs:
   build:
-    name: "${{ github.event.inputs.feature_profile }} | Root=${{ github.event.inputs.sukisu_channel }} | SUSFS=${{ github.event.inputs.susfs }}"
+    name: "${{ inputs.profile }} | SukiSU=${{ inputs.sukisu_ref }} | Hook=${{ inputs.hook_mode }} | CCTV18 SUSFS=${{ inputs.susfs_enable }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 360
-    env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache-op13-sukisu-cctv18-adv-stable-v43
-      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
-      CCACHE_NOHASHDIR: "true"
-      CCACHE_HARDLINK: "true"
+
     steps:
-      - name: "Runner disk preflight"
-        id: disk
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Memory and swap:"
-          free -h || true
-          echo ""
-          echo "Swap devices:"
-          swapon --show || true
-          echo ""
-          echo "Block devices:"
-          lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS || true
-          echo ""
-          echo "Disk usage:"
-          df -hT || true
-          echo ""
-          use_maximize=false
-          if findmnt -n /mnt >/dev/null 2>&1; then
-            SRC="$(findmnt -n -o SOURCE /mnt || true)"
-            echo "/mnt is a mount point from: $SRC"
-            MNT_FREE_MB="$(df -Pm /mnt | awk 'NR==2 {print $4}' || true)"
-            echo "/mnt free MB: ${MNT_FREE_MB:-unknown}"
-            if [[ "$SRC" == /dev/* && "$MNT_FREE_MB" =~ ^[0-9]+$ && "$MNT_FREE_MB" -gt 20000 ]]; then
-              use_maximize=true
-            fi
-          else
-            echo "/mnt is not a separate mount point on this runner."
-          fi
-          echo "use_maximize=$use_maximize" >> "$GITHUB_OUTPUT"
-
-      - name: "Maximize build space if runner has /mnt temp disk"
-        if: steps.disk.outputs.use_maximize == 'true'
-        uses: easimon/maximize-build-space@v10
-        with:
-          root-reserve-mb: 2048
-          temp-reserve-mb: 1024
-          swap-size-mb: 2048
-          remove-dotnet: "true"
-          remove-android: "true"
-          remove-haskell: "true"
-          remove-codeql: "true"
-
-      - name: "Extra disk cleanup"
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost /usr/local/share/powershell /opt/hostedtoolcache/CodeQL || true
-          sudo apt-get clean || true
-          sudo rm -rf /var/lib/apt/lists/* || true
-          sudo docker image prune -a -f || true
-          sudo docker system prune -af || true
-          df -hT
-
-      - name: "Checkout workflow repo"
-        uses: actions/checkout@v4
+      - name: 01 Checkout workflow repo
+        uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
-      - name: "Git auth and network hardening"
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          git config --global credential.helper store
-          git config --global core.askPass true
-          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
-          git config --global http.version HTTP/1.1
-          git config --global http.lowSpeedLimit 1000
-          git config --global http.lowSpeedTime 900
-          git config --global fetch.parallel 1
-          git config --global pack.threads 1
-
-      - name: "Setup ccache directory"
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$CCACHE_DIR"
-          echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
-
-      - name: "Restore ccache"
-        if: ${{ inputs.clean_build != true }}
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v43-${{ github.event.inputs.feature_profile }}-${{ github.ref_name }}
-          restore-keys: |
-            ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v43-${{ github.event.inputs.feature_profile }}-
-            ccache-${{ runner.os }}-op13-sukisu-cctv18-adv-stable-v43-
-
-      - name: "Install build dependencies and repo"
+      - name: 02 Install host dependencies
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get -o Acquire::Retries=3 update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            python3 python3-pip git curl wget ca-certificates rsync unzip zip file \
-            build-essential flex bison bc gawk ccache clang lld llvm dwarves \
-            libssl-dev libncurses-dev libelf-dev libdw-dev zlib1g-dev liblz4-tool \
-            libxml2-utils dos2unix jq kmod elfutils patch xz-utils
+            aria2 ca-certificates curl wget git unzip zip tar xz-utils zstd rsync file jq \
+            build-essential gcc g++ make bc bison flex gawk python3 python-is-python3 \
+            libssl-dev libelf-dev libncurses-dev zlib1g-dev liblz4-tool dwarves \
+            ccache clang lld llvm patch kmod
           sudo apt-get clean
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > /tmp/repo
-          chmod a+x /tmp/repo
-          sudo mv /tmp/repo /usr/local/bin/repo
-          repo --version
-          ccache -M "${{ env.CCACHE_MAXSIZE }}"
+          echo "Runner: $(uname -a)"
+          ccache --version || true
+
+      - name: 03 Fetch clean CCTV18 OP13 source, build assets and Clang18
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf kernel_workspace cctv18_assets _ox_debug artifacts ak3_work zram_tuner_work
+          mkdir -p kernel_workspace _ox_debug artifacts
+
+          echo "==> Cloning CCTV18 build assets only"
+          git clone --depth=1 "https://github.com/${CCTV18_BUILD_REPO}.git" cctv18_assets
+          git -C cctv18_assets rev-parse HEAD | tee _ox_debug/cctv18_assets_commit.txt
+
+          cd kernel_workspace
+          echo "==> Downloading CCTV18 OP13 common kernel source: ${{ inputs.cctv18_kernel_ref }}"
+          aria2c -s16 -x16 -k1M --retry-wait=5 --max-tries=5 \
+            "https://github.com/${CCTV18_COMMON_REPO}/archive/refs/heads/${{ inputs.cctv18_kernel_ref }}.zip" \
+            -o common.zip
+          unzip -q common.zip
+          src_dir="$(find . -maxdepth 1 -type d -name 'android_kernel_common_oneplus_sm8750-*' -print -quit)"
+          if [ -z "$src_dir" ]; then
+            echo "::error::Could not locate extracted OP13 common kernel directory."
+            find . -maxdepth 2 -type d | sort
+            exit 1
+          fi
+          mv "$src_dir" common
+          rm -f common.zip
+
+          echo "==> Downloading CCTV18 LLVM/Clang18 and build-tools"
+          aria2c -s16 -x16 -k1M --retry-wait=5 --max-tries=5 \
+            "https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/${CCTV18_TOOLCHAIN_RELEASE}/clang-r510928.zip" \
+            -o clang.zip
+          unzip -q clang.zip -d clang18
+          rm -f clang.zip
+
+          aria2c -s16 -x16 -k1M --retry-wait=5 --max-tries=5 \
+            "https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/${CCTV18_TOOLCHAIN_RELEASE}/build-tools.zip" \
+            -o build-tools.zip
+          unzip -q build-tools.zip
+          rm -f build-tools.zip
+
+          echo "==> Removing ABI export guard files and dirty suffix noise"
+          rm -f common/android/abi_gki_protected_exports_* || true
+          if [ -f common/scripts/setlocalversion ]; then
+            sed -i 's/ -dirty//g' common/scripts/setlocalversion
+            sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' common/scripts/setlocalversion || true
+          fi
+
+          echo "==> Source layout" | tee ../_ox_debug/source-layout.txt
+          find . -maxdepth 2 -type d | sort | tee -a ../_ox_debug/source-layout.txt
+
+      - name: 04 Configure ccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.clean_ccache }}" = "true" ]; then
+            rm -rf "$CCACHE_DIR"
+          fi
+          mkdir -p "$CCACHE_DIR"
+          ccache -M "$CCACHE_MAXSIZE"
+          ccache -o compression=true
+          ccache -z || true
           ccache -s || true
 
-      - name: "Sync OP13 OOS16 source base"
+      - name: 05 Add SukiSU Ultra with inline-SUSFS target
+        id: sukisu
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p kernel_workspace
           cd kernel_workspace
-          echo "Using OP13 manifest: $OP13_MANIFEST_REPO ($OP13_MANIFEST_BRANCH/$OP13_MANIFEST_FILE)"
-          repo init -u "$OP13_MANIFEST_REPO" -b "$OP13_MANIFEST_BRANCH" -m "$OP13_MANIFEST_FILE" --repo-rev=v2.16 --depth=1 --no-clone-bundle --no-tags
-          ok=0
-          for spec in "8 4" "4 2" "2 1" "1 1"; do
-            set -- $spec
-            echo "repo sync attempt: -j$1 --jobs-network=$2"
-            if repo sync -c --no-clone-bundle --no-tags --optimized-fetch --fail-fast -j"$1" --jobs-network="$2"; then
-              ok=1
-              break
-            fi
-            echo "repo sync failed, retrying with gentler jobs..."
-            sleep 45
-          done
-          [ "$ok" = 1 ] || { echo "::error::repo sync failed"; exit 1; }
+          export PATH="$GITHUB_WORKSPACE/kernel_workspace/clang18/bin:$GITHUB_WORKSPACE/kernel_workspace/build-tools/path/linux-x86:$PATH"
 
-          rm -f kernel_platform/common/android/abi_gki_protected_exports_* || true
-          rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || true
-          sed -i 's/ -dirty//g' kernel_platform/common/scripts/setlocalversion || true
-          sed -i 's/ -dirty//g' kernel_platform/msm-kernel/scripts/setlocalversion || true
-          sed -i 's/ -dirty//g' kernel_platform/external/dtc/scripts/setlocalversion || true
+          echo "==> Installing SukiSU Ultra"
+          requested_ref="${{ inputs.sukisu_ref }}"
+          selected_ref="$requested_ref"
+          echo "Requested SukiSU Ultra ref: $requested_ref"
+          echo "Manual ref is required: ${{ inputs.require_sukisu_ref }}"
 
-      - name: "Select exact OP13/AOSP clang toolchain"
-        shell: bash
-        run: |
-          set -euo pipefail
-          KP="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
-          CLANG_BIN="$GITHUB_WORKSPACE/kernel_workspace/$OP13_CLANG_REL"
-          if [ ! -x "$CLANG_BIN/clang" ]; then
-            echo "::error::Expected OP13 clang not found: $CLANG_BIN/clang"
-            find "$KP/prebuilts/clang" -path '*/bin/clang' -type f 2>/dev/null | sort || true
-            exit 1
-          fi
-          REAL_CLANG="$CLANG_BIN/clang"
-          REAL_LD_LLD="$CLANG_BIN/ld.lld"
-          [ -x "$REAL_LD_LLD" ] || REAL_LD_LLD="$(command -v ld.lld || true)"
-          [ -n "$REAL_LD_LLD" ] || { echo "::error::ld.lld not found"; exit 1; }
-
-          echo "$CLANG_BIN" >> "$GITHUB_PATH"
-          for p in "$KP/prebuilts/kernel-build-tools/linux-x86/bin" "$KP/prebuilts/kernel-build-tools/linux_musl-x86/bin"; do
-            [ -d "$p" ] && echo "$p" >> "$GITHUB_PATH"
-          done
-          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
-          echo "CLANG_BIN=$CLANG_BIN" >> "$GITHUB_ENV"
-          echo "REAL_CLANG=$REAL_CLANG" >> "$GITHUB_ENV"
-          echo "REAL_LD_LLD=$REAL_LD_LLD" >> "$GITHUB_ENV"
-          echo "Toolchain check:"
-          "$REAL_CLANG" --version
-          "$REAL_LD_LLD" --version || true
-          if "$REAL_CLANG" --version | grep -qi 'ubuntu'; then
-            echo "::error::Refusing to build OP13 boot image with Ubuntu clang. Expected Android/AOSP clang-r510928."
-            exit 1
-          fi
-
-      - name: "Detect kernel source root"
-        shell: bash
-        run: |
-          set -euo pipefail
-          KP="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
-          for c in "$KP/common" "$KP/common/common" "$KP"; do
-            if [[ -f "$c/Makefile" && -d "$c/arch" && -d "$c/drivers" && -d "$c/fs" ]]; then
-              echo "KERNEL_DIR=$c" >> "$GITHUB_ENV"
-              echo "Kernel source root: $c"
-              exit 0
-            fi
-          done
-          echo "::error::Could not detect kernel source root"
-          find "$KP" -maxdepth 3 -type f \( -name Makefile -o -name Kconfig \) | head -n 100 || true
-          exit 1
-
-      - name: "Resolve SukiSU Ultra channel and build identity"
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          CHANNEL="${{ inputs.sukisu_channel }}"
-          CUSTOM_REF="${{ inputs.sukisu_custom_ref }}"
-
-          ROOT_BACKEND="$CHANNEL"
-          SETUP_OWNER="SukiSU-Ultra"
-          SETUP_REPO="SukiSU-Ultra"
-          SETUP_BRANCH="main"
-          SETUP_ARG=""
-          LABEL=""
-
-          case "$CHANNEL" in
-            builtin_latest)
-              # SukiSU Ultra builtin channel. This is the safest first path for CCTV18 susfs4oki.
-              SETUP_ARG="builtin"
-              LABEL="SukiSUUltra_builtin"
-              ;;
-            main_latest)
-              # SukiSU Ultra main channel. Useful for testing newer non-builtin integration.
-              SETUP_ARG="main"
-              LABEL="SukiSUUltra_main"
-              ;;
-            custom_ref)
-              [ -n "$CUSTOM_REF" ] || { echo "::error::sukisu_custom_ref is required when sukisu_channel=custom_ref"; exit 1; }
-              SETUP_ARG="$CUSTOM_REF"
-              SAFE_REF="$(printf '%s' "$CUSTOM_REF" | tr -c 'A-Za-z0-9._-' '_' | sed 's/_\{2,\}/_/g')"
-              LABEL="SukiSUUltra_${SAFE_REF}"
-              ;;
-            *)
-              echo "::error::Unknown SukiSU channel: $CHANNEL"
+          if [ "$requested_ref" = "auto-susfs" ]; then
+            echo "==> Resolving best available SukiSU SUSFS ref"
+            selected_ref=""
+            for cand in susfs-main susfs-dev susfs-test builtin main; do
+              if git ls-remote --exit-code --heads https://github.com/SukiSU-Ultra/SukiSU-Ultra.git "$cand" >/dev/null 2>&1 ||                  git ls-remote --exit-code --tags https://github.com/SukiSU-Ultra/SukiSU-Ultra.git "$cand" >/dev/null 2>&1; then
+                selected_ref="$cand"
+                break
+              fi
+            done
+            if [ -z "$selected_ref" ]; then
+              echo "::error::Could not resolve any usable SukiSU ref from the clean candidate list."
               exit 1
-              ;;
-          esac
-
-          echo "ROOT_BACKEND=$ROOT_BACKEND" >> "$GITHUB_ENV"
-          echo "ROOT_SETUP_OWNER=$SETUP_OWNER" >> "$GITHUB_ENV"
-          echo "ROOT_SETUP_REPO=$SETUP_REPO" >> "$GITHUB_ENV"
-          echo "ROOT_SETUP_BRANCH=$SETUP_BRANCH" >> "$GITHUB_ENV"
-          echo "ROOT_SETUP_ARG=$SETUP_ARG" >> "$GITHUB_ENV"
-          echo "ROOT_PACKAGE_LABEL=$LABEL" >> "$GITHUB_ENV"
-          # Backward-compatible names used later by package scripts.
-          echo "SUKISU_SETUP_BRANCH=$SETUP_BRANCH" >> "$GITHUB_ENV"
-          echo "SUKISU_SETUP_ARG=$SETUP_ARG" >> "$GITHUB_ENV"
-          echo "SUKISU_PACKAGE_LABEL=$LABEL" >> "$GITHUB_ENV"
-
-          INPUT_TIME="${{ inputs.BUILD_TIME }}"
-          if [[ -n "$INPUT_TIME" && "$INPUT_TIME" != "F" && "$INPUT_TIME" != "f" ]]; then
-            DATESTR="$INPUT_TIME"
-          else
-            DATESTR="$(TZ='UTC' date +'%a %b %d %T %Z %Y')"
-          fi
-          echo "BUILD_TIME_RESOLVED=$DATESTR" >> "$GITHUB_ENV"
-          echo "KBUILD_BUILD_TIMESTAMP=$DATESTR" >> "$GITHUB_ENV"
-          echo "KBUILD_BUILD_USER=${{ inputs.BUILD_USER }}" >> "$GITHUB_ENV"
-          echo "KBUILD_BUILD_HOST=${{ inputs.BUILD_HOST }}" >> "$GITHUB_ENV"
-          echo "KBUILD_BUILD_VERSION=1" >> "$GITHUB_ENV"
-
-          echo "SukiSU channel        : SukiSU Ultra only"
-          echo "SukiSU channel      : $ROOT_BACKEND"
-          echo "Setup repo          : $SETUP_OWNER/$SETUP_REPO"
-          echo "Setup script branch : $SETUP_BRANCH"
-          echo "Setup arg/ref       : $SETUP_ARG"
-          echo "SUSFS source        : CCTV18 susfs4oki"
-          echo "SUSFS_ENABLED=${{ inputs.susfs }}" >> "$GITHUB_ENV"
-          echo "Build timestamp     : $DATESTR"
-          echo "Build user/host     : ${{ inputs.BUILD_USER }}@${{ inputs.BUILD_HOST }}"
-
-      - name: "Patch uname build identity"
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform"
-          DATESTR="${BUILD_TIME_RESOLVED:?BUILD_TIME_RESOLVED missing}"
-          for f in common/scripts/mkcompile_h msm-kernel/scripts/mkcompile_h "$KERNEL_DIR/scripts/mkcompile_h"; do
-            [ -f "$f" ] || continue
-            echo "Patching $f for UTS_VERSION timestamp"
-            if grep -q 'UTS_VERSION=' "$f"; then
-              perl -pi -e "s{UTS_VERSION="\\\$\\\(.*?\\\)"}{UTS_VERSION="#1 SMP PREEMPT $DATESTR"}" "$f" || true
-              perl -pi -e "s{UTS_VERSION="#1 .*?"}{UTS_VERSION="#1 SMP PREEMPT $DATESTR"}" "$f" || true
             fi
-          done
+          fi
+          echo "Selected SukiSU Ultra ref: $selected_ref" | tee ../_ox_debug/sukisu-selected-ref.txt
+          echo "SUKISU_SELECTED_REF=$selected_ref" >> "$GITHUB_ENV"
+          echo "selected_ref=$selected_ref" >> "$GITHUB_OUTPUT"
 
-      - name: "Integrate selected root backend"
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$KERNEL_DIR"
-          SETUP_URL="https://raw.githubusercontent.com/${ROOT_SETUP_OWNER}/${ROOT_SETUP_REPO}/${ROOT_SETUP_BRANCH}/kernel/setup.sh"
-          echo "Fetching setup.sh: $SETUP_URL"
-          echo "Running setup arg: $ROOT_SETUP_ARG"
-          curl -fLSs "$SETUP_URL" | bash -s "$ROOT_SETUP_ARG"
+          # Use SukiSU Ultra's own setup script, then audit that it did not silently fall back.
+          # This keeps the root framework clean: no KernelSU-Next/ReSukiSU glue in the SukiSU-first workflow.
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s "$selected_ref"
 
-          echo "SukiSU channel layout:"
-          find . -maxdepth 5 \( -path '*KernelSU*' -o -path '*kernelsu*' \) -print | head -n 160 || true
-          if [ ! -e "drivers/kernelsu" ]; then
-            echo "::error::drivers/kernelsu missing after root backend setup"
+          if [ -d KernelSU ]; then
+            KSU_TREE="KernelSU"
+          elif [ -d common/drivers/kernelsu ]; then
+            KSU_TREE="common/drivers/kernelsu"
+          else
+            echo "::error::SukiSU Ultra tree was not found after setup."
+            find . -maxdepth 4 -type d | sort | sed -n '1,240p'
             exit 1
           fi
+          echo "KSU_TREE=$KSU_TREE" | tee -a "$GITHUB_ENV"
+          echo "sukisu_tree=$KSU_TREE" >> "$GITHUB_OUTPUT"
 
-          # Compatibility for SukiSU revisions when SUSFS is disabled by a debug preset.
-          if [[ -f drivers/kernelsu/supercall/dispatch.c ]] && grep -q 'ksu_mark_running_process();' drivers/kernelsu/supercall/dispatch.c; then
-            python3 - <<'PY'
-          from pathlib import Path
-          p = Path('drivers/kernelsu/supercall/dispatch.c')
-          s = p.read_text(encoding='utf-8', errors='replace')
-          old = 'ksu_mark_running_process();'
-          new = '#if !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_MANUAL_HOOK)\n\tksu_mark_running_process();\n#endif'
-          if old in s and 'defined(CONFIG_KSU_MANUAL_HOOK)' not in s:
-              s = s.replace(old, new, 1)
-              p.write_text(s, encoding='utf-8')
-          PY
-          fi
-          if [[ -f drivers/kernelsu/supercalls.c ]] && grep -q 'ksu_mark_running_process();' drivers/kernelsu/supercalls.c; then
-            python3 - <<'PY'
-          from pathlib import Path
-          p = Path('drivers/kernelsu/supercalls.c')
-          s = p.read_text(encoding='utf-8', errors='replace')
-          old = 'ksu_mark_running_process();'
-          new = '#if !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_MANUAL_HOOK)\n\tksu_mark_running_process();\n#endif'
-          if old in s and 'defined(CONFIG_KSU_MANUAL_HOOK)' not in s:
-              s = s.replace(old, new, 1)
-              p.write_text(s, encoding='utf-8')
-          PY
-          fi
-
-      - name: "Repair SukiSU sulog argv ABI"
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$KERNEL_DIR"
-          python3 - <<'PY'
-          from pathlib import Path
-          import re, sys
-
-          paths = [
-              Path('drivers/kernelsu/sulog/event.c'),
-              Path('KernelSU/kernel/sulog/event.c'),
-          ]
-
-          def patch_one(p: Path) -> bool:
-              if not p.exists():
-                  return False
-              s = p.read_text(encoding='utf-8', errors='replace')
-              orig = s
-
-              m = re.search(r'(?:static\s+)?[^\n;{}]*ksu_sulog_capture\s*\((.*?)\)\s*\{', s, re.S)
-              if not m:
-                  print(f'WARN: ksu_sulog_capture definition not found in {p}; skipping')
-                  return False
-              sig = re.sub(r'\s+', ' ', m.group(1)).strip()
-              expects_pointer = bool(re.search(r'struct\s+user_arg_ptr\s*\*', sig))
-              replacement_arg = 'NULL' if expects_pointer else 'USER_ARG_NULL'
-
-              # Fix the exact no-argv grant-root call that changes ABI across SukiSU revisions.
-              # Older/current builtin can use either:
-              #   struct user_arg_ptr *argv_user  -> pass NULL
-              #   const struct user_arg_ptr argv  -> pass USER_ARG_NULL
-              pattern = re.compile(
-                  r'(ksu_sulog_capture\s*\(\s*KSU_SULOG_EVENT_IOCTL_GRANT_ROOT\s*,\s*NULL\s*,\s*)'
-                  r'(?:&\s*USER_ARG_NULL|USER_ARG_NULL|NULL)'
-                  r'(\s*,\s*gfp\s*\))',
-                  re.S,
-              )
-              s, n = pattern.subn(r'\1' + replacement_arg + r'\2', s)
-
-              if s != orig:
-                  p.write_text(s, encoding='utf-8')
-                  mode = 'pointer' if expects_pointer else 'value'
-                  print(f'Patched {p}: ksu_sulog_capture argv ABI = {mode}, replacements={n}')
-                  return True
-
-              # If no replacement was needed, still verify the existing call is correct.
-              bad = False
-              if expects_pointer:
-                  bad = bool(re.search(r'ksu_sulog_capture\s*\(\s*KSU_SULOG_EVENT_IOCTL_GRANT_ROOT\s*,\s*NULL\s*,\s*&?\s*USER_ARG_NULL\s*,\s*gfp\s*\)', s, re.S))
-              else:
-                  bad = bool(re.search(r'ksu_sulog_capture\s*\(\s*KSU_SULOG_EVENT_IOCTL_GRANT_ROOT\s*,\s*NULL\s*,\s*(?:&\s*USER_ARG_NULL|NULL)\s*,\s*gfp\s*\)', s, re.S))
-              if bad:
-                  print(f'ERROR: bad ksu_sulog_capture argv argument remains in {p}', file=sys.stderr)
-                  sys.exit(1)
-              print(f'No sulog ABI patch needed in {p}')
-              return False
-
-          touched = False
-          seen = False
-          for p in paths:
-              if p.exists():
-                  seen = True
-                  touched = patch_one(p) or touched
-          if not seen:
-              print('ERROR: no SukiSU sulog/event.c path found', file=sys.stderr)
-              sys.exit(1)
-          PY
-
-      - name: "Apply CCTV18 susfs4oki source and patches"
-        if: inputs.susfs == 'On'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$KERNEL_DIR"
-          rm -rf susfs4oki
-          SUS_REF="${{ inputs.susfs_ref }}"
-          [ -n "$SUS_REF" ] || SUS_REF="$SUSFS_DEFAULT_REF"
-          echo "Cloning CCTV18 SUSFS from $SUSFS_REPO"
-          git clone --no-tags "$SUSFS_REPO" susfs4oki
-          cd susfs4oki
-          git checkout "$SUS_REF"
-          SUSVER="$(grep '#define SUSFS_VERSION' kernel_patches/include/linux/susfs.h | awk -F'\"' '{print $2}' || true)"
-          [ -n "$SUSVER" ] || SUSVER="$SUS_REF"
-          echo "SUSVER=$SUSVER" >> "$GITHUB_ENV"
-          echo "CCTV18 SUSFS version/ref: $SUSVER"
-          cd "$KERNEL_DIR"
-
-          mkdir -p fs include/linux
-          cp -a susfs4oki/kernel_patches/fs/. "$KERNEL_DIR/fs/"
-          cp -a susfs4oki/kernel_patches/include/linux/. "$KERNEL_DIR/include/linux/"
-
-          PATCH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common/susfs4oki/kernel_patches/50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch"
-          if [ ! -f "$PATCH" ]; then
-            PATCH="$KERNEL_DIR/susfs4oki/kernel_patches/50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch"
-          fi
-          [ -f "$PATCH" ] || { echo "::error::Missing CCTV18 SUSFS patch: $PATCH"; find susfs4oki/kernel_patches -maxdepth 2 -type f -print; exit 1; }
-
-          if patch --dry-run -p1 -N < "$PATCH" >/tmp/susfs_kernel_patch_check.log 2>&1; then
-            patch -p1 -N < "$PATCH"
-          elif grep -qi "Reversed\|previously applied" /tmp/susfs_kernel_patch_check.log; then
-            echo "CCTV18 SUSFS kernel patch already applied."
-          else
-            echo "Patch does not apply cleanly, retrying with fuzz=3."
-            if ! patch -p1 -N --fuzz=3 < "$PATCH"; then
-              echo "CCTV18 SUSFS main patch did not fully apply. Checking if this is the known OP13/OOS16 task_mmu.c context drift."
-              find . -name '*.rej' -print -exec sed -n '1,160p' {} \; || true
-              mapfile -t REJECTS < <(find . -name '*.rej' -print | sort)
-              if [ "${#REJECTS[@]}" -eq 1 ] && [ "${REJECTS[0]}" = "./fs/proc/task_mmu.c.rej" ]; then
-                echo "Only fs/proc/task_mmu.c hunk failed. Applying controlled SUS_MAP compatibility patch manually."
-                python3 - <<'PYMANUAL'
-          from pathlib import Path
-          import re, sys
-
-          p = Path('fs/proc/task_mmu.c')
-          s = p.read_text(encoding='utf-8', errors='replace')
-          needle = 'SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))'
-          if needle in s:
-              print('task_mmu.c already contains SUSFS SUS_MAP guard; continuing.')
-              sys.exit(0)
-
-          pattern = re.compile(
-              r'(/\*\s*Case 4 above\s*\*/\s*\n)([ \t]*)if \(vma->vm_end > last_vma_end\)\s*\n([ \t]*)smap_gather_stats\(vma, &mss, last_vma_end\);',
-              re.M,
-          )
-          m = pattern.search(s)
-          if not m:
-              print('ERROR: Could not find show_smaps_rollup Case 4 smap_gather_stats pattern for manual SUS_MAP patch.', file=sys.stderr)
-              sys.exit(1)
-
-          indent_if = m.group(2)
-          indent_call = m.group(3)
-          replacement = (
-              m.group(1) +
-              f'{indent_if}if (vma->vm_end > last_vma_end) {{\n' +
-              f'{indent_call}#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n' +
-              f'{indent_call}if (!vma->vm_file || !(SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))) {{\n' +
-              f'{indent_call}\tsmap_gather_stats(vma, &mss, last_vma_end);\n' +
-              f'{indent_call}}}\n' +
-              f'{indent_call}#else\n' +
-              f'{indent_call}smap_gather_stats(vma, &mss, last_vma_end);\n' +
-              f'{indent_call}#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n' +
-              f'{indent_if}}}'
-          )
-
-          s2, n = pattern.subn(replacement, s, count=1)
-          if n != 1:
-              print(f'ERROR: Manual task_mmu patch replacement count was {n}, expected 1.', file=sys.stderr)
-              sys.exit(1)
-          p.write_text(s2, encoding='utf-8')
-          print('Applied manual SUSFS SUS_MAP guard to fs/proc/task_mmu.c')
-          PYMANUAL
-                rm -f ./fs/proc/task_mmu.c.rej
-              else
-                echo "::error::CCTV18 SUSFS main patch failed with unexpected rejects."
+          if [ -d KernelSU/.git ]; then
+            git -C KernelSU rev-parse HEAD | tee ../_ox_debug/sukisu_commit.txt || true
+            git -C KernelSU status --short --branch | tee ../_ox_debug/sukisu_status.txt || true
+            actual_branch="$(git -C KernelSU branch --show-current 2>/dev/null || true)"
+            requested="$selected_ref"
+            requested_sha="$(git -C KernelSU rev-parse --verify "$requested^{commit}" 2>/dev/null || true)"
+            actual_sha="$(git -C KernelSU rev-parse HEAD 2>/dev/null || true)"
+            {
+              echo "requested=$requested"
+              echo "actual_branch=$actual_branch"
+              echo "requested_sha=$requested_sha"
+              echo "actual_sha=$actual_sha"
+            } | tee ../_ox_debug/sukisu-ref-audit.txt
+            if [ "${{ inputs.require_sukisu_ref }}" = "true" ] && [ "${{ inputs.sukisu_ref }}" != "auto-susfs" ]; then
+              if [ -n "$requested_sha" ] && [ "$requested_sha" != "$actual_sha" ]; then
+                echo "::error::SukiSU setup did not checkout the requested ref."
+                exit 1
+              fi
+              if [ -z "$requested_sha" ] && [ "$actual_branch" != "$requested" ]; then
+                echo "::error::Requested SukiSU ref '$requested' was not checked out. Use a valid SukiSU ref or disable require_sukisu_ref only for testing."
                 exit 1
               fi
             fi
           fi
 
-          GLUE="$KERNEL_DIR/susfs4oki/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
-          [ -f "$GLUE" ] || { echo "::error::Missing CCTV18 KernelSU/SukiSU glue patch: $GLUE"; exit 1; }
+          if [ ! -e common/drivers/kernelsu ]; then
+            echo "::error::common/drivers/kernelsu link/path missing after SukiSU setup."
+            exit 1
+          fi
+          if [ ! -f common/drivers/Makefile ] || ! grep -q 'CONFIG_KSU' common/drivers/Makefile; then
+            echo "::error::drivers/Makefile does not include SukiSU kernelsu object."
+            exit 1
+          fi
+          if [ ! -f common/drivers/Kconfig ] || ! grep -q 'drivers/kernelsu/Kconfig' common/drivers/Kconfig; then
+            echo "::error::drivers/Kconfig does not include SukiSU kernelsu Kconfig."
+            exit 1
+          fi
 
-          echo "SukiSU path lsposed-clean-fix2s before CCTV18 glue:"
-          ls -la drivers/kernelsu || true
-          readlink -f drivers/kernelsu || true
-          find KernelSU drivers/kernelsu -maxdepth 3 -type f \( -name Kconfig -o -name Kbuild -o -name Makefile \) -print 2>/dev/null || true
+          # Version information is best-effort only. Do not break clean builds if upstream changes Kbuild variables.
+          if [ -d KernelSU/.git ]; then
+            cnt="$(git -C KernelSU rev-list --count HEAD 2>/dev/null || true)"
+            tag="$(git -C KernelSU describe --tags --abbrev=0 2>/dev/null || true)"
+            [ -n "$cnt" ] && echo "KSUVER=$((cnt + 30000))" >> "$GITHUB_ENV" || true
+            [ -n "$tag" ] && echo "KSUTAG=$tag" >> "$GITHUB_ENV" || true
+            echo "sukisu_version_count=$cnt" >> "$GITHUB_OUTPUT"
+            echo "sukisu_tag=$tag" >> "$GITHUB_OUTPUT"
+          fi
 
-          if ! grep -Rqs 'config KSU_SUSFS' drivers/kernelsu KernelSU 2>/dev/null; then
-            echo "Applying CCTV18 SUSFS glue to SukiSU Ultra."
-            if [ -d KernelSU ]; then
-              cp "$GLUE" KernelSU/10_enable_susfs_for_ksu.patch
-              cd KernelSU
-              if patch --dry-run -p1 -N < 10_enable_susfs_for_ksu.patch >/tmp/susfs_glue_check.log 2>&1; then
-                patch -p1 -N < 10_enable_susfs_for_ksu.patch
-              elif grep -qi "Reversed\|previously applied" /tmp/susfs_glue_check.log; then
-                echo "CCTV18 SUSFS glue already applied in KernelSU."
-              else
-                echo "Patch does not apply cleanly to KernelSU, retrying with fuzz=3."
-                if ! patch -p1 -N --fuzz=3 < 10_enable_susfs_for_ksu.patch; then
-                  echo "::error::CCTV18 SUSFS KernelSU/SukiSU glue patch failed. Reject preview:"
-                  cat /tmp/susfs_glue_check.log || true
-                  find . -name '*.rej' -print -exec sed -n '1,160p' {} \; || true
-                  exit 1
-                fi
-              fi
-              cd "$KERNEL_DIR"
+          if [ "${{ inputs.manager_spoof_patch }}" = "true" ] && [ -f "$GITHUB_WORKSPACE/cctv18_assets/other_patch/apk_sign.patch" ] && [ -d common/drivers/kernelsu ]; then
+            echo "==> Checking CCTV18 apk_sign.patch for SukiSU manager compatibility"
+            if ( cd common/drivers/kernelsu && patch --dry-run -p2 -N -F 3 < "$GITHUB_WORKSPACE/cctv18_assets/other_patch/apk_sign.patch" > "$GITHUB_WORKSPACE/_ox_debug/sukisu-apk-sign-dryrun.log" 2>&1 ); then
+              ( cd common/drivers/kernelsu && patch -p2 -N -F 3 < "$GITHUB_WORKSPACE/cctv18_assets/other_patch/apk_sign.patch" ) || true
             else
-              echo "::error::KernelSU directory missing after SukiSU setup; cannot apply CCTV18 glue."
+              echo "::warning::CCTV18 apk_sign.patch did not dry-run cleanly on this SukiSU tree; skipped."
+              cat "$GITHUB_WORKSPACE/_ox_debug/sukisu-apk-sign-dryrun.log" || true
+            fi
+          fi
+      - name: 06 Apply CCTV18-only SUSFS integration
+        if: ${{ inputs.susfs_enable == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel_workspace
+          rm -rf susfs4ksu
+
+          echo "==> Cloning CCTV18 SUSFS only: cctv18/susfs4oki @ ${{ inputs.susfs_ref }}"
+          git clone --depth=1 --branch "${{ inputs.susfs_ref }}" https://github.com/cctv18/susfs4oki.git susfs4ksu
+          git -C susfs4ksu rev-parse HEAD | tee ../_ox_debug/cctv18_susfs_commit.txt
+          git -C susfs4ksu remote -v | tee ../_ox_debug/cctv18_susfs_remote.txt
+
+          SUSFS_PATCH="susfs4ksu/kernel_patches/50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch"
+          if [ ! -f "$SUSFS_PATCH" ]; then
+            echo "::error::CCTV18 SUSFS common patch not found: $SUSFS_PATCH"
+            find susfs4ksu/kernel_patches -maxdepth 3 -type f | sort
+            exit 1
+          fi
+
+          cp -af susfs4ksu/kernel_patches/fs/. common/fs/
+          cp -af susfs4ksu/kernel_patches/include/linux/. common/include/linux/
+          cp -f "$SUSFS_PATCH" common/
+
+          if [ -f "$GITHUB_WORKSPACE/cctv18_assets/other_patch/69_hide_stuff.patch" ]; then
+            cp -f "$GITHUB_WORKSPACE/cctv18_assets/other_patch/69_hide_stuff.patch" common/69_hide_stuff.patch
+          fi
+
+          cd common
+          echo "==> Applying CCTV18 SUSFS patch with policy: ${{ inputs.susfs_patch_policy }}"
+          set +e
+          patch -p1 -N -F 3 < "50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch" 2>&1 | tee "$GITHUB_WORKSPACE/_ox_debug/cctv18-susfs-patch.log"
+          patch_rc=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$patch_rc" -ne 0 ]; then
+            echo "SUSFS patch returned rc=$patch_rc" | tee -a "$GITHUB_WORKSPACE/_ox_debug/cctv18-susfs-patch.log"
+            find . -name '*.rej' -print | sort | tee "$GITHUB_WORKSPACE/_ox_debug/susfs-rejects.txt"
+            reject_count="$(wc -l < "$GITHUB_WORKSPACE/_ox_debug/susfs-rejects.txt" | tr -d ' ')"
+            only_task_mmu="false"
+            if [ "$reject_count" = "1" ] && grep -qx './fs/proc/task_mmu.c.rej' "$GITHUB_WORKSPACE/_ox_debug/susfs-rejects.txt"; then
+              only_task_mmu="true"
+            fi
+
+            if [ "${{ inputs.susfs_patch_policy }}" = "strict" ]; then
+              echo "::error::SUSFS patch reject found and strict policy is enabled."
+              exit 1
+            elif [ "${{ inputs.susfs_patch_policy }}" = "audited_cctv18" ] && [ "$only_task_mmu" != "true" ]; then
+              echo "::error::Unexpected SUSFS reject. audited_cctv18 only allows ./fs/proc/task_mmu.c.rej."
+              exit 1
+            else
+              echo "::warning::Continuing with audited CCTV18 SUSFS reject handling. No non-CCTV18 SUSFS source is imported."
+              while read -r rej; do
+                [ -n "$rej" ] || continue
+                safe="$(echo "$rej" | sed 's#^./##; s#[/ ]#_#g')"
+                cp -f "$rej" "$GITHUB_WORKSPACE/_ox_debug/${safe}" || true
+                rm -f "$rej"
+              done < "$GITHUB_WORKSPACE/_ox_debug/susfs-rejects.txt"
+            fi
+          fi
+
+          if [ -f 69_hide_stuff.patch ]; then
+            echo "==> Applying CCTV18 69_hide_stuff.patch"
+            patch -p1 -N -F 3 < 69_hide_stuff.patch || true
+          fi
+
+          if find . -name '*.rej' -print -quit | grep -q .; then
+            echo "::error::Unexpected patch rejects remain after CCTV18 SUSFS stage."
+            find . -name '*.rej' -print | tee "$GITHUB_WORKSPACE/_ox_debug/rejects-after-susfs-stage.txt"
+            exit 1
+          fi
+
+      - name: 07 Apply minimal CCTV18 optional patches only if clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel_workspace/common
+
+          find_patch_by_regex() {
+            local regex="$1"
+            find "$GITHUB_WORKSPACE/cctv18_assets" -type f | grep -Ei "$regex" | sort | head -n 1 || true
+          }
+
+          clean_apply_optional_patch() {
+            local label="$1"
+            local enabled="$2"
+            local regex="$3"
+            if [ "$enabled" != "true" ]; then
+              echo "Skipping $label: disabled" | tee -a "$GITHUB_WORKSPACE/_ox_debug/optional-patches.log"
+              return 0
+            fi
+            local patch_file
+            patch_file="$(find_patch_by_regex "$regex" || true)"
+            if [ -z "$patch_file" ]; then
+              echo "Optional patch not found for $label; skipping." | tee -a "$GITHUB_WORKSPACE/_ox_debug/optional-patches.log"
+              return 0
+            fi
+            echo "Checking optional patch for $label: $patch_file" | tee -a "$GITHUB_WORKSPACE/_ox_debug/optional-patches.log"
+            if patch --dry-run -p1 -N -F 3 < "$patch_file" > "$GITHUB_WORKSPACE/_ox_debug/dryrun-${label//[^A-Za-z0-9]/_}.log" 2>&1; then
+              echo "Applying optional patch for $label" | tee -a "$GITHUB_WORKSPACE/_ox_debug/optional-patches.log"
+              patch -p1 -N -F 3 < "$patch_file" >> "$GITHUB_WORKSPACE/_ox_debug/apply-${label//[^A-Za-z0-9]/_}.log" 2>&1
+            else
+              echo "::warning::Optional patch for $label did not apply cleanly; skipped to avoid partial patch contamination."
+              cat "$GITHUB_WORKSPACE/_ox_debug/dryrun-${label//[^A-Za-z0-9]/_}.log" || true
+            fi
+          }
+
+          clean_apply_optional_patch "adios" "${{ inputs.adios }}" "(^|/).*adios.*\.patch$"
+          clean_apply_optional_patch "baseband_guard" "${{ inputs.baseband_guard }}" "(^|/).*(baseband|bbg).*\.patch$"
+          clean_apply_optional_patch "unicode" "${{ inputs.unicode_fix }}" "(^|/).*unicode.*\.patch$"
+          clean_apply_optional_patch "rekernel" "${{ inputs.rekernel }}" "(^|/).*(rekernel|re-kernel).*\.patch$"
+
+          clean_apply_patch_group() {
+            local label="$1"
+            local enabled="$2"
+            local regex="$3"
+            if [ "$enabled" != "true" ]; then
+              echo "Skipping $label patch group: disabled" | tee -a "$GITHUB_WORKSPACE/_ox_debug/optional-patches.log"
+              return 0
+            fi
+            mapfile -t patches < <(find "$GITHUB_WORKSPACE/cctv18_assets" -type f | grep -Ei "$regex" | sort || true)
+            if [ "$label" = "lz4_zstd" ] && [ "${#patches[@]}" -gt 0 ]; then
+              mapfile -t patches < <(printf "%s\n" "${patches[@]}" | grep -Evi '(lz4kd|lz4k)' || true)
+            fi
+            if [ "${#patches[@]}" -eq 0 ]; then
+              echo "Optional patch group not found for $label; skipping." | tee -a "$GITHUB_WORKSPACE/_ox_debug/optional-patches.log"
+              return 0
+            fi
+            for patch_file in "${patches[@]}"; do
+              echo "Checking optional patch group $label: $patch_file" | tee -a "$GITHUB_WORKSPACE/_ox_debug/optional-patches.log"
+              safe="${label}_$(basename "$patch_file" | sed 's/[^A-Za-z0-9]/_/g')"
+              if patch --dry-run -p1 -N -F 3 < "$patch_file" > "$GITHUB_WORKSPACE/_ox_debug/dryrun-${safe}.log" 2>&1; then
+                echo "Applying optional patch group $label: $patch_file" | tee -a "$GITHUB_WORKSPACE/_ox_debug/optional-patches.log"
+                patch -p1 -N -F 3 < "$patch_file" >> "$GITHUB_WORKSPACE/_ox_debug/apply-${safe}.log" 2>&1
+              else
+                echo "::warning::Optional patch $patch_file for $label did not apply cleanly; skipped to avoid partial patch contamination."
+                cat "$GITHUB_WORKSPACE/_ox_debug/dryrun-${safe}.log" || true
+              fi
+            done
+          }
+
+          clean_apply_patch_group "lz4_zstd" "${{ inputs.lz4_zstd_patch }}" "(^|/).*(zram_patch|lz4|zstd).*[.]patch$"
+          clean_apply_patch_group "lz4kd" "${{ inputs.lz4kd_patch }}" "(^|/).*(lz4kd|lz4k).*[.]patch$"
+
+          if find . -name '*.rej' -print -quit | grep -q .; then
+            echo "::error::Patch rejects found after optional patch stage."
+            find . -name '*.rej' -print | tee "$GITHUB_WORKSPACE/_ox_debug/rejects-after-optional-stage.txt"
+            exit 1
+          fi
+
+      - name: 08 Configure stock-like daily-driver defconfig
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel_workspace/common
+          export PATH="$GITHUB_WORKSPACE/kernel_workspace/clang18/bin:$GITHUB_WORKSPACE/kernel_workspace/build-tools/path/linux-x86:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+
+          MAKE_ARGS=(O=out ARCH=arm64 LLVM=1 LLVM_IAS=1)
+          echo "==> Toolchain check"
+          which clang | tee "$GITHUB_WORKSPACE/_ox_debug/clang-path.txt"
+          clang --version | tee "$GITHUB_WORKSPACE/_ox_debug/clang-version.txt"
+
+          echo "==> Generating gki_defconfig"
+          make "${MAKE_ARGS[@]}" gki_defconfig
+
+          cfg="out/.config"
+          if [ ! -f "$cfg" ]; then
+            echo "::error::Missing generated .config"
+            exit 1
+          fi
+
+          cfg_sym() { local s="$1"; echo "${s#CONFIG_}"; }
+          set_y() { scripts/config --file "$cfg" -e "$(cfg_sym "$1")" || true; }
+          set_m() { scripts/config --file "$cfg" -m "$(cfg_sym "$1")" || true; }
+          set_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
+          set_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
+
+          echo "==> Applying v73 SukiSU Ultra daily-driver config profile: ${{ inputs.profile }}"
+          set_y CONFIG_KSU
+          set_y CONFIG_KSU_MANUAL_SU
+
+          if [ "${{ inputs.kpm_enable }}" = "true" ]; then
+            echo "==> Enabling SukiSU KPM support"
+            set_y CONFIG_KPM
+            set_y CONFIG_KALLSYMS
+            set_y CONFIG_KALLSYMS_ALL
+          fi
+
+          if [ "${{ inputs.multi_manager_support }}" = "true" ]; then
+            set_y CONFIG_KSU_MULTI_MANAGER_SUPPORT
+          fi
+
+          echo "==> Requested SukiSU hook target: ${{ inputs.hook_mode }}"
+          case "${{ inputs.hook_mode }}" in
+            inline_susfs)
+              # SukiSU + SUSFS inline target. Keep global KPROBES available for kernel dependencies,
+              # but force KSU away from manual/kprobe hook selectors where the symbols exist.
+              set_y CONFIG_KSU_NONE_HOOK
+              set_n CONFIG_KSU_MANUAL_HOOK
+              set_n CONFIG_KSU_KPROBES_HOOK
+              set_n CONFIG_KSU_WITH_KPROBES
+              set_n CONFIG_KSU_TRACEPOINT_HOOK
+              ;;
+            sukisu_auto)
+              # Let the selected SukiSU ref choose its hook defaults. Useful only for testing.
+              true
+              ;;
+            kprobe_test)
+              set_y CONFIG_KPROBES
+              set_y CONFIG_KSU_KPROBES_HOOK
+              set_n CONFIG_KSU_NONE_HOOK
+              set_n CONFIG_KSU_MANUAL_HOOK
+              ;;
+          esac
+
+          if [ "${{ inputs.susfs_enable }}" = "true" ]; then
+            for opt in \
+              CONFIG_KSU_SUSFS \
+              CONFIG_KSU_SUSFS_SUS_PATH \
+              CONFIG_KSU_SUSFS_SUS_MOUNT \
+              CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
+              CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
+              CONFIG_KSU_SUSFS_SUS_KSTAT \
+              CONFIG_KSU_SUSFS_TRY_UMOUNT \
+              CONFIG_KSU_SUSFS_SPOOF_UNAME \
+              CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+              CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+              CONFIG_KSU_SUSFS_OPEN_REDIRECT \
+              CONFIG_KSU_SUSFS_SUS_SU \
+              CONFIG_KSU_SUSFS_SUS_MAP; do
+              set_y "$opt"
+            done
+            set_n CONFIG_KSU_SUSFS_ENABLE_LOG
+          fi
+
+          # Mountify / Magic Mount friendly tmpfs support.
+          set_y CONFIG_TMPFS_XATTR
+          set_y CONFIG_TMPFS_POSIX_ACL
+
+          if [ "${{ inputs.stock_mimic }}" = "true" ]; then
+            set_str CONFIG_LOCALVERSION "-${{ inputs.kernel_name }}"
+          else
+            set_str CONFIG_LOCALVERSION "-${{ inputs.kernel_name }}-ox-suki-v73"
+          fi
+          set_n CONFIG_LOCALVERSION_AUTO
+
+          set_y CONFIG_LTO_CLANG_THIN
+          set_n CONFIG_LTO_NONE
+
+          case "${{ inputs.optimise }}" in
+            O2)
+              set_y CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
+              set_n CONFIG_CC_OPTIMIZE_FOR_SIZE
+              set_n CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3
+              ;;
+            O3)
+              set_y CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3
+              ;;
+          esac
+
+          if [ "${{ inputs.zram_lz4 }}" = "true" ]; then
+            echo "==> Enabling ZRAM + LZ4/LZ4HC/ZSTD config support"
+            for opt in \
+              CONFIG_ZRAM \
+              CONFIG_ZSMALLOC \
+              CONFIG_CRYPTO_LZ4 \
+              CONFIG_CRYPTO_LZ4HC \
+              CONFIG_CRYPTO_ZSTD \
+              CONFIG_LZ4_COMPRESS \
+              CONFIG_LZ4_DECOMPRESS \
+              CONFIG_ZSTD_COMPRESS \
+              CONFIG_ZSTD_DECOMPRESS; do
+              set_y "$opt"
+            done
+            set_y CONFIG_ZRAM_WRITEBACK
+            set_y CONFIG_ZRAM_MULTI_COMP
+            set_str CONFIG_ZRAM_DEF_COMP "${{ inputs.zram_comp }}"
+          fi
+
+          if [ "${{ inputs.better_net }}" = "true" ]; then
+            for opt in \
+              CONFIG_NETFILTER \
+              CONFIG_NETFILTER_ADVANCED \
+              CONFIG_NETFILTER_XTABLES \
+              CONFIG_NETFILTER_XT_MATCH_ADDRTYPE \
+              CONFIG_NETFILTER_XT_MATCH_COMMENT \
+              CONFIG_NETFILTER_XT_MATCH_CONNTRACK \
+              CONFIG_NETFILTER_XT_MATCH_MARK \
+              CONFIG_NETFILTER_XT_TARGET_MARK \
+              CONFIG_NETFILTER_XT_TARGET_TTL \
+              CONFIG_NETFILTER_XT_MATCH_TTL \
+              CONFIG_IP_SET \
+              CONFIG_IP_SET_HASH_IP \
+              CONFIG_IP_SET_HASH_NET \
+              CONFIG_NETFILTER_XT_MATCH_SET; do
+              set_y "$opt"
+            done
+          fi
+
+          set_n CONFIG_DEFAULT_BBR || true
+          case "${{ inputs.bbr_mode }}" in
+            off)
+              set_n CONFIG_TCP_CONG_BBR
+              ;;
+            enabled)
+              set_y CONFIG_TCP_CONG_BBR
+              ;;
+            default)
+              set_y CONFIG_TCP_CONG_BBR
+              set_y CONFIG_DEFAULT_BBR || true
+              ;;
+          esac
+
+          if [ "${{ inputs.ntsync }}" = "true" ]; then
+            set_y CONFIG_NTSYNC
+          fi
+
+          if [ "${{ inputs.droidspaces }}" = "true" ]; then
+            for opt in CONFIG_TMPFS_XATTR CONFIG_TMPFS_POSIX_ACL CONFIG_PID_NS CONFIG_USER_NS CONFIG_UTS_NS CONFIG_IPC_NS; do
+              set_y "$opt"
+            done
+          fi
+
+          case "${{ inputs.profile }}" in
+            minimal_safe)
+              set_n CONFIG_TCP_CONG_BBR
+              set_n CONFIG_IP_SET
+              set_n CONFIG_NTSYNC
+              set_n CONFIG_KPM
+              ;;
+            debug_only)
+              set_y CONFIG_KSU_SUSFS_ENABLE_LOG
+              ;;
+            stock_plus)
+              set_y CONFIG_NTSYNC
+              ;;
+          esac
+
+          echo "==> Running olddefconfig directly; no yes pipe, no SIGPIPE false failure"
+          make "${MAKE_ARGS[@]}" olddefconfig
+
+          cp -f out/.config "$GITHUB_WORKSPACE/_ox_debug/final.config"
+
+          echo "==> Final SukiSU/SUSFS inline hook audit" | tee "$GITHUB_WORKSPACE/_ox_debug/hook-mode-audit.txt"
+          {
+            echo "Requested hook mode: ${{ inputs.hook_mode }}"
+            echo "Detected SukiSU symbols:"
+            grep -E 'CONFIG_KSU(_NONE_HOOK|_MANUAL_HOOK|_KPROBES_HOOK|_WITH_KPROBES|_TRACEPOINT_HOOK|_SUSFS|_MANUAL_SU|_MULTI_MANAGER_SUPPORT)?=' out/.config || true
+            grep -E 'CONFIG_KPM=|CONFIG_KALLSYMS=|CONFIG_KALLSYMS_ALL=' out/.config || true
+            echo "Detected generic KPROBES state:"
+            grep -E 'CONFIG_KPROBES=' out/.config || true
+            echo "SukiSU hook selector availability:"
+            if grep -Rqs 'config KSU_NONE_HOOK' ../KernelSU/kernel ./drivers/kernelsu 2>/dev/null; then
+              echo "KSU_NONE_HOOK symbol exists in this SukiSU tree"
+            else
+              echo "KSU_NONE_HOOK symbol NOT exposed by this SukiSU ref"
+            fi
+          } | tee -a "$GITHUB_WORKSPACE/_ox_debug/hook-mode-audit.txt"
+
+          if ! grep -q '^CONFIG_KSU=y' out/.config; then
+            echo "::error::CONFIG_KSU=y missing after olddefconfig."
+            exit 1
+          fi
+
+          if [ "${{ inputs.susfs_enable }}" = "true" ]; then
+            if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
+              echo "::error::CONFIG_KSU_SUSFS=y missing after olddefconfig. The selected SukiSU ref may not contain SUSFS integration. Try a valid SukiSU susfs ref."
               exit 1
             fi
-          else
-            echo "KSU_SUSFS Kconfig symbol already present before glue patch."
           fi
 
-
-      - name: "Restore stock SELinux policy path for LSPosed compatibility"
-        if: inputs.susfs == 'On'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$KERNEL_DIR"
-          echo "Restoring stock SELinux live policy files after CCTV18 SUSFS patch."
-          echo "Reason: SukiSU Ultra already manages module sepolicy; CCTV18 hidden-policy detours cause ksud sepolicy EINVAL on OP13/OOS16."
-          for f in             security/selinux/avc.c             security/selinux/hooks.c             security/selinux/selinuxfs.c             security/selinux/ss/services.c; do
-            if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
-              git checkout -- "$f"
-              echo "Restored $f"
-            else
-              echo "Warning: $f is not tracked in this kernel tree"
-            fi
-          done
-          echo "SELinux detour tokens after restore:"
-          grep -Rns 'backup_sepolicy\|security_.*_with_policy\|my_setprocattr\|my_write_access\|my_write_context' security/selinux 2>/dev/null || true
-
-      - name: "Apply OP13 SukiSU/CCTV18 LSPosed compatibility repairs"
-        if: inputs.susfs == 'On'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$KERNEL_DIR"
-          echo "Apply SukiSU Ultra + CCTV18 compatibility repairs."
-          python3 - <<'PY'
-          from pathlib import Path
-          import re, sys
-
-          def patch_adb_root(p: Path):
-              if not p.exists():
-                  return False
-              s = p.read_text(encoding='utf-8', errors='replace')
-              if 'susfs_starts_with' not in s and 'susfs_ends_with' not in s:
-                  return False
-              orig = s
-
-              # CCTV18's susfs.h does not currently declare these string helpers, and some SukiSU Ultra
-              # revisions call them from adb_root.c. Use local wrappers instead of extern declarations so
-              # the build does not later fail at link time if the global helpers are absent.
-              s = s.replace('susfs_starts_with(', 'ksu_susfs_starts_with(')
-              s = s.replace('susfs_ends_with(', 'ksu_susfs_ends_with(')
-
-              if 'static inline bool ksu_susfs_starts_with' not in s:
-                  lines = s.splitlines()
-                  idx = 0
-                  has_string = any(line.strip() == '#include <linux/string.h>' for line in lines[:100])
-                  for i, line in enumerate(lines[:100]):
-                      if line.startswith('#include'):
-                          idx = i + 1
-                  if not has_string:
-                      lines.insert(idx, '#include <linux/string.h>')
-                      idx += 1
-                  helpers = [
-                      '',
-                      'static inline bool ksu_susfs_starts_with(const char *str, const char *prefix)',
-                      '{',
-                      '\tsize_t len;',
-                      '',
-                      '\tif (!str || !prefix)',
-                      '\t\treturn false;',
-                      '\tlen = strlen(prefix);',
-                      '\treturn strncmp(str, prefix, len) == 0;',
-                      '}',
-                      '',
-                      'static inline bool ksu_susfs_ends_with(const char *str, const char *suffix)',
-                      '{',
-                      '\tsize_t str_len, suffix_len;',
-                      '',
-                      '\tif (!str || !suffix)',
-                      '\t\treturn false;',
-                      '\tstr_len = strlen(str);',
-                      '\tsuffix_len = strlen(suffix);',
-                      '\tif (suffix_len > str_len)',
-                      '\t\treturn false;',
-                      '\treturn strcmp(str + str_len - suffix_len, suffix) == 0;',
-                      '}',
-                      ''
-                  ]
-                  lines[idx:idx] = helpers
-                  s = '\n'.join(lines) + ('\n' if orig.endswith('\n') else '')
-
-              if s != orig:
-                  p.write_text(s, encoding='utf-8')
-                  print(f'Patched local SUSFS adb_root string helpers in {p}')
-              return True
-
-          def patch_sulog(p: Path):
-              if not p.exists():
-                  return False
-              s = p.read_text(encoding='utf-8', errors='replace')
-              orig = s
-              # SukiSU changes ksu_sulog_capture() argv type between revisions and between
-              # SUSFS/no-SUSFS builds. Patch dynamically instead of forcing pointer or value.
-              expects_pointer = bool(re.search(r'ksu_sulog_capture\s*\([^;{]*struct\s+user_arg_ptr\s*\*', s, re.S))
-              if expects_pointer:
-                  # Pointer signature: null argv must be NULL, not USER_ARG_NULL struct value.
-                  s = re.sub(r',\s*&?USER_ARG_NULL\s*,\s*gfp\)', ', NULL, gfp)', s)
-              else:
-                  # Value signature: null argv must be USER_ARG_NULL, not &USER_ARG_NULL or NULL.
-                  s = re.sub(r',\s*&USER_ARG_NULL\s*,\s*gfp\)', ', USER_ARG_NULL, gfp)', s)
-                  s = re.sub(r',\s*NULL\s*,\s*gfp\)', ', USER_ARG_NULL, gfp)', s)
-              if s != orig:
-                  p.write_text(s, encoding='utf-8')
-                  mode = 'pointer' if expects_pointer else 'value'
-                  print(f'Patched USER_ARG_NULL compatibility in {p} for {mode} ksu_sulog_capture signature')
-              return s != orig
-
-          adb_paths = [Path('drivers/kernelsu/feature/adb_root.c'), Path('KernelSU/kernel/feature/adb_root.c')]
-          sulog_paths = [Path('drivers/kernelsu/sulog/event.c'), Path('KernelSU/kernel/sulog/event.c')]
-          patched_adb = any(patch_adb_root(p) for p in adb_paths)
-          patched_sulog = any(patch_sulog(p) for p in sulog_paths)
-
-          # Hard verification: do not let the compile stage fail again with the same preventable errors.
-          for p in adb_paths:
-              if p.exists():
-                  s = p.read_text(encoding='utf-8', errors='replace')
-                  if re.search(r'(?<!ksu_)susfs_starts_with\s*\(', s) or re.search(r'(?<!ksu_)susfs_ends_with\s*\(', s):
-                      print(f'ERROR: unresolved raw susfs_starts_with/susfs_ends_with call remains in {p}', file=sys.stderr)
-                      sys.exit(1)
-                  if 'ksu_susfs_starts_with(' in s and 'static inline bool ksu_susfs_starts_with' not in s:
-                      print(f'ERROR: ksu_susfs_starts_with wrapper missing in {p}', file=sys.stderr)
-                      sys.exit(1)
-
-          for p in sulog_paths:
-              if p.exists():
-                  s = p.read_text(encoding='utf-8', errors='replace')
-                  expects_pointer = bool(re.search(r'ksu_sulog_capture\s*\([^;{]*struct\s+user_arg_ptr\s*\*', s, re.S))
-                  if expects_pointer and re.search(r',\s*&?USER_ARG_NULL\s*,\s*gfp\)', s):
-                      print(f'ERROR: USER_ARG_NULL value remains for pointer ksu_sulog_capture signature in {p}', file=sys.stderr)
-                      sys.exit(1)
-                  if (not expects_pointer) and re.search(r',\s*(?:&USER_ARG_NULL|NULL)\s*,\s*gfp\)', s):
-                      print(f'ERROR: pointer/null argv remains for value ksu_sulog_capture signature in {p}', file=sys.stderr)
-                      sys.exit(1)
-
-          def patch_ksud_bool_hooks(p: Path):
-              if not p.exists():
-                  return False
-              s = p.read_text(encoding='utf-8', errors='replace')
-              orig = s
-              # Current SukiSU builtin can expose KSU_COMPAT_USE_STATIC_KEY while CCTV18 OKI
-              # patch expects KernelSU-Next-style static-key globals. For OP13/SukiSU,
-              # force ksud.c to use SukiSU's stable bool hook path instead.
-              s = re.sub(
-                  r'#if\s+defined\(CONFIG_KSU_SUSFS\)\s*&&\s*defined\(KSU_COMPAT_USE_STATIC_KEY\)',
-                  '#if 0 /* OP13_LSPOSED_CLEAN_SPLIT: use bool hooks, not CCTV18/KSUN static-key stop path */',
-                  s,
-              )
-              if s != orig:
-                  p.write_text(s, encoding='utf-8')
-                  print(f'Forced bool hook compatibility path in {p}')
-              return s != orig
-
-          def patch_cctv18_selinux_to_live_policy():
-              """Disable CCTV18 hidden-backup-policy wrappers for SukiSU Ultra cleanly.
-
-              The previous v34 cleanup changed the live hook tables back to stock handlers,
-              but it left the unused CCTV18 wrapper function bodies in hooks.c/selinuxfs.c.
-              Even unused compiled functions can still reference backup_sepolicy and
-              security_*_with_policy symbols and break link-time/runtime behaviour.
-
-              This v43 path does three things:
-                1. Route live SELinux hooks back to stock handlers.
-                2. Remove backup-policy arguments from simple helper calls when safe.
-                3. Preprocessor-disable the unused CCTV18 wrapper functions entirely.
-
-              SELinux stays enforcing. We are not adding permissive rules and we are not
-              faking policy decisions. We are only removing the incompatible hidden-policy
-              detour that SukiSU Ultra builtin does not provide cleanly on OP13/OOS16.
-              """
-              changed_any = False
-
-              def wrap_function_if_present(s: str, name: str):
-                  """Wrap a C function definition in #if 0 by matching braces."""
-                  # Most affected functions are static int/ssize_t wrappers, but keep the
-                  # return-type pattern broad enough for vendor formatting.
-                  pattern = re.compile(
-                      r'(^[ \t]*(?:static\s+)?[A-Za-z_][A-Za-z0-9_\s\*]*\s+' + re.escape(name) +
-                      r'\s*\([^;]*?\)\s*\{)',
-                      re.M | re.S,
-                  )
-                  m = pattern.search(s)
-                  if not m:
-                      return s, False
-                  # If already disabled very close before the function, skip.
-                  prefix = s[max(0, m.start()-120):m.start()]
-                  if 'OP13_LSPOSED_CLEAN_SPLIT_DISABLED' in prefix or '#if 0' in prefix.splitlines()[-3:]:
-                      return s, False
-                  i = m.end() - 1
-                  depth = 0
-                  j = i
-                  in_str = False
-                  in_chr = False
-                  esc = False
-                  line_comment = False
-                  block_comment = False
-                  while j < len(s):
-                      c = s[j]
-                      n = s[j+1] if j + 1 < len(s) else ''
-                      if line_comment:
-                          if c == '\n':
-                              line_comment = False
-                          j += 1
-                          continue
-                      if block_comment:
-                          if c == '*' and n == '/':
-                              block_comment = False
-                              j += 2
-                          else:
-                              j += 1
-                          continue
-                      if in_str:
-                          if esc:
-                              esc = False
-                          elif c == '\\':
-                              esc = True
-                          elif c == '"':
-                              in_str = False
-                          j += 1
-                          continue
-                      if in_chr:
-                          if esc:
-                              esc = False
-                          elif c == '\\':
-                              esc = True
-                          elif c == "'":
-                              in_chr = False
-                          j += 1
-                          continue
-                      if c == '/' and n == '/':
-                          line_comment = True
-                          j += 2
-                          continue
-                      if c == '/' and n == '*':
-                          block_comment = True
-                          j += 2
-                          continue
-                      if c == '"':
-                          in_str = True
-                          j += 1
-                          continue
-                      if c == "'":
-                          in_chr = True
-                          j += 1
-                          continue
-                      if c == '{':
-                          depth += 1
-                      elif c == '}':
-                          depth -= 1
-                          if depth == 0:
-                              end = j + 1
-                              disabled = (
-                                  '#if 0 /* OP13_LSPOSED_CLEAN_SPLIT_DISABLED: incompatible CCTV18 hidden-policy wrapper */\n'
-                                  + s[m.start():end]
-                                  + '\n#endif /* OP13_LSPOSED_CLEAN_SPLIT_DISABLED */'
-                              )
-                              return s[:m.start()] + disabled + s[end:], True
-                      j += 1
-                  print(f'ERROR: could not find end of function {name}', file=sys.stderr)
-                  sys.exit(1)
-
-              targets = [Path('security/selinux/hooks.c'), Path('security/selinux/selinuxfs.c')]
-              for p in targets:
-                  if not p.exists():
-                      continue
-                  s = p.read_text(encoding='utf-8', errors='replace')
-                  orig = s
-
-                  # Remove forward declarations for CCTV18 wrapper functions that we disable.
-                  # If left behind, Clang with -Werror treats them as unused static functions.
-                  for fname in ['my_setprocattr', 'my_write_access', 'my_write_context']:
-                      proto_pat = re.compile(
-                          r'(?ms)^[ \t]*(?:static\s+)?[A-Za-z_][A-Za-z0-9_\s\*]*\s+' + re.escape(fname) +
-                          r'\s*\([^;{}]*\)\s*;[ \t]*(?:/\*.*?\*/)?\n'
-                      )
-                      s = proto_pat.sub('', s)
-
-                  # Route live hook tables back to stock SELinux handlers.
-                  s = re.sub(r'LSM_HOOK_INIT\s*\(\s*setprocattr\s*,\s*my_setprocattr\s*\)',
-                             'LSM_HOOK_INIT(setprocattr, selinux_setprocattr)', s)
-                  s = re.sub(r'\[SEL_ACCESS\]\s*=\s*my_write_access\s*,',
-                             '[SEL_ACCESS] = sel_write_access,', s)
-                  s = re.sub(r'\[SEL_CONTEXT\]\s*=\s*my_write_context\s*,',
-                             '[SEL_CONTEXT] = sel_write_context,', s)
-
-                  # If any simple hidden-policy helper call remains outside disabled wrappers,
-                  # rewrite it to the live helper call. This is harmless if the function is later
-                  # #if0-disabled, but useful for formatting variants.
-                  s = re.sub(r'security_context_to_sid_with_policy\s*\(\s*backup_sepolicy\s*,\s*',
-                             'security_context_to_sid_default(', s)
-                  s = re.sub(r'security_sid_to_context_with_policy\s*\(\s*backup_sepolicy\s*,\s*',
-                             'security_sid_to_context(', s)
-                  s = re.sub(r'security_compute_av_user_with_policy\s*\(\s*backup_sepolicy\s*,\s*',
-                             'security_compute_av_user(', s)
-
-                  # Disable the now-unused CCTV18 wrapper functions so their hidden-policy path
-                  # cannot produce unresolved symbols or runtime policy failures.
-                  for fname in ['my_setprocattr', 'my_write_access', 'my_write_context']:
-                      s, did = wrap_function_if_present(s, fname)
-
-                  if s != orig:
-                      p.write_text(s, encoding='utf-8')
-                      print(f'Neutralised CCTV18 hidden-policy wrappers in {p}; stock live SELinux handlers remain active')
-                      changed_any = True
-              return changed_any
-
-          def create_static_key_compat_object():
-              """Provide only missing static-key symbols expected by the OKI patch.
-
-              Keep this separate from ksu.c to avoid injecting fake SELinux policy wrappers.
-              """
-              ksu_dir = Path('KernelSU/kernel') if Path('KernelSU/kernel').exists() else Path('drivers/kernelsu')
-              if not ksu_dir.exists():
-                  print('ERROR: Cannot find SukiSU kernel directory for OP13 compat object', file=sys.stderr)
-                  sys.exit(1)
-
-              defs = []
-              wanted = {
-                  'ksu_is_input_hook_enabled': 'TRUE',
-                  'ksu_is_init_rc_hook_enabled': 'TRUE',
-                  'ksu_input_hook_key_false': 'FALSE',
-                  'ksu_init_rc_hook_key_false': 'FALSE',
-              }
-              tree_files = []
-              for root in [Path('KernelSU/kernel'), Path('drivers/kernelsu')]:
-                  if root.exists():
-                      tree_files.extend([x for x in root.rglob('*') if x.is_file() and x.name != 'op13_cctv18_static_keys.c'])
-
-              def symbol_defined(sym: str) -> bool:
-                  pat = re.compile(r'\b(DEFINE_STATIC_KEY_(?:TRUE|FALSE)|struct\s+static_key_(?:true|false))\s*\(?\s*' + re.escape(sym) + r'\b')
-                  for f in tree_files:
-                      try:
-                          txt = f.read_text(encoding='utf-8', errors='ignore')
-                      except Exception:
-                          continue
-                      if pat.search(txt):
-                          return True
-                  return False
-
-              for sym, kind in wanted.items():
-                  if not symbol_defined(sym):
-                      defs.append((sym, kind))
-
-              c_path = ksu_dir / 'op13_cctv18_static_keys.c'
-              if defs:
-                  lines = [
-                      '#include <linux/jump_label.h>',
-                      '',
-                      '/* OP13_LSPOSED_CLEAN_SPLIT: missing CCTV18/SukiSU static-key compatibility symbols only. */',
-                  ]
-                  for sym, kind in defs:
-                      lines.append(f'DEFINE_STATIC_KEY_{kind}({sym});')
-                  lines.append('')
-                  c_path.write_text('\n'.join(lines), encoding='utf-8')
-                  print(f'Created {c_path} with symbols: ' + ', '.join(sym for sym, _ in defs))
-              else:
-                  c_path.write_text('/* OP13_LSPOSED_CLEAN_SPLIT: no missing static-key symbols required. */\n', encoding='utf-8')
-                  print(f'Created empty {c_path}; all static-key symbols already exist')
-
-              mk = ksu_dir / 'Makefile'
-              if not mk.exists():
-                  print(f'ERROR: SukiSU Makefile missing: {mk}', file=sys.stderr)
-                  sys.exit(1)
-              mt = mk.read_text(encoding='utf-8', errors='replace')
-              if 'op13_cctv18_static_keys.o' not in mt:
-                  mt = mt.rstrip() + '\nobj-$(CONFIG_KSU) += op13_cctv18_static_keys.o\n'
-                  mk.write_text(mt, encoding='utf-8')
-                  print(f'Linked op13_cctv18_static_keys.o from {mk}')
-              return True
-
-          adb_paths = [Path('drivers/kernelsu/feature/adb_root.c'), Path('KernelSU/kernel/feature/adb_root.c')]
-          sulog_paths = [Path('drivers/kernelsu/sulog/event.c'), Path('KernelSU/kernel/sulog/event.c')]
-          ksud_paths = [Path('drivers/kernelsu/runtime/ksud.c'), Path('KernelSU/kernel/runtime/ksud.c')]
-
-          patched_adb = any(patch_adb_root(p) for p in adb_paths)
-          patched_sulog = any(patch_sulog(p) for p in sulog_paths)
-          patched_ksud = any(patch_ksud_bool_hooks(p) for p in ksud_paths)
-          patched_selinux = patch_cctv18_selinux_to_live_policy()
-          patched_static_keys = create_static_key_compat_object()
-
-          # Hard verification: catch the exact previous failures before wasting a full build.
-          for p in adb_paths:
-              if p.exists():
-                  s = p.read_text(encoding='utf-8', errors='replace')
-                  if re.search(r'(?<!ksu_)susfs_starts_with\s*\(', s) or re.search(r'(?<!ksu_)susfs_ends_with\s*\(', s):
-                      print(f'ERROR: unresolved raw susfs string helper remains in {p}', file=sys.stderr)
-                      sys.exit(1)
-
-          for p in sulog_paths:
-              if p.exists():
-                  s = p.read_text(encoding='utf-8', errors='replace')
-                  expects_pointer = bool(re.search(r'ksu_sulog_capture\s*\([^;{]*struct\s+user_arg_ptr\s*\*', s, re.S))
-                  if expects_pointer and re.search(r',\s*&?USER_ARG_NULL\s*,\s*gfp\)', s):
-                      print(f'ERROR: USER_ARG_NULL value remains for pointer ksu_sulog_capture signature in {p}', file=sys.stderr)
-                      sys.exit(1)
-                  if (not expects_pointer) and re.search(r',\s*(?:&USER_ARG_NULL|NULL)\s*,\s*gfp\)', s):
-                      print(f'ERROR: pointer/null argv remains for value ksu_sulog_capture signature in {p}', file=sys.stderr)
-                      sys.exit(1)
-
-          for p in [Path('security/selinux/hooks.c'), Path('security/selinux/selinuxfs.c')]:
-              if p.exists():
-                  s = p.read_text(encoding='utf-8', errors='replace')
-                  # Verify live dispatch is not routed to the CCTV18 wrapper names. The wrapper
-                  # definitions may still exist inside #if 0 disabled blocks, which is safe.
-                  bad = []
-                  if re.search(r'LSM_HOOK_INIT\s*\(\s*setprocattr\s*,\s*my_setprocattr\s*\)', s):
-                      bad.append('live setprocattr still points to my_setprocattr')
-                  if re.search(r'\[SEL_ACCESS\]\s*=\s*my_write_access\s*,', s):
-                      bad.append('SEL_ACCESS still points to my_write_access')
-                  if re.search(r'\[SEL_CONTEXT\]\s*=\s*my_write_context\s*,', s):
-                      bad.append('SEL_CONTEXT still points to my_write_context')
-                  # If hidden-policy symbols remain but no disabled wrapper marker exists, fail.
-                  hidden_tokens = ['security_context_to_sid_with_policy(', 'security_sid_to_context_with_policy(',
-                                   'security_compute_av_user_with_policy(', 'backup_sepolicy,']
-                  if any(tok in s for tok in hidden_tokens) and 'OP13_LSPOSED_CLEAN_SPLIT_DISABLED' not in s:
-                      bad.append('hidden-policy tokens remain outside disabled wrapper path')
-                  for fname in ['my_setprocattr', 'my_write_access', 'my_write_context']:
-                      if re.search(r'(?ms)^[ \t]*(?:static\s+)?[A-Za-z_][A-Za-z0-9_\s\*]*\s+' + re.escape(fname) + r'\s*\([^;{}]*\)\s*;', s):
-                          bad.append(f'forward declaration remains for {fname}')
-                  if bad:
-                      print(f'ERROR: OP13 LSPosed clean-up incomplete in {p}: {bad}', file=sys.stderr)
-                      sys.exit(1)
-
-          for p in ksud_paths:
-              if p.exists():
-                  s = p.read_text(encoding='utf-8', errors='replace')
-                  if re.search(r'#if\s+defined\(CONFIG_KSU_SUSFS\)\s*&&\s*defined\(KSU_COMPAT_USE_STATIC_KEY\)', s):
-                      print(f'ERROR: ksud static-key stop path still enabled in {p}', file=sys.stderr)
-                      sys.exit(1)
-
-          print(f'Compatibility repair summary: adb_root_patched={patched_adb}, sulog_patched={patched_sulog}, ksud_bool_hooks={patched_ksud}, selinux_live_policy={patched_selinux}, static_key_object={patched_static_keys}')
-          PY
-
-      - name: "Validate SukiSU/CCTV18 SUSFS integration"
-        if: inputs.susfs == 'On'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$KERNEL_DIR"
-          echo "SukiSU/CCTV18 compatibility repair preview:"
-          grep -Rns 'ksu_susfs_starts_with\|ksu_susfs_ends_with\|KSU_SULOG_EVENT_IOCTL_GRANT_ROOT\|OP13_LSPOSED_CLEAN_SPLIT\|op13_cctv18_static_keys' drivers/kernelsu KernelSU security/selinux 2>/dev/null | head -n 160 || true
-
-          echo "Post-CCTV18 SUSFS symbol check:"
-          grep -Rns 'KSU_SUSFS\|SUSFS_VERSION\|susfs_init\|susfs_starts_with\|susfs_ends_with' drivers KernelSU fs include 2>/dev/null | head -n 180 || true
-          [ -f include/linux/susfs.h ] || { echo "::error::include/linux/susfs.h missing after CCTV18 SUSFS integration"; exit 1; }
-          if ! grep -Rqs 'config KSU_SUSFS' drivers/kernelsu KernelSU 2>/dev/null; then
-            echo "::error::KSU_SUSFS Kconfig symbol is still missing after CCTV18 glue."
-            exit 1
-          fi
-          if ! grep -Rqs 'susfs_init' drivers/kernelsu KernelSU 2>/dev/null; then
-            echo "::error::SUSFS init hook is missing from SukiSU after CCTV18 glue."
-            exit 1
-          fi
-
-      - name: "Apply OP13 stable daily config"
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$KERNEL_DIR"
-          DEFCONFIG="arch/arm64/configs/gki_defconfig"
-          [ -f "$DEFCONFIG" ] || { echo "::error::gki_defconfig not found"; exit 1; }
-          PROFILE="${{ inputs.feature_profile }}"
-          BBR_IN="${{ inputs.bbr }}"
-          BBG_IN="${{ inputs.bbg }}"
-          TTL_IPSET_IN="${{ inputs.ttl_ipset }}"
-          NTSYNC_IN="${{ inputs.ntsync }}"
-          UNICODE_IN="${{ inputs.unicode_fix }}"
-          DS_IN="${{ inputs.droidspaces }}"
-          ADIOS_IN="${{ inputs.adios }}"
-          ZRAM_LZ4_IN="${{ inputs.zram_lz4_support }}"
-          ZRAM_MODULE_IN="${{ inputs.zram_module }}"
-          HMBIRD_IN="${{ inputs.hmbird }}"
-          SUSFS_IN="${{ inputs.susfs }}"
-
-          # Safety presets. Defaults are intentionally conservative for SukiSU Ultra + CCTV18 SUSFS on OP13.
-          if [ "$PROFILE" = "minimal_debug" ]; then
-            BBR_IN="Off"; BBG_IN="Off"; TTL_IPSET_IN="Off"; NTSYNC_IN="Off"; UNICODE_IN="Off"; DS_IN="Off"; ADIOS_IN="Off"; ZRAM_LZ4_IN="Off"; ZRAM_MODULE_IN="Off"; HMBIRD_IN="Off"
-          elif [ "$PROFILE" = "advanced_daily" ]; then
-            # Advanced daily intentionally adds the optional extras that battery_daily avoids.
-            # You can still turn these Off from the menu if you want a lighter build.
-            DS_IN="On"
-            HMBIRD_IN="On"
-          elif [ "$PROFILE" = "experimental_max" ]; then
-            BBR_IN="On"; BBG_IN="On"; TTL_IPSET_IN="On"; NTSYNC_IN="On"; UNICODE_IN="On"; DS_IN="On"; ADIOS_IN="On"; ZRAM_LZ4_IN="On"; ZRAM_MODULE_IN="On"; HMBIRD_IN="On"
-          fi
-
-          cat >> "$DEFCONFIG" <<EOF
-          # Stock OP13 source/defconfig may already carry CONFIG_LOCALVERSION="-4k".
-          # We reset it here because LOCALVERSION env below supplies the full stock suffix.
-          # Without this, UTS_RELEASE becomes 6.6.89-4k-android15-...-4k and boot-safety validation fails.
-          CONFIG_LOCALVERSION=""
-          CONFIG_LOCALVERSION_AUTO=n
-          CONFIG_KSU=y
-          CONFIG_TMPFS_XATTR=y
-          CONFIG_TMPFS_POSIX_ACL=y
-          EOF
-
-          if [ "$SUSFS_IN" = "On" ]; then
-            cat >> "$DEFCONFIG" <<'EOF'
-          CONFIG_KSU_SUSFS=y
-          CONFIG_KSU_SUSFS_SUS_PATH=y
-          CONFIG_KSU_SUSFS_SUS_MOUNT=y
-          CONFIG_KSU_SUSFS_SUS_KSTAT=y
-          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
-          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
-          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
-          # CONFIG_KSU_SUSFS_SUS_MAP is not set
-          # CONFIG_KSU_SUSFS_ENABLE_LOG is not set
-          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
-          EOF
-          else
-            cat >> "$DEFCONFIG" <<'EOF'
-          # CONFIG_KSU_SUSFS is not set
-          EOF
-          fi
-
-          if [ "$ZRAM_LZ4_IN" = "On" ] || [ "$ZRAM_MODULE_IN" = "On" ]; then
-            if [ "$ZRAM_MODULE_IN" = "On" ]; then
-              cat >> "$DEFCONFIG" <<'EOF'
-          CONFIG_ZRAM=m
-          CONFIG_ZSMALLOC=m
-          CONFIG_ZRAM_DEF_COMP_LZ4=y
-          # CONFIG_ZRAM_DEF_COMP_LZORLE is not set
-          CONFIG_ZRAM_DEF_COMP="lz4"
-          CONFIG_LZ4_COMPRESS=y
-          CONFIG_LZ4_DECOMPRESS=y
-          CONFIG_CRYPTO_LZ4=y
-          CONFIG_CRYPTO_LZ4HC=y
-          EOF
-            else
-              cat >> "$DEFCONFIG" <<'EOF'
-          CONFIG_ZRAM=y
-          CONFIG_ZSMALLOC=y
-          CONFIG_LZ4_COMPRESS=y
-          CONFIG_LZ4_DECOMPRESS=y
-          CONFIG_CRYPTO_LZ4=y
-          CONFIG_CRYPTO_LZ4HC=y
-          EOF
-            fi
-          fi
-          if [ "$BBR_IN" = "On" ]; then
-            cat >> "$DEFCONFIG" <<'EOF'
-          CONFIG_TCP_CONG_BBR=y
-          CONFIG_DEFAULT_BBR=y
-          # CONFIG_DEFAULT_CUBIC is not set
-          CONFIG_DEFAULT_TCP_CONG="bbr"
-          EOF
-          fi
-          if [ "$TTL_IPSET_IN" = "On" ]; then
-            cat >> "$DEFCONFIG" <<'EOF'
-          CONFIG_NETFILTER_XT_TARGET_TTL=y
-          CONFIG_NETFILTER_XT_MATCH_TTL=y
-          CONFIG_IP_SET=y
-          CONFIG_IP_SET_MAX=256
-          CONFIG_IP_SET_HASH_IP=y
-          CONFIG_IP_SET_HASH_IPPORT=y
-          CONFIG_IP_SET_HASH_NETPORTNET=y
-          CONFIG_NF_NAT_IPV6=y
-          EOF
-          fi
-          if [ "$ADIOS_IN" = "On" ]; then
-            cat >> "$DEFCONFIG" <<'EOF'
-          CONFIG_MQ_IOSCHED_ADIOS=y
-          CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y
-          EOF
-          fi
-          if [ "$NTSYNC_IN" = "On" ]; then
-            echo "CONFIG_NTSYNC=y" >> "$DEFCONFIG"
-          fi
-          if [ "$UNICODE_IN" = "On" ]; then
-            cat >> "$DEFCONFIG" <<'EOF'
-          CONFIG_UNICODE=y
-          CONFIG_UNICODE_UTF8_DATA=y
-          EOF
-          fi
-          if [ "$DS_IN" = "On" ]; then
-            cat >> "$DEFCONFIG" <<'EOF'
-          CONFIG_DROIDSPACE=y
-          CONFIG_DROIDSPACES=y
-          EOF
-          fi
-          if [ "$BBG_IN" = "On" ]; then
-            echo "CONFIG_BBG=y" >> "$DEFCONFIG"
-          fi
-          if [ "$HMBIRD_IN" = "On" ]; then
-            # Best-effort: exact symbol depends on the synced tree.
-            grep -Rqs '^config HMBIRD\|^config FENGCHI' . && {
-              echo "CONFIG_HMBIRD=y" >> "$DEFCONFIG"
-              echo "CONFIG_FENGCHI=y" >> "$DEFCONFIG"
-            } || true
-          fi
-          if [ "${{ inputs.lto }}" = "thin" ]; then
-            cat >> "$DEFCONFIG" <<'EOF'
-          CONFIG_LTO_CLANG=y
-          CONFIG_LTO_CLANG_THIN=y
-          # CONFIG_LTO_CLANG_FULL is not set
-          EOF
-          else
-            cat >> "$DEFCONFIG" <<'EOF'
-          # CONFIG_LTO_CLANG is not set
-          EOF
-          fi
-
-      - name: "Build kernel and validate final config"
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$KERNEL_DIR"
-          export PATH="$CLANG_BIN:$PATH"
-          export KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-${BUILD_TIME_RESOLVED:-}}"
-          export LOCALVERSION="$OP_STOCK_LOCALVERSION"
-          MAKE_ARGS=(LLVM=1 LLVM_IAS=1 ARCH=arm64 CC="ccache $REAL_CLANG" LD="$REAL_LD_LLD" HOSTLD="$REAL_LD_LLD" O=out LOCALVERSION="$LOCALVERSION")
-          mkdir -p "$GITHUB_WORKSPACE/out_artifacts/debug"
-          BUILD_JOBS_IN="${{ inputs.build_jobs }}"
-          if [ -z "$BUILD_JOBS_IN" ] || [ "$BUILD_JOBS_IN" = "auto" ]; then
-            BUILD_JOBS="$(nproc)"
-          else
-            BUILD_JOBS="$BUILD_JOBS_IN"
-          fi
-          if ! echo "$BUILD_JOBS" | grep -Eq '^[0-9]+$'; then
-            echo "::warning::Invalid build_jobs='$BUILD_JOBS_IN'; using 1 for clean lsposed-clean-fix2s."
-            BUILD_JOBS=1
-          fi
-          if [ "$BUILD_JOBS" -lt 1 ]; then BUILD_JOBS=1; fi
-          echo "Build jobs: $BUILD_JOBS"
-          echo "BUILD_JOBS_RESOLVED=$BUILD_JOBS" >> "$GITHUB_ENV"
-          if [ "${{ inputs.clean_build }}" = "true" ]; then
-            export CCACHE_DISABLE=1
-          fi
-
-          make -j"$BUILD_JOBS" "${MAKE_ARGS[@]}" gki_defconfig
-
-          # Enforce stock suffix correctly: clear CONFIG_LOCALVERSION and let the LOCALVERSION env
-          # provide OP_STOCK_LOCALVERSION exactly once. This avoids the duplicate -4k prefix.
-          ./scripts/config --file out/.config --set-str LOCALVERSION "" -d LOCALVERSION_AUTO || true
-          sed -i 's/^CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION=""/' out/.config || true
-
-          # Enforce critical options after initial defconfig expansion.
-          ./scripts/config --file out/.config -d LOCALVERSION_AUTO -e KSU -e TMPFS_XATTR -e TMPFS_POSIX_ACL || true
-          if [ "${{ inputs.susfs }}" = "On" ]; then
-            ./scripts/config --file out/.config -e KSU_SUSFS \
-              -e KSU_SUSFS_SUS_PATH -e KSU_SUSFS_SUS_MOUNT -e KSU_SUSFS_SUS_KSTAT \
-              -e KSU_SUSFS_SPOOF_UNAME -e KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-              -e KSU_SUSFS_OPEN_REDIRECT -d KSU_SUSFS_ENABLE_LOG \
-              -e KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS || true
-            if [[ "${{ inputs.sus_map }}" == "On" ]]; then
-              ./scripts/config --file out/.config -e KSU_SUSFS_SUS_MAP || true
-            else
-              ./scripts/config --file out/.config -d KSU_SUSFS_SUS_MAP || true
-            fi
-          else
-            ./scripts/config --file out/.config -d KSU_SUSFS -d KSU_SUSFS_SUS_PATH -d KSU_SUSFS_SUS_MOUNT -d KSU_SUSFS_SUS_KSTAT \
-              -d KSU_SUSFS_SPOOF_UNAME -d KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG -d KSU_SUSFS_OPEN_REDIRECT \
-              -d KSU_SUSFS_SUS_MAP -d KSU_SUSFS_ENABLE_LOG -d KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS || true
-          fi
-
-          # SukiSU hook model changed across refs. Old refs expose KSU_NONE_HOOK; current builtin may not.
-          if grep -Rqs '^config KSU_NONE_HOOK' drivers/kernelsu KernelSU 2>/dev/null; then
-            ./scripts/config --file out/.config -e KSU_NONE_HOOK -d KSU_MANUAL_HOOK -d KSU_SYSCALL_HOOK || true
-          else
-            ./scripts/config --file out/.config -d KSU_SYSCALL_HOOK || true
-          fi
-
-          if [ "${{ inputs.feature_profile }}" != "minimal_debug" ]; then
-            if [ "${{ inputs.zram_lz4_support }}" = "On" ] || [ "${{ inputs.zram_module }}" = "On" ]; then
-              if [ "${{ inputs.zram_module }}" = "On" ]; then
-                ./scripts/config --file out/.config -m ZRAM -m ZSMALLOC -e ZRAM_DEF_COMP_LZ4 -d ZRAM_DEF_COMP_LZORLE --set-str ZRAM_DEF_COMP lz4 \
-                  -e LZ4_COMPRESS -e LZ4_DECOMPRESS -e CRYPTO_LZ4 -e CRYPTO_LZ4HC || true
-              else
-                ./scripts/config --file out/.config -e ZRAM -e ZSMALLOC -e LZ4_COMPRESS -e LZ4_DECOMPRESS -e CRYPTO_LZ4 -e CRYPTO_LZ4HC || true
+          if [ "${{ inputs.hook_mode }}" = "inline_susfs" ]; then
+            if grep -Rqs 'config KSU_NONE_HOOK' ../KernelSU/kernel ./drivers/kernelsu 2>/dev/null; then
+              if ! grep -q '^CONFIG_KSU_NONE_HOOK=y' out/.config; then
+                echo "::error::inline_susfs requested, but CONFIG_KSU_NONE_HOOK=y is not present after olddefconfig."
+                exit 1
               fi
+            else
+              echo "::warning::SukiSU ref does not expose CONFIG_KSU_NONE_HOOK. Continuing only because CONFIG_KSU_SUSFS is the hard SUSFS requirement."
             fi
-            if [ "${{ inputs.bbr }}" = "On" ]; then
-              ./scripts/config --file out/.config -e TCP_CONG_BBR -e DEFAULT_BBR -d DEFAULT_CUBIC --set-str DEFAULT_TCP_CONG bbr || true
+            if grep -q '^CONFIG_KSU_MANUAL_HOOK=y' out/.config || grep -q '^CONFIG_KSU_KPROBES_HOOK=y' out/.config || grep -q '^CONFIG_KSU_WITH_KPROBES=y' out/.config; then
+              echo "::error::inline_susfs requested, but a manual/kprobe KSU hook selector is still enabled."
+              exit 1
             fi
-            if [ "${{ inputs.ttl_ipset }}" = "On" ]; then
-              ./scripts/config --file out/.config -e NETFILTER_XT_TARGET_TTL -e NETFILTER_XT_MATCH_TTL -e IP_SET -e IP_SET_HASH_IP -e IP_SET_HASH_IPPORT -e IP_SET_HASH_NETPORTNET -e NF_NAT_IPV6 || true
-            fi
-            [ "${{ inputs.ntsync }}" = "On" ] && ./scripts/config --file out/.config -e NTSYNC || true
-            [ "${{ inputs.unicode_fix }}" = "On" ] && ./scripts/config --file out/.config -e UNICODE -e UNICODE_UTF8_DATA || true
-            [ "${{ inputs.droidspaces }}" = "On" ] && ./scripts/config --file out/.config -e DROIDSPACE -e DROIDSPACES || true
-            [ "${{ inputs.bbg }}" = "On" ] && ./scripts/config --file out/.config -e BBG || true
-            [ "${{ inputs.adios }}" = "On" ] && ./scripts/config --file out/.config -e MQ_IOSCHED_ADIOS -e MQ_IOSCHED_DEFAULT_ADIOS || true
-          fi
-          if [ "${{ inputs.feature_profile }}" = "experimental_max" ]; then
-            ./scripts/config --file out/.config -e MQ_IOSCHED_ADIOS -e MQ_IOSCHED_DEFAULT_ADIOS -e DROIDSPACE -e DROIDSPACES || true
-          fi
-          if [ "${{ inputs.lto }}" = "thin" ]; then
-            ./scripts/config --file out/.config -e LTO_CLANG -e LTO_CLANG_THIN -d LTO_CLANG_FULL || true
           fi
 
-          make -j"$BUILD_JOBS" "${MAKE_ARGS[@]}" olddefconfig
-
-          # Hard stop before the expensive full compile if CONFIG_LOCALVERSION leaked from stock defconfig.
-          if grep -q '^CONFIG_LOCALVERSION="-4k"' out/.config; then
-            echo "::error::CONFIG_LOCALVERSION leaked as -4k. This would duplicate the OP13 stock suffix."
-            grep -n '^CONFIG_LOCALVERSION' out/.config || true
-            exit 1
+          if [ "${{ inputs.kpm_enable }}" = "true" ] && ! grep -q '^CONFIG_KPM=y' out/.config; then
+            echo "::warning::KPM requested but CONFIG_KPM=y is not present after olddefconfig. This SukiSU ref/kernel may not expose it."
           fi
 
-          echo "Final config highlights:"
-          grep -nE 'CONFIG_LOCALVERSION|CONFIG_KSU|CONFIG_BBG|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_BBR|CONFIG_DEFAULT_CUBIC|CONFIG_DEFAULT_TCP_CONG|CONFIG_IP_SET|CONFIG_NETFILTER_XT|CONFIG_NTSYNC|CONFIG_LTO|CONFIG_MQ_IOSCHED_ADIOS|CONFIG_DROID|CONFIG_UNICODE|CONFIG_ZRAM|CONFIG_ZSMALLOC|CONFIG_LZ4|CONFIG_CRYPTO_LZ4' out/.config || true
+          echo "==> Final config scan"
+          grep -E 'CONFIG_KSU|CONFIG_KPM|CONFIG_KALLSYMS|CONFIG_LOCALVERSION|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_BBR|CONFIG_IP_SET|CONFIG_NTSYNC|CONFIG_LTO|CONFIG_CC_OPTIMIZE|CONFIG_NETFILTER_XT_TARGET_TTL|CONFIG_ADIOS|CONFIG_BBG|CONFIG_BASEBAND|CONFIG_ZRAM|CONFIG_ZSMALLOC|CONFIG_CRYPTO_LZ4|CONFIG_LZ4|CONFIG_ZSTD' out/.config | tee "$GITHUB_WORKSPACE/_ox_debug/config-scan.txt" || true
 
-          if ! grep -q '^CONFIG_KSU=y' out/.config; then echo "::error::CONFIG_KSU=y missing"; exit 1; fi
-          if [ "${{ inputs.susfs }}" = "On" ]; then
-            if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then echo "::error::CONFIG_KSU_SUSFS=y missing while susfs=On"; exit 1; fi
-          else
-            if grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then echo "::error::CONFIG_KSU_SUSFS=y present while susfs=Off"; exit 1; fi
-          fi
-          if grep -q '^CONFIG_KSU_SYSCALL_HOOK=y' out/.config; then echo "::error::CONFIG_KSU_SYSCALL_HOOK=y detected; refusing unstable hook mode"; exit 1; fi
-
-          BUILD_LOG="$GITHUB_WORKSPACE/out_artifacts/debug/kernel_build_full.log"
-          echo "Running full kernel build with -j$BUILD_JOBS. Full log: $BUILD_LOG"
-          set +e
-          make -j"$BUILD_JOBS" "${MAKE_ARGS[@]}" all 2>&1 | tee "$BUILD_LOG"
-          MAKE_STATUS=${PIPESTATUS[0]}
-          set -e
-          if [ "$MAKE_STATUS" -ne 0 ]; then
-            echo "::error::Kernel build failed. Showing first useful compiler/linker errors from $BUILD_LOG"
-            grep -n -i -E 'error:|undefined symbol|conflicting types|implicit declaration|No such file|fatal error|FAILED|undefined reference' "$BUILD_LOG" | head -n 120 || true
-            echo "::group::Last 220 lines of kernel build log"
-            tail -n 220 "$BUILD_LOG" || true
-            echo "::endgroup::"
-            exit "$MAKE_STATUS"
-          fi
-          REL="$(cat out/include/config/kernel.release 2>/dev/null || true)"
-          echo "KERNEL_RELEASE=$REL" >> "$GITHUB_ENV"
-          echo "Kernel release: $REL"
-          if [ "${{ inputs.enforce_stock_suffix }}" = "true" ] && [ "$REL" != "$OP_EXPECTED_UTS" ]; then
-            echo "::error::UTS_RELEASE mismatch. Expected '$OP_EXPECTED_UTS' but got '$REL'"
-            exit 1
-          fi
-
-          # Resolve the built Image to an absolute path before leaving $KERNEL_DIR.
-          # The packaging step runs from $GITHUB_WORKSPACE, so a relative value like
-          # out/arch/arm64/boot/Image points to the wrong directory and breaks AnyKernel packaging.
-          IMAGE="$(find "$KERNEL_DIR/out" -type f -path '*/arch/arm64/boot/Image' -print -quit 2>/dev/null || true)"
-          if [ -z "$IMAGE" ]; then
-            IMAGE="$(find "$KERNEL_DIR/out" -type f -name Image -print -quit 2>/dev/null || true)"
-          fi
-          [ -n "$IMAGE" ] && [ -f "$IMAGE" ] || { echo "::error::Kernel Image not found under $KERNEL_DIR/out"; find "$KERNEL_DIR/out" -type f \( -name 'Image*' -o -name 'vmlinux' \) | head -n 80 || true; exit 1; }
-          IMAGE="$(realpath "$IMAGE")"
-          echo "KERNEL_IMAGE=$IMAGE" >> "$GITHUB_ENV"
-          echo "Image: $IMAGE"
-          strings "$IMAGE" | grep -m1 -E 'Linux version|Android clang|Ubuntu clang|clang version' || true
-          if strings "$IMAGE" | grep -m1 -E 'Linux version|clang version' | grep -qi 'Ubuntu clang'; then
-            echo "::error::Final Image was built with Ubuntu clang; refusing to package."
-            exit 1
-          fi
-
-      - name: "Package AnyKernel3"
+      - name: 09 Build OP13 SukiSU CCTV18 clean Image
+        id: build
         shell: bash
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
-          rm -rf out_artifacts package_AK3
-          mkdir -p out_artifacts/debug
-          if [ -d kernel_workspace/AnyKernel3 ]; then
-            cp -a kernel_workspace/AnyKernel3 package_AK3
-          else
-            git clone --depth=1 -b gki-2.0 https://github.com/TheWildJames/AnyKernel3.git package_AK3
+          cd kernel_workspace/common
+          export PATH="$GITHUB_WORKSPACE/kernel_workspace/clang18/bin:$GITHUB_WORKSPACE/kernel_workspace/build-tools/path/linux-x86:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CCACHE_DIR="$CCACHE_DIR"
+          export CCACHE_BASEDIR="$GITHUB_WORKSPACE/kernel_workspace"
+          export CCACHE_NOHASHDIR=true
+          export CCACHE_COMPILERCHECK=none
+          export KBUILD_BUILD_USER="ox1d3x3"
+          export KBUILD_BUILD_HOST="op13-cctv18-sukisu"
+          export KBUILD_BUILD_TIMESTAMP="$(date -u '+%a %b %d %H:%M:%S UTC %Y')"
+
+          MAKE_ARGS=(O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CC="ccache clang")
+          echo "==> Building Image"
+          make -j"$(nproc --all)" "${MAKE_ARGS[@]}" Image 2>&1 | tee "$GITHUB_WORKSPACE/_ox_debug/build.log"
+
+          image="out/arch/arm64/boot/Image"
+          if [ ! -s "$image" ]; then
+            echo "::error::Kernel Image was not produced."
+            find out -maxdepth 6 -type f -name 'Image*' -printf '%p %s bytes\n' | tee "$GITHUB_WORKSPACE/_ox_debug/image-search.txt" || true
+            exit 1
           fi
-          rm -rf package_AK3/.git
-          if [ -z "${KERNEL_IMAGE:-}" ] || [ ! -f "$KERNEL_IMAGE" ]; then
-            echo "KERNEL_IMAGE env was missing or invalid: ${KERNEL_IMAGE:-<empty>}"
-            echo "Searching fallback locations under $KERNEL_DIR/out..."
-            KERNEL_IMAGE="$(find "$KERNEL_DIR/out" -type f -path '*/arch/arm64/boot/Image' -print -quit 2>/dev/null || true)"
-            [ -n "$KERNEL_IMAGE" ] || KERNEL_IMAGE="$(find "$KERNEL_DIR/out" -type f -name Image -print -quit 2>/dev/null || true)"
-            [ -n "$KERNEL_IMAGE" ] && [ -f "$KERNEL_IMAGE" ] || { echo "::error::Cannot locate kernel Image for AnyKernel3 packaging"; find "$KERNEL_DIR/out" -type f \( -name 'Image*' -o -name 'vmlinux' \) | head -n 80 || true; exit 1; }
-            KERNEL_IMAGE="$(realpath "$KERNEL_IMAGE")"
+
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v73"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v73" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v73.sha256"
+
+          uts="unknown"
+          if [ -f out/include/generated/utsrelease.h ]; then
+            cp -f out/include/generated/utsrelease.h "$GITHUB_WORKSPACE/_ox_debug/utsrelease.h"
+            uts="$(sed -n 's/^#define UTS_RELEASE "\(.*\)"/\1/p' out/include/generated/utsrelease.h | head -n1)"
           fi
-          echo "Packaging Image: $KERNEL_IMAGE"
-          cp "$KERNEL_IMAGE" package_AK3/Image
+          echo "UTS_RELEASE=$uts" | tee "$GITHUB_WORKSPACE/_ox_debug/uts.txt"
+          echo "uts=$uts" >> "$GITHUB_OUTPUT"
+          ccache -s | tee "$GITHUB_WORKSPACE/_ox_debug/ccache-final.txt" || true
 
-          if [ "${{ inputs.susfs }}" = "On" ]; then
-            SUS_LABEL="CCTV18_SUSFS_${SUSVER:-oki}"
-            MODE_LABEL="CCTV18 SUSFS"
-          else
-            SUS_LABEL="NoSUSFS_Debug"
-            MODE_LABEL="NoSUSFS Debug"
-          fi
-          PROFILE_LABEL="${{ inputs.feature_profile }}"
-          RUN_NO="${{ github.run_number }}"
-          REPO_URL="https://github.com/ox1d3x3/Op13_Susfs_kernel"
-          INSTALL_TITLE="OP13 SukiSU Ultra + CCTV18 SUSFS"
-          ZIP="AK3_OP13_OOS16_android15-6.6.89_${SUKISU_PACKAGE_LABEL:-SukiSUUltra}_${SUS_LABEL}_ADV_STABLE_${RUN_NO}.zip"
-          export MODE_LABEL PROFILE_LABEL RUN_NO REPO_URL INSTALL_TITLE ZIP
+      - name: 10 Package fixed AnyKernel3 flashable ZIP with OX install banner
+        if: ${{ inputs.package_ak3 == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf ak3_work
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3_work
+          rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
+          cp -f artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v73 ak3_work/Image
 
-          cat > package_AK3/INSTALL_INFO.txt <<EOF
-          ${INSTALL_TITLE}
-          ==================================
+          cat > ak3_work/anykernel.sh <<'AK3'
+          ### AnyKernel3 Ramdisk Mod Script
+          ## osm0sis @ xda-developers
+          ## OX1D3X3 OP13 SukiSU + CCTV18 clean SUSFS package
 
-          Device target : OnePlus 13 / PJZ110 / sun / OOS16
-          Kernel release: ${KERNEL_RELEASE:-unknown}
-          Root backend  : SukiSU Ultra (${SUKISU_PACKAGE_LABEL:-SukiSUUltra})
-          SUSFS source  : CCTV18 susfs4oki (${SUSVER:-${{ inputs.susfs_ref }}})
-          Profile       : ${PROFILE_LABEL}
-          Build number  : ${RUN_NO}
+          ### AnyKernel setup
+          # global properties
+          properties() { '
+          kernel.string=PJZ110 | SukiSU Ultra [Inline StockLike] + CCTV18 SUSFS (OP-OX)
+          do.devicecheck=0
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          do.check_boot_version=0
+          device.name1=
+          device.name2=
+          device.name3=
+          device.name4=
+          device.name5=
+          supported.versions=
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; } # end properties
 
-          Install notes:
-          1. Keep a matching stock boot.img for your current active slot before flashing.
-          2. Flash this ZIP from a custom recovery or kernel flasher that supports AnyKernel3.
-          3. If the device bootloops, return to bootloader and flash your stock boot.img back to the active slot.
-          4. First boot can take longer than usual. Do not force reboot too early.
-          5. Do not enable extra modules until the kernel boots cleanly.
 
-          Recommended first daily settings:
-          - battery_daily profile
-          - SukiSU Ultra builtin_latest
-          - CCTV18 SUSFS On
-          - BBR/BBG/ADIOS/TTL_IP_SET/NTSYNC/Unicode/ZRAM-LZ4 On
-          - zram-module.zip On if you want the flashable replacement zip
-          - HMBIRD/Droidspaces Off for battery_daily
-          EOF
-          cp package_AK3/INSTALL_INFO.txt out_artifacts/INSTALL_INFO.txt
+          ### AnyKernel install
+          ## boot shell variables
+          # OP13 / PJZ110 is A/B slot device. Use partition-name detection, not old omap path.
+          block=boot
+          is_slot_device=auto
+          slot_select=active
+          ramdisk_compression=auto
+          patch_vbmeta_flag=auto
+          no_vbmeta_partition_patch=1
+          no_magisk_check=1
 
-          if [ -f package_AK3/anykernel.sh ]; then
-            python3 - <<'PY'
-          from pathlib import Path
-          import os
-          import re
-          label = os.environ.get('SUKISU_PACKAGE_LABEL', 'SukiSUUltra')
-          mode_label = os.environ.get('MODE_LABEL', 'CCTV18 SUSFS')
-          profile = os.environ.get('PROFILE_LABEL', 'battery_daily')
-          run_no = os.environ.get('RUN_NO', '')
-          repo_url = os.environ.get('REPO_URL', 'https://github.com/ox1d3x3/Op13_Susfs_kernel')
-          kernel_rel = os.environ.get('KERNEL_RELEASE', '')
-          zip_name = os.environ.get('ZIP', '')
-          p = Path('package_AK3/anykernel.sh')
-          s = p.read_text(encoding='utf-8', errors='replace')
-          s = re.sub(r'^\s*kernel\.string=.*$', f'kernel.string=OP13 PJZ110 | {label} + {mode_label} | Advanced Stable Daily', s, flags=re.M)
-          if 'block=boot' not in s:
-              s = s.replace('block=auto', 'block=boot') if 'block=auto' in s else s + '\nblock=boot\n'
-          s = re.sub(r'\n# --- OX1D3X3 INSTALL INFO START ---.*?# --- OX1D3X3 INSTALL INFO END ---\n', '\n', s, flags=re.S)
-          marker = re.search(r'\n\.\s+tools/ak3-core\.sh\s*\n', s)
-          block = f'''
-          # --- OX1D3X3 INSTALL INFO START ---
-          ui_print " "
-          ui_print "===================================================="
-          ui_print " __  __ __"
-          ui_print " \\ \\ / //_ |"
-          ui_print "  \\ V /  | |"
-          ui_print "   > <   | |"
-          ui_print "  / . \\  | |"
-          ui_print " /_/ \\_\\ |_|"
-          ui_print "===================================================="
-          ui_print " "
-          ui_print "OP13 PJZ110 | SukiSU Ultra + {mode_label}"
-          ui_print "Profile : {profile}"
-          ui_print "Kernel  : {kernel_rel or 'unknown'}"
-          ui_print "Build   : #{run_no}"
-          ui_print "Package : {zip_name}"
-          ui_print "Builder : @Ox1d3x3"
-          ui_print "Repo    : {repo_url}"
-          ui_print " "
-          ui_print "Install notes:"
-          ui_print "- Target: OnePlus 13 / PJZ110 / sun / OOS16"
-          ui_print "- Flash only on matching firmware/kernel base"
-          ui_print "- Keep stock boot.img ready for rescue"
-          ui_print "- First boot may take longer than usual"
-          ui_print " "
+          # import functions/variables and setup patching - see for reference (DO NOT REMOVE)
+          . tools/ak3-core.sh
+
+
+          # --- OX1D3X3 CUSTOM START ---
+          ui_print ' '
+          ui_print '===================================================='
+          ui_print '                   __   __  __ '
+          ui_print '                  \ \ / //_ |'
+          ui_print '                   \ V /   | |'
+          ui_print '                     > <    | |'
+          ui_print '                   / . \   | |'
+          ui_print '                 /_/ \_\  |_|'
+          ui_print '===================================================='
+          ui_print ' '
+          ui_print 'PJZ110 | SukiSU Ultra [Inline StockLike Daily] + CCTV18 SUSFS'
+          ui_print 'Kernel : 6.6.89-${{ inputs.kernel_name }}'
+          ui_print 'Hook   : ${{ inputs.hook_mode }} (target: inline SUSFS)'
+          ui_print 'Audit  : CONFIG_KSU + CONFIG_KSU_SUSFS + inline hook audit'
+          ui_print 'Build  : #${{ github.run_number }} (${{ inputs.kernel_name }})'
+          ui_print 'Builder: @Ox1d3x3'
+          ui_print 'Credits: @SukiSU-Ultra, @cctv18, osm0sis, @mrcxlinux'
+          ui_print 'Source : CCTV18 susfs4oki only - no mixed SUSFS patch tree'
+          ui_print 'ZRAM   : kernel config=${{ inputs.zram_lz4 }} / preferred=${{ inputs.zram_comp }}'
+          ui_print ' '
+
           device="$(getprop ro.product.device 2>/dev/null || true)"
           model="$(getprop ro.product.model 2>/dev/null || true)"
-          build="$(getprop ro.build.version.ota 2>/dev/null || true)"
+          android="$(getprop ro.build.version.release 2>/dev/null || true)"
+          patch="$(getprop ro.build.version.security_patch 2>/dev/null || true)"
+          slot="$(getprop ro.boot.slot_suffix 2>/dev/null || true)"
+          [ -z "$slot" ] && slot="$(getprop ro.boot.slot 2>/dev/null || true)"
           if [ -n "$device" ]; then ui_print "Device : $device ($model)"; fi
-          if [ -n "$build" ]; then ui_print "OTA    : $build"; fi
-          ui_print " "
+          if [ -n "$android" ]; then ui_print "Android: $android"; fi
+          if [ -n "$patch" ]; then ui_print "Patch  : $patch"; fi
+          if [ -n "$slot" ]; then ui_print "Slot   : $slot"; fi
+          ui_print 'Target : active boot partition'
+          ui_print ' '
+
+          # Best-effort open project page (may be ignored in recovery)
           if command -v cmd >/dev/null 2>&1; then
-            (cmd activity start --user 0 -a android.intent.action.VIEW -d "{repo_url}" >/dev/null 2>&1 &) || true
+          (cmd activity start --user 0 -a android.intent.action.VIEW -d 'https://github.com/ox1d3x3/Op13_Susfs_kernel' >/dev/null 2>&1 &) || true
           elif command -v am >/dev/null 2>&1; then
-            (am start --user 0 -a android.intent.action.VIEW -d "{repo_url}" >/dev/null 2>&1 &) || true
+          (am start --user 0 -a android.intent.action.VIEW -d 'https://github.com/ox1d3x3/Op13_Susfs_kernel' >/dev/null 2>&1 &) || true
           fi
-          # --- OX1D3X3 INSTALL INFO END ---
-          '''
-          if marker:
-              s = s[:marker.end()] + block + s[marker.end():]
-          else:
-              s += '\n' + block
-          p.write_text(s, encoding='utf-8')
-          PY
+          # --- OX1D3X3 CUSTOM END ---
+
+          # GKI check
+          kernel_version=$(cat /proc/version | awk -F '-' '{print $1}' | awk '{print $3}')
+          case $kernel_version in
+              5.1*) ksu_supported=true ;;
+              6.1*) ksu_supported=true ;;
+              6.6*) ksu_supported=true ;;
+              *) ksu_supported=false ;;
+          esac
+
+          ui_print ' '
+          ui_print '  -> Thank you for using this kernel'
+          $ksu_supported || abort '  -> Non-GKI device, abort.'
+
+          # boot install
+          split_boot
+
+          if [ -f "$SPLITIMG/ramdisk.cpio" ]; then
+              unpack_ramdisk
+              write_boot
+          else
+              flash_boot
           fi
 
-          cat > package_AK3/banner <<EOF
-          ====================================================
-          Ox1d3x3 OP13 Kernel
-          SukiSU Ultra + ${MODE_LABEL} [${PROFILE_LABEL}]
-          ====================================================
+          ui_print ' '
+          ui_print ' Reboot Your System '
+          ui_print ' '
+          ui_print ' '
+          AK3
+          sed -i 's/^          //' ak3_work/anykernel.sh
+          chmod 0755 ak3_work/anykernel.sh
+
+          cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
+          OX1D3X3 OP13 SukiSU Ultra + CCTV18 INLINE SUSFS v73
+          Device: OnePlus 13 / sun / PJZ110
+          Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ inputs.cctv18_kernel_ref }}
+          Build assets: cctv18/oppo_oplus_realme_sm8750
+          Root: SukiSU Ultra via official setup.sh, requested=${{ inputs.sukisu_ref }}, selected=${SUKISU_SELECTED_REF:-unknown}
+          SUSFS: cctv18/susfs4oki only, ref=${{ inputs.susfs_ref }}
+          SUSFS patch policy: ${{ inputs.susfs_patch_policy }}
+          WildKernels SUSFS patch tree: NOT USED
+          TheWildJames kernel_patches: NOT USED
+          KernelSU-Next/ReSukiSU root glue: NOT USED in this SukiSU-first workflow
+          Profile: ${{ inputs.profile }}
+          Optimise: ${{ inputs.optimise }}
+          ZRAM/LZ4 config: ${{ inputs.zram_lz4 }} / compressor=${{ inputs.zram_comp }}
+          Separate ZRAM tuner ZIP: ${{ inputs.package_zram_tuner_zip }}
+          UTS_RELEASE: ${{ steps.build.outputs.uts }}
+          Built UTC: $(date -u '+%Y-%m-%d %H:%M:%S')
           EOF
+          sed -i 's/^          //' ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt
 
-          AK3_ZIP="$GITHUB_WORKSPACE/out_artifacts/$ZIP"
-          export AK3_ZIP
-          rm -f "$AK3_ZIP" "$AK3_ZIP.sha256" || true
-          rm -f package_AK3/*.zip package_AK3/*.sha256 || true
-          echo "Creating AnyKernel3 zip with deterministic Python packer: $AK3_ZIP"
-          python3 - <<'PYZIP'
-          import os
-          import zipfile
-          from pathlib import Path
+          zip_name="AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v73_${{ github.run_number }}_FLASH_THIS.zip"
+          ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
+          sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
-          src = Path('package_AK3').resolve()
-          dst = Path(os.environ['AK3_ZIP']).resolve()
-          dst.parent.mkdir(parents=True, exist_ok=True)
-
-          exclude_parts = {'.git', '.github'}
-          exclude_suffixes = {'.md', '.sha256'}
-          exclude_names = {'README', 'README.md', 'README.txt'}
-
-          with zipfile.ZipFile(dst, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-              for path in sorted(src.rglob('*')):
-                  rel = path.relative_to(src)
-                  if path.is_dir():
-                      continue
-                  if any(part in exclude_parts for part in rel.parts):
-                      continue
-                  if path.suffix.lower() in exclude_suffixes:
-                      continue
-                  if path.name in exclude_names:
-                      continue
-                  if path.suffix.lower() == '.zip':
-                      continue
-                  st = path.stat()
-                  info = zipfile.ZipInfo(str(rel).replace('\\', '/'))
-                  info.external_attr = (st.st_mode & 0xFFFF) << 16
-                  zf.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
-          PYZIP
-          if [ ! -s "$AK3_ZIP" ]; then
-            echo "::error::AnyKernel3 zip was not created or is empty: $AK3_ZIP"
-            echo "out_artifacts contents:"
-            find out_artifacts -maxdepth 3 -type f -printf '%p %s bytes\n' 2>/dev/null || true
-            echo "package_AK3 contents:"
-            find package_AK3 -maxdepth 2 -type f | sed -n '1,160p' || true
+          echo "==> AnyKernel3 package scan"
+          unzip -p "artifacts/$zip_name" anykernel.sh | sed -n '1,130p' | tee _ox_debug/packaged-anykernel.sh.txt
+          if unzip -p "artifacts/$zip_name" anykernel.sh | grep -q 'omap_hsmmc'; then
+            echo "::error::Packaged anykernel.sh still contains old omap boot path."
             exit 1
           fi
-          # Check only archive members, not the unzip header line that prints the archive path itself.
-          # v28 falsely failed because `unzip -l "$AK3_ZIP"` prints `Archive: ...zip`, which matched `\.zip$`.
-          NESTED_ZIPS="$(zipinfo -1 "$AK3_ZIP" | grep -E '(^|/)[^/]+\.zip$' || true)"
-          if [ -n "$NESTED_ZIPS" ]; then
-            echo "::error::Nested zip detected inside AnyKernel package; refusing artifact."
-            printf '%s\n' "$NESTED_ZIPS"
+          if unzip -p "artifacts/$zip_name" anykernel.sh | grep -q 'ExampleKernel'; then
+            echo "::error::Packaged anykernel.sh still contains default ExampleKernel banner."
             exit 1
           fi
-          sha256sum "$AK3_ZIP" | tee "$AK3_ZIP.sha256" > out_artifacts/SHA256SUMS.txt
-          echo "AnyKernel3 zip created successfully:"
-          ls -lh "$AK3_ZIP" "$AK3_ZIP.sha256"
-          echo "AnyKernel3 zip preview:"
-          unzip -l "$AK3_ZIP" | sed -n '1,80p'
-
-          if [ "${{ inputs.debug_artifacts }}" = "true" ]; then
-            cp "$KERNEL_DIR/out/.config" out_artifacts/debug/final.config || true
-            cp "$KERNEL_DIR/out/include/generated/utsrelease.h" out_artifacts/debug/utsrelease.h || true
-            cp "$KERNEL_DIR/out/include/config/kernel.release" out_artifacts/debug/kernel.release || true
-            strings "$KERNEL_IMAGE" | grep -m1 -E 'Linux version|Android clang|Ubuntu clang|clang version' > out_artifacts/debug/image_version_string.txt || true
-            find "$KERNEL_DIR" -name '*.rej' -print -exec sed -n '1,180p' {} \; > out_artifacts/debug/patch_rejects.txt || true
+          if ! unzip -p "artifacts/$zip_name" anykernel.sh | grep -q 'OX1D3X3 CUSTOM START'; then
+            echo "::error::OX1D3X3 custom install banner was not packaged."
+            exit 1
           fi
-
-      - name: "Build flashable ZRAM module zip"
-        if: ${{ inputs.zram_module == 'On' }}
+          if ! unzip -p "artifacts/$zip_name" anykernel.sh | grep -q 'SukiSU Ultra \[StockLike Daily\]'; then
+            echo "::error::OX install info banner was not packaged."
+            exit 1
+          fi
+      - name: 11 Package separate ZRAM LZ4 tuner ZIP
+        if: ${{ inputs.package_zram_tuner_zip == true }}
         shell: bash
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
-          mkdir -p out_artifacts
-          ZRAM_KO="$(find "$KERNEL_DIR/out" "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform" -type f -name "zram.ko" 2>/dev/null | head -n 1 || true)"
-          if [ -z "$ZRAM_KO" ] || [ ! -f "$ZRAM_KO" ]; then
-            echo "::error::zram_module=On but zram.ko was not found. Check final config for CONFIG_ZRAM=m and CONFIG_ZSMALLOC=m."
-            grep -E '^CONFIG_ZRAM=|^CONFIG_ZSMALLOC=|^CONFIG_ZRAM_DEF_COMP' "$KERNEL_DIR/out/.config" || true
-            find "$KERNEL_DIR/out" -type f -name "*zram*" -print | head -n 50 || true
-            exit 1
+          rm -rf zram_tuner_work
+          MOD="zram_tuner_work"
+          mkdir -p "$MOD/META-INF/com/google/android" "$MOD/common"
+
+          cat > "$MOD/module.prop" <<EOF
+          id=ox_op13_zram_lz4
+          name=OX OP13 ZRAM LZ4 Tuner
+          version=v73
+          versionCode=70
+          author=ox1d3x3
+          description=Safe OP13 ZRAM helper. Prefers ${{ inputs.zram_comp }} if supported. Skips destructive reset when zram is already active.
+          EOF
+
+          cat > "$MOD/post-fs-data.sh" <<'EOS'
+          #!/system/bin/sh
+          MODDIR=${0%/*}
+          LOG=/data/adb/ox_zram_lz4.log
+          PREF="lz4"
+          CONF=/data/adb/ox_zram_lz4.conf
+          [ -f "$CONF" ] && . "$CONF"
+          echo "[$(date)] post-fs-data start" >> "$LOG"
+          Z=/sys/block/zram0
+          [ -d "$Z" ] || { echo "zram0 not found" >> "$LOG"; exit 0; }
+          if grep -qE '(^|/)zram0($| )' /proc/swaps 2>/dev/null; then
+            echo "zram already active, skipping reset for safety" >> "$LOG"
+            cat /proc/swaps >> "$LOG" 2>/dev/null
+            exit 0
           fi
-
-          echo "Using freshly built zram.ko: $ZRAM_KO"
-          TMP_ZIP="$RUNNER_TEMP/zram_template.zip"
-          rm -f "$TMP_ZIP" || true
-          URLS=(
-            "https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/refs/heads/main/zram.zip"
-            "https://cdn.jsdelivr.net/gh/cctv18/oppo_oplus_realme_sm8750@main/zram.zip"
-          )
-          ok=0
-          for u in "${URLS[@]}"; do
-            echo "Fetching zram template: $u"
-            if curl -fL --retry 3 --retry-delay 2 "$u" -o "$TMP_ZIP"; then
-              ok=1
-              break
-            fi
-          done
-          if [ "$ok" -ne 1 ]; then
-            echo "::error::Failed to download zram.zip template from all mirrors."
-            exit 1
+          if [ -w "$Z/reset" ]; then echo 1 > "$Z/reset" 2>>"$LOG" || true; fi
+          if [ -r "$Z/comp_algorithm" ] && [ -w "$Z/comp_algorithm" ]; then
+            for alg in "$PREF" lz4 lzo-rle lzo zstd; do
+              if grep -qw "$alg" "$Z/comp_algorithm"; then
+                echo "$alg" > "$Z/comp_algorithm" 2>>"$LOG" && echo "compressor=$alg" >> "$LOG"
+                break
+              fi
+            done
           fi
+          mem_kb=$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)
+          [ -n "$mem_kb" ] || mem_kb=$((8*1024*1024))
+          target_kb=$((mem_kb / 2))
+          min_kb=$((4*1024*1024))
+          cap_kb=$((8*1024*1024))
+          [ "$target_kb" -lt "$min_kb" ] && target_kb="$min_kb"
+          [ "$target_kb" -gt "$cap_kb" ] && target_kb="$cap_kb"
+          echo "${target_kb}K" > "$Z/disksize" 2>>"$LOG" || true
+          /system/bin/mkswap /dev/block/zram0 >> "$LOG" 2>&1 || /system/bin/toybox mkswap /dev/block/zram0 >> "$LOG" 2>&1 || true
+          /system/bin/swapon -p 32767 /dev/block/zram0 >> "$LOG" 2>&1 || /system/bin/toybox swapon -p 32767 /dev/block/zram0 >> "$LOG" 2>&1 || true
+          cat /proc/swaps >> "$LOG" 2>/dev/null || true
+          echo "[$(date)] post-fs-data done" >> "$LOG"
+          EOS
 
-          WORK="$RUNNER_TEMP/zram_mod"
-          rm -rf "$WORK" || true
-          mkdir -p "$WORK"
-          unzip -q "$TMP_ZIP" -d "$WORK"
-          if ! find "$WORK" -name "zram.ko" -print -quit | grep -q .; then
-            echo "::error::Template zip does not contain zram.ko placeholder."
-            find "$WORK" -maxdepth 5 -type f | sed -n '1,120p'
-            exit 1
+          cat > "$MOD/service.sh" <<'EOS'
+          #!/system/bin/sh
+          LOG=/data/adb/ox_zram_lz4.log
+          sleep 30
+          echo "[$(date)] service check" >> "$LOG"
+          if [ -r /sys/block/zram0/comp_algorithm ]; then
+            echo "comp_algorithm: $(cat /sys/block/zram0/comp_algorithm)" >> "$LOG"
           fi
-          find "$WORK" -name "zram.ko" -print -exec cp "$ZRAM_KO" {} \;
+          cat /proc/swaps >> "$LOG" 2>/dev/null || true
+          EOS
 
-          OUT_ZRAM="$GITHUB_WORKSPACE/out_artifacts/zram-module.zip"
-          rm -f "$OUT_ZRAM" "$OUT_ZRAM.sha256" || true
-          (cd "$WORK" && zip -qr "$OUT_ZRAM" .)
-          sha256sum "$OUT_ZRAM" | tee "$OUT_ZRAM.sha256"
-          cat "$OUT_ZRAM.sha256" >> "$GITHUB_WORKSPACE/out_artifacts/SHA256SUMS.txt" 2>/dev/null || true
-          echo "ZRAM_ZIP=$OUT_ZRAM" >> "$GITHUB_ENV"
+          cat > "$MOD/uninstall.sh" <<'EOS'
+          #!/system/bin/sh
+          rm -f /data/adb/ox_zram_lz4.log
+          EOS
 
-      - name: "Build summary"
+          cat > "$MOD/customize.sh" <<'EOS'
+          ui_print ""
+          ui_print "===================================================="
+          ui_print "                   __   __  __ "
+          ui_print "                  \\ \\ / //_ |"
+          ui_print "                   \\ V /   | |"
+          ui_print "                     > <    | |"
+          ui_print "                   / . \\   | |"
+          ui_print "                 /_/ \\_\\  |_|"
+          ui_print "===================================================="
+          ui_print "OX OP13 ZRAM LZ4 Tuner"
+          ui_print "Preferred compressor: ${{ inputs.zram_comp }}"
+          ui_print "Safe mode: will not reset zram if already active"
+          ui_print "Log: /data/adb/ox_zram_lz4.log"
+          ui_print ""
+          EOS
+
+          cat > "$MOD/META-INF/com/google/android/updater-script" <<'EOS'
+          #MAGISK
+          EOS
+
+          cat > "$MOD/META-INF/com/google/android/update-binary" <<'EOS'
+          #!/sbin/sh
+          # Minimal compatibility stub for Magisk/KernelSU module installers.
+          OUTFD=$2
+          ZIPFILE=$3
+          ui_print() { echo "ui_print $1" > /proc/self/fd/$OUTFD; echo "ui_print" > /proc/self/fd/$OUTFD; }
+          ui_print "Install this ZIP through KernelSU/SukiSU/Magisk module manager."
+          ui_print "If your manager supports Magisk module ZIPs, it will handle extraction."
+          exit 0
+          EOS
+
+          chmod 0755 "$MOD/post-fs-data.sh" "$MOD/service.sh" "$MOD/uninstall.sh" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/update-binary"
+          sed -i 's/^          //' "$MOD"/*.sh "$MOD/module.prop" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/"* || true
+
+          zip_name="OP13_ZRAM_LZ4_Tuner_v73_${{ github.run_number }}.zip"
+          ( cd "$MOD" && zip -r9 "../artifacts/$zip_name" . >/dev/null )
+          sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
+
+      - name: 12 Clean-source audit and debug collection
         if: always()
         shell: bash
         run: |
+          set -euo pipefail
+          mkdir -p _ox_debug artifacts
           {
-            echo "## OP13 SukiSU Ultra + CCTV18 SUSFS Advanced Stable v43 SukiSU Only Debug Fix build"
-            echo ""
-            echo "| Item | Value |"
-            echo "|---|---|"
-            echo "| Model | $OP_MODEL / $OP_SOC / $OP_OS_VERSION |"
-            echo "| Feature profile | ${{ inputs.feature_profile }} |"
-            echo "| SukiSU channel | ${{ inputs.sukisu_channel }} |"
-            echo "| Root setup | ${ROOT_SETUP_OWNER:-unknown}/${ROOT_SETUP_REPO:-unknown} @ ${ROOT_SETUP_BRANCH:-unknown} / ${ROOT_SETUP_ARG:-unknown} |"
-            echo "| SUSFS enabled | ${{ inputs.susfs }} |"
-            echo "| CCTV18 SUSFS ref | ${{ inputs.susfs_ref }} |"
-            echo "| Kernel release | ${KERNEL_RELEASE:-unknown} |"
-            echo "| Expected stock UTS | $OP_EXPECTED_UTS |"
-            echo "| HMBIRD | ${{ inputs.hmbird }} |"
-            echo "| BBR | ${{ inputs.bbr }} |"
-            echo "| BBG | ${{ inputs.bbg }} |"
-            echo "| TTL/IP_SET | ${{ inputs.ttl_ipset }} |"
-            echo "| NTSYNC | ${{ inputs.ntsync }} |"
-            echo "| Unicode fix | ${{ inputs.unicode_fix }} |"
-            echo "| Droidspaces | ${{ inputs.droidspaces }} |"
-            echo "| ADIOS | ${{ inputs.adios }} |"
-            echo "| ZRAM/LZ4 support | ${{ inputs.zram_lz4_support }} |"
-            echo "| Flashable zram-module.zip | ${{ inputs.zram_module }} |"
-            echo "| BUILD_TIME input | ${{ inputs.BUILD_TIME }} |"
-            echo "| Build timestamp resolved | ${BUILD_TIME_RESOLVED:-unknown} |"
-            echo "| Build user/host | ${{ inputs.BUILD_USER }}@${{ inputs.BUILD_HOST }} |"
-            echo ""
-            echo "### Install info"
-            echo ""
-            echo "- The flash ZIP includes `INSTALL_INFO.txt` and an AnyKernel3 installer banner."
-            echo "- Keep a matching stock `boot.img` for the active slot before flashing."
-            echo "- If the device bootloops, restore stock `boot.img` first, then collect logs from recovery."
-            echo ""
-            echo "### Profile difference: battery_daily vs advanced_daily"
-            echo ""
-            echo "| Feature | battery_daily | advanced_daily | Notes |"
-            echo "|---|---:|---:|---|"
-            echo "| SukiSU Ultra + CCTV18 SUSFS | On | On | Same root/SUSFS base. |"
-            echo "| ADIOS | On | On | Default On from v26. |"
-            echo "| BBR / BBG / TTL_IP_SET / NTSYNC / Unicode | On | On | Same stable daily features. |"
-            echo "| ZRAM/LZ4 + zram-module.zip | On | On | Same ZRAM support and flashable module package. |"
-            echo "| Droidspaces | Off | On | This is the main feature missing from battery_daily. |"
-            echo "| HMBIRD/Fengchi | Off | On | Advanced scheduler testing path, not the safest battery default. |"
-            echo "| Intended use | Daily battery/stability | Feature-rich testing | Start with battery_daily for OP13 CN. |"
-            echo ""
-            echo "### Recommended proven daily defaults for OP13 CN/PJZ110"
-            echo ""
-            echo "| Option | Recommended | Why |"
-            echo "|---|---:|---|"
-            echo "| feature_profile | battery_daily | Safest profile that already built successfully. |"
-            echo "| sukisu_channel | builtin_latest | Only proven buildable SukiSU Ultra + CCTV18 path in this workflow. Older SukiSU release tags are blocked due incompatible kernel layout/glue. |"
-            echo "| susfs | On | Target feature; CCTV18 susfs4oki is now compiling. |"
-            echo "| bbr | On | Reasonable network default, low risk. |"
-            echo "| bbg | On | Keep enabled because the current successful build used it. |"
-            echo "| ttl_ipset | On | Useful advanced netfilter support; current build passed with it. |"
-            echo "| ntsync | On | Low-risk modern compatibility feature if present in tree. |"
-            echo "| unicode_fix | On | Keep enabled because current build passed with it. |"
-            echo "| zram_lz4_support | On | Enables LZ4/ZRAM support. |"
-            echo "| zram_module | On | Builds flashable zram-module.zip like your older workflow by replacing zram.ko in the template. |"
-            echo "| adios | On | Default On from v26 because your successful compile used it and it is useful for responsiveness. Monitor idle drain. |"
-            echo "| hmbird | Off for battery_daily | Advanced scheduler path; use advanced_daily only after battery_daily is proven on-device. |"
-            echo "| droidspaces | Off for battery_daily | Extra container feature; advanced_daily turns it On. |"
-          } >> "$GITHUB_STEP_SUMMARY"
-          ccache -s || true
-          df -hT || true
+            echo "Workflow: OP13 SukiSU Ultra CCTV18 Inline StockLike Daily v73"
+            echo "Profile: ${{ inputs.profile }}"
+            echo "SukiSU Ultra requested ref: ${{ inputs.sukisu_ref }}"
+            echo "SukiSU Ultra selected ref: ${SUKISU_SELECTED_REF:-unknown}"
+            echo "SUSFS enabled: ${{ inputs.susfs_enable }}"
+            echo "SUSFS ref: ${{ inputs.susfs_ref }}"
+            echo "SUSFS patch policy: ${{ inputs.susfs_patch_policy }}"
+            echo "Hook mode: ${{ inputs.hook_mode }}"
+            echo "KPM enabled: ${{ inputs.kpm_enable }}"
+            echo "Multi-manager support: ${{ inputs.multi_manager_support }}"
+            echo "Manager spoof patch: ${{ inputs.manager_spoof_patch }}"
+            echo "LZ4/ZSTD patch group: ${{ inputs.lz4_zstd_patch }}"
+            echo "LZ4KD patch group: ${{ inputs.lz4kd_patch }}"
+            echo "Kernel ref: ${{ inputs.cctv18_kernel_ref }}"
+            echo "Stock mimic: ${{ inputs.stock_mimic }}"
+            echo "Kernel name: ${{ inputs.kernel_name }}"
+            echo "BBR mode: ${{ inputs.bbr_mode }}"
+            echo "Better net: ${{ inputs.better_net }}"
+            echo "ZRAM/LZ4: ${{ inputs.zram_lz4 }} / ${{ inputs.zram_comp }}"
+            echo "No WildKernels SUSFS patch tree is cloned or used."
+            echo "No TheWildJames kernel_patches tree is cloned or used."
+            echo "No KernelSU-Next/ReSukiSU root glue is cloned or used."
+            echo "UTS: ${{ steps.build.outputs.uts }}"
+          } | tee _ox_debug/build-summary.txt
 
-      - name: "Upload artifacts"
-        uses: actions/upload-artifact@v4
+          if [ -d kernel_workspace/susfs4ksu ]; then
+            git -C kernel_workspace/susfs4ksu remote -v | tee _ox_debug/susfs-remote-final.txt || true
+          fi
+          if [ -d cctv18_assets ]; then
+            git -C cctv18_assets remote -v | tee _ox_debug/cctv18-assets-remote.txt || true
+          fi
+          if [ -d kernel_workspace/common ]; then
+            find kernel_workspace/common -name '*.rej' -o -name '*.orig' 2>/dev/null | sort | tee _ox_debug/rejects-orig-files.txt || true
+          fi
+          find artifacts _ox_debug -maxdepth 3 -type f -printf '%p %s bytes\n' 2>/dev/null | sort | tee _ox_debug/artifact-preview.txt || true
+
+          if [ -f "$GITHUB_STEP_SUMMARY" ]; then
+            {
+              echo "# OP13 SukiSU Ultra + CCTV18 Inline StockLike Daily v73"
+              echo ""
+              echo "## Verdict"
+              echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
+              echo "- SUSFS source: CCTV18 only."
+              echo "- ZRAM/LZ4 config enabled: ${{ inputs.zram_lz4 }} / ${{ inputs.zram_comp }}."
+              echo "- Separate ZRAM tuner module zip generated: ${{ inputs.package_zram_tuner_zip }}."
+              echo ""
+              echo "## Outputs"
+              find artifacts -maxdepth 1 -type f -printf '- `%f`\n' 2>/dev/null | sort
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 13 Upload build and debug artifacts
+        if: always() && (inputs.upload_debug == true || success())
+        uses: actions/upload-artifact@v6
         with:
-          name: OP13-SukiSUUltra-CCTV18SUSFS-Advanced-Stable-v43-SukiSU-Only-Debug-Fix-${{ github.run_number }}
-          path: out_artifacts/**
-          if-no-files-found: error
+          name: OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v73-${{ github.run_number }}
+          path: |
+            artifacts/**
+            _ox_debug/**
+          if-no-files-found: warn
+          compression-level: 6
           retention-days: 14
+
+      - name: 14 Final status
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v73 ]; then
+            echo "::error::Build failed before producing Image. Download OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v73 debug artifact."
+            exit 1
+          fi
+          if [ "${{ inputs.package_ak3 }}" = "true" ] && ! ls artifacts/AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v73_*_FLASH_THIS.zip >/dev/null 2>&1; then
+            echo "::error::Image built but AnyKernel3 flashable ZIP was not produced."
+            exit 1
+          fi
+          echo "✅ OP13 SukiSU Ultra + CCTV18-only SUSFS inline stock-like daily-driver build completed."
+          echo "✅ Fixed AnyKernel3 boot partition detection: BLOCK=boot, IS_SLOT_DEVICE=auto, SLOT_SELECT=active."
+          echo "✅ No WildKernels/TheWildJames SUSFS patch tree was used."
