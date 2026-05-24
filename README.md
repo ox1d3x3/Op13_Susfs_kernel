@@ -52,7 +52,7 @@ Most releases are tuned as a **stable “Balanced/Stock‑like” baseline**, wi
 | Variant | Best for | Notes |
 |---|---|---|
 | **KernelSU‑Next** | KernelSU‑Next users / compatibility | Classic KSU‑Next experience |
-| **SukiSU Ultra (builtin)** | Ultra users / modern KSU stack | Uses SukiSU Ultra builtin integration |
+| **Resuki/SukiSU Ultra (builtin)** | Ultra users / modern KSU stack | Uses ReSuki/SukiSU Ultra builtin integration |
 
 > If you switch between variants: **reinstall the SUSFS module** after flashing (to avoid old module state/caches).
 
