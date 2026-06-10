@@ -1,0 +1,17 @@
+# Relaxed yamllint profile for GitHub Actions workflows.
+# Cosmetic rules are warnings (won't fail CI); structural problems are errors.
+extends: relaxed
+
+rules:
+  line-length: disable        # workflow run-blocks legitimately get long
+  trailing-spaces: disable    # heredocs / indented run blocks
+  comments:
+    min-spaces-from-content: 1
+  truthy:
+    # Allow GitHub's `on:` key and yes/no choice values.
+    allowed-values: ["true", "false", "on", "off", "On", "Off"]
+    check-keys: false
+  document-start: disable
+  empty-lines:
+    max: 2
+  indentation: disable        # mixed step indentation in existing files

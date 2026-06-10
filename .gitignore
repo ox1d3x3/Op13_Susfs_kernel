@@ -1,0 +1,25 @@
+# Build output / scratch
+out/
+*.log
+artifacts/
+_ox_debug/
+ak3_work/
+kernel_workspace/
+cctv18_assets/
+zram_tuner_work/
+
+# Toolchains / sources pulled at build time
+clang*/
+build-tools/
+*.zip
+*.tar.gz
+*.tar.xz
+
+# ccache
+.ccache*/
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*.orig
+*.rej

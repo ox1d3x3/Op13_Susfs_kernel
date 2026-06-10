@@ -1,4 +1,21 @@
-name: 'Build OnePlus Kernel with KernelSU Next'
+# =============================================================================
+# Portable OnePlus GKI kernel composite action (KSU / KSUN + SUSFS lane)
+# -----------------------------------------------------------------------------
+# This is the GENERIC, device-agnostic builder. It syncs sources with Google's
+# `repo` tool (see manifest.xml), pulls AnyKernel3 + kernel_patches from
+# TheWildJames and SUSFS from simonpunk/susfs4ksu, and applies the OnePlus
+# performance/battery patch set. Reuse it from a caller workflow via:
+#
+#   - uses: ./
+#     with:
+#       op_config_json: ${{ toJSON(<device-config>) }}
+#       ksu_type: KSUN
+#
+# NOTE: The device-specific OP13 lanes that ship releases for this repo live in
+# .github/workflows/Build *.yml and use the CCTV18 source/toolchain/SUSFS tree
+# instead. Keep the two paths conceptually separate; see docs/REVIEW.md.
+# =============================================================================
+name: 'Build OnePlus Kernel (KSU / KSUN + SUSFS, portable)'
 
 inputs:
   op_config_json:
@@ -481,13 +498,13 @@ runs:
         
         CACHE_DIR="$HOME/.ccache"
         echo "CCACHE_DIR=$CACHE_DIR" >> "$GITHUB_ENV"
-        echo "CCACHE_MAXSIZE=1G" >> "$GITHUB_ENV"
+        echo "CCACHE_MAXSIZE=8G" >> "$GITHUB_ENV"
         
         mkdir -p "$CACHE_DIR"
         
         echo "Cache configuration:"
         echo "  Directory: $CACHE_DIR"
-        echo "  Max size: 1G"
+        echo "  Max size: 8G"
         echo "  Android: ${ANDROID_VER:-unknown}"
         echo "  Kernel: ${KERNEL_VER:-unknown}"
         echo "  OOS Version: ${OP_OS_VERSION:-unknown}"
@@ -511,7 +528,7 @@ runs:
         echo "::group::Configure ccache for maximum performance"
         
         export CCACHE_DIR="$HOME/.ccache"
-        export CCACHE_MAXSIZE="1G"
+        export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-8G}"
         
         ccache -M "$CCACHE_MAXSIZE"
         
@@ -545,7 +562,7 @@ runs:
         echo "✅ ccache configured for production"
         echo ""
         echo "Configuration applied:"
-        echo "  Max size: 12G (persisted)"
+        echo "  Max size: ${CCACHE_MAXSIZE:-8G} (persisted)"
         echo "  Base dir: ${GITHUB_WORKSPACE}"
         echo "  Compression: zstd level 3"
         echo "  Direct mode: enabled"

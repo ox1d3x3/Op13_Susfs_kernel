@@ -1,0 +1,44 @@
+name: Lint Workflows
+
+# Static analysis for every GitHub Actions workflow and the composite action.
+# Runs actionlint (which shells out to shellcheck for `run:` blocks) plus yamllint.
+# This catches expression typos, bad `needs`, undefined inputs and shell bugs
+# *before* a 30+ minute kernel build is ever queued.
+
+on:
+  push:
+    paths:
+      - ".github/workflows/**"
+      - "action.yml"
+      - ".github/.yamllint.yml"
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - "action.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y shellcheck
+
+      - name: actionlint
+        uses: docker://rhysd/actionlint:latest
+        with:
+          args: -color
+
+      - name: Install yamllint
+        run: pipx install yamllint || pip install --user yamllint
+
+      - name: yamllint
+        run: |
+          set -euo pipefail
+          yamllint -c .github/.yamllint.yml .github/workflows/ action.yml
