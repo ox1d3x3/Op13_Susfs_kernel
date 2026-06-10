@@ -767,6 +767,27 @@ jobs:
           set -euo pipefail
           rm -rf ak3_work
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3_work
+          # --- Bundle a best-effort RAM Expansion fix module into the AK3 zip ---
+          mkdir -p ak3_work/ramfix
+          cat > ak3_work/ramfix/module.prop <<'RAMFIXPROP'
+          id=op13_ram_expansion_fix
+          name=OP13 RAM Expansion Fix
+          version=v1
+          versionCode=1
+          author=ox1d3x3
+          description=Restores OnePlus RAM Expansion (extended RAM) under root by re-asserting persist.sys.oplus.nandswap.condition on each boot. Bundled with the kernel.
+          RAMFIXPROP
+          cat > ak3_work/ramfix/service.sh <<'RAMFIXSVC'
+          #!/system/bin/sh
+          MODDIR=${0%/*}
+          until [ "$(getprop sys.boot_completed)" = "1" ]; do sleep 2; done
+          sleep 8
+          resetprop persist.sys.oplus.nandswap.condition true 2>/dev/null || setprop persist.sys.oplus.nandswap.condition true 2>/dev/null || true
+          for n in /sys/block/zram0/hybridswap_dev_life /sys/block/zram*/hybridswap_dev_life; do
+            [ -e "$n" ] && echo 1 > "$n" 2>/dev/null || true
+          done
+          RAMFIXSVC
+          chmod 0755 ak3_work/ramfix/service.sh
           rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
           cp -f artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v81 ak3_work/Image
 
@@ -878,6 +899,19 @@ jobs:
           fi
 
           ui_print ' '
+          # --- OX RAM Expansion auto-install (best effort; needs decrypted /data) ---
+          if [ -d /data/adb/modules ] && [ -d "$home/ramfix" ]; then
+          ui_print ' Installing bundled RAM Expansion fix...'
+          RFM=/data/adb/modules/op13_ram_expansion_fix
+          mkdir -p "$RFM"
+          cp -f "$home/ramfix/module.prop" "$RFM/module.prop" 2>/dev/null
+          cp -f "$home/ramfix/service.sh" "$RFM/service.sh" 2>/dev/null
+          chmod 0755 "$RFM/service.sh" 2>/dev/null
+          rm -f "$RFM/disable" "$RFM/remove" "$RFM/update" 2>/dev/null
+          ui_print ' RAM Expansion fix installed (applies after reboot).'
+          else
+          ui_print ' RAM Expansion: /data not mounted - use X1 Kernel Manager instead.'
+          fi
           ui_print ' Reboot Your System '
           ui_print ' '
           ui_print ' '
