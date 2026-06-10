@@ -451,12 +451,14 @@ jobs:
               src = path.read_text(encoding='utf-8', errors='ignore')
               original = src
 
-              # Current SukiSU Ultra builtin can define USER_ARG_NULL as a compound struct literal,
-              # while ksu_sulog_capture() expects struct user_arg_ptr * for argv_user.
-              # Make only this narrow compile fix, and only when the exact bad call shape exists.
+              # In current SukiSU Ultra, USER_ARG_NULL expands to user_arg_null_ptr(), which already
+              # returns a 'struct user_arg_ptr *'. With CONFIG_KSU_SUSFS the active ksu_sulog_capture()
+              # takes 'struct user_arg_ptr *argv_user', so passing the bare USER_ARG_NULL is correct.
+              # A stray '&USER_ARG_NULL' is "address of an rvalue" and fails to compile, so normalize
+              # to the bare pointer form (strip any leading '&'). No-op when the source is already correct.
               src = re.sub(
-                  r'ksu_sulog_capture\(\s*KSU_SULOG_EVENT_IOCTL_GRANT_ROOT\s*,\s*NULL\s*,\s*USER_ARG_NULL\s*,\s*gfp\s*\)',
-                  'ksu_sulog_capture(KSU_SULOG_EVENT_IOCTL_GRANT_ROOT, NULL, &USER_ARG_NULL, gfp)',
+                  r'ksu_sulog_capture\(\s*KSU_SULOG_EVENT_IOCTL_GRANT_ROOT\s*,\s*NULL\s*,\s*&\s*USER_ARG_NULL\s*,\s*gfp\s*\)',
+                  'ksu_sulog_capture(KSU_SULOG_EVENT_IOCTL_GRANT_ROOT, NULL, USER_ARG_NULL, gfp)',
                   src,
               )
 
