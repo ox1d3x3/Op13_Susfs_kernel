@@ -121,7 +121,7 @@ on:
           - zstd
         default: lz4
       package_zram_tuner_zip:
-        description: "Create separate KSU/Magisk ZRAM LZ4 tuner zip artifact. Safe/non-invasive by default."
+        description: "Deprecated: ZRAM tuning is now handled by the X1 Kernel Manager module. This no longer produces a zip."
         required: true
         type: boolean
         default: true
@@ -446,6 +446,56 @@ jobs:
             find . -name '*.rej' -print | tee "$GITHUB_WORKSPACE/_ox_debug/rejects-after-susfs-stage.txt"
             exit 1
           fi
+
+      - name: "KSUN SELinux policy-query compatibility guard"
+        if: ${{ inputs.susfs_enable == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel_workspace/common
+          mkdir -p "$GITHUB_WORKSPACE/_ox_debug"
+
+          {
+            echo "==> KernelSU-Next + CCTV18 SELinux policy-query compatibility guard"
+            echo "KSUN reaches final link, then fails on SELinux policy-query symbols without this guard."
+            echo "The failure was unresolved SELinux policy-query symbols, not root/SUSFS integration."
+            echo "For the stable daily-driver KSUN lane, disable only the source-level SELinux policy-query replacement blocks in hooks.c and selinuxfs.c."
+            echo "This does not import another SUSFS tree and does not touch the core SUSFS fs/include payload."
+          } | tee "$GITHUB_WORKSPACE/_ox_debug/selinux-policy-query-guard.log"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          paths = [Path('security/selinux/hooks.c'), Path('security/selinux/selinuxfs.c')]
+          changed = []
+          for path in paths:
+              if not path.exists():
+                  continue
+              src = path.read_text(encoding='utf-8', errors='ignore')
+              original = src
+              # CCTV18's 50_add_susfs patch adds source-level SELinux policy-query wrappers
+              # under CONFIG_KSU_SUSFS. KernelSU-Next does not provide the backup_sepolicy
+              # and *_with_policy symbols needed by those wrappers, causing final link failure.
+              # Gate those wrappers behind a symbol we intentionally do not enable for this
+              # stable KSUN lane. Core SUSFS and KernelSU-Next remain enabled.
+              src = src.replace(
+                  '#ifdef CONFIG_KSU_SUSFS\n',
+                  '#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_SELINUX_POLICY_HIDE)\n'
+              )
+              if src != original:
+                  path.write_text(src, encoding='utf-8')
+                  changed.append(str(path))
+
+          out = Path('../../_ox_debug/selinux-policy-query-guard-files.txt')
+          out.write_text('\n'.join(changed) + ('\n' if changed else 'none\n'), encoding='utf-8')
+          print('Guarded files:', ', '.join(changed) if changed else 'none')
+          PY
+
+          echo "==> SELinux symbol scan after guard" | tee -a "$GITHUB_WORKSPACE/_ox_debug/selinux-policy-query-guard.log"
+          for sym in backup_sepolicy security_context_to_sid_with_policy security_sid_to_context_with_policy security_compute_av_user_with_policy; do
+            echo "--- $sym ---" | tee -a "$GITHUB_WORKSPACE/_ox_debug/selinux-policy-query-guard.log"
+            grep -Rsn "$sym" security/selinux | tee -a "$GITHUB_WORKSPACE/_ox_debug/selinux-policy-query-guard.log" || true
+          done
 
       - name: "Apply optional CCTV18 feature patches"
         shell: bash
@@ -932,7 +982,7 @@ jobs:
           Profile: ${{ inputs.profile }}
           Optimise: ${{ inputs.optimise }}
           ZRAM/LZ4 config: ${{ inputs.zram_lz4 }} / compressor=${{ inputs.zram_comp }}
-          Separate ZRAM tuner ZIP: ${{ inputs.package_zram_tuner_zip }}
+          ZRAM runtime tuner: X1 Kernel Manager module (separate tuner zip removed)
           UTS_RELEASE: ${{ steps.build.outputs.uts }}
           Built UTC: $(date -u '+%Y-%m-%d %H:%M:%S')
           EOF
@@ -960,117 +1010,6 @@ jobs:
             echo "::error::OX install info banner was not packaged."
             exit 1
           fi
-      - name: "Build flashable ZRAM module"
-        if: ${{ inputs.package_zram_tuner_zip == true }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf zram_tuner_work
-          MOD="zram_tuner_work"
-          mkdir -p "$MOD/META-INF/com/google/android" "$MOD/common"
-
-          cat > "$MOD/module.prop" <<EOF
-          id=ox_op13_zram_lz4
-          name=OX OP13 ZRAM LZ4 Tuner
-          version=v81
-          versionCode=76
-          author=ox1d3x3
-          description=Safe OP13 ZRAM helper. Prefers ${{ inputs.zram_comp }} if supported. Skips destructive reset when zram is already active.
-          EOF
-
-          cat > "$MOD/post-fs-data.sh" <<'EOS'
-          #!/system/bin/sh
-          MODDIR=${0%/*}
-          LOG=/data/adb/ox_zram_lz4.log
-          PREF="lz4"
-          CONF=/data/adb/ox_zram_lz4.conf
-          [ -f "$CONF" ] && . "$CONF"
-          echo "[$(date)] post-fs-data start" >> "$LOG"
-          Z=/sys/block/zram0
-          [ -d "$Z" ] || { echo "zram0 not found" >> "$LOG"; exit 0; }
-          if grep -qE '(^|/)zram0($| )' /proc/swaps 2>/dev/null; then
-            echo "zram already active, skipping reset for safety" >> "$LOG"
-            cat /proc/swaps >> "$LOG" 2>/dev/null
-            exit 0
-          fi
-          if [ -w "$Z/reset" ]; then echo 1 > "$Z/reset" 2>>"$LOG" || true; fi
-          if [ -r "$Z/comp_algorithm" ] && [ -w "$Z/comp_algorithm" ]; then
-            for alg in "$PREF" lz4 lzo-rle lzo zstd; do
-              if grep -qw "$alg" "$Z/comp_algorithm"; then
-                echo "$alg" > "$Z/comp_algorithm" 2>>"$LOG" && echo "compressor=$alg" >> "$LOG"
-                break
-              fi
-            done
-          fi
-          mem_kb=$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)
-          [ -n "$mem_kb" ] || mem_kb=$((8*1024*1024))
-          target_kb=$((mem_kb / 2))
-          min_kb=$((4*1024*1024))
-          cap_kb=$((8*1024*1024))
-          [ "$target_kb" -lt "$min_kb" ] && target_kb="$min_kb"
-          [ "$target_kb" -gt "$cap_kb" ] && target_kb="$cap_kb"
-          echo "${target_kb}K" > "$Z/disksize" 2>>"$LOG" || true
-          /system/bin/mkswap /dev/block/zram0 >> "$LOG" 2>&1 || /system/bin/toybox mkswap /dev/block/zram0 >> "$LOG" 2>&1 || true
-          /system/bin/swapon -p 32767 /dev/block/zram0 >> "$LOG" 2>&1 || /system/bin/toybox swapon -p 32767 /dev/block/zram0 >> "$LOG" 2>&1 || true
-          cat /proc/swaps >> "$LOG" 2>/dev/null || true
-          echo "[$(date)] post-fs-data done" >> "$LOG"
-          EOS
-
-          cat > "$MOD/service.sh" <<'EOS'
-          #!/system/bin/sh
-          LOG=/data/adb/ox_zram_lz4.log
-          sleep 30
-          echo "[$(date)] service check" >> "$LOG"
-          if [ -r /sys/block/zram0/comp_algorithm ]; then
-            echo "comp_algorithm: $(cat /sys/block/zram0/comp_algorithm)" >> "$LOG"
-          fi
-          cat /proc/swaps >> "$LOG" 2>/dev/null || true
-          EOS
-
-          cat > "$MOD/uninstall.sh" <<'EOS'
-          #!/system/bin/sh
-          rm -f /data/adb/ox_zram_lz4.log
-          EOS
-
-          cat > "$MOD/customize.sh" <<'EOS'
-          ui_print ""
-          ui_print "===================================================="
-          ui_print "                   __   __  __ "
-          ui_print "                  \\ \\ / //_ |"
-          ui_print "                   \\ V /   | |"
-          ui_print "                     > <    | |"
-          ui_print "                   / . \\   | |"
-          ui_print "                 /_/ \\_\\  |_|"
-          ui_print "===================================================="
-          ui_print "OX OP13 ZRAM LZ4 Tuner"
-          ui_print "Preferred compressor: ${{ inputs.zram_comp }}"
-          ui_print "Safe mode: will not reset zram if already active"
-          ui_print "Log: /data/adb/ox_zram_lz4.log"
-          ui_print ""
-          EOS
-
-          cat > "$MOD/META-INF/com/google/android/updater-script" <<'EOS'
-          #MAGISK
-          EOS
-
-          cat > "$MOD/META-INF/com/google/android/update-binary" <<'EOS'
-          #!/sbin/sh
-          # Minimal compatibility stub for Magisk/KernelSU module installers.
-          OUTFD=$2
-          ZIPFILE=$3
-          ui_print() { echo "ui_print $1" > /proc/self/fd/$OUTFD; echo "ui_print" > /proc/self/fd/$OUTFD; }
-          ui_print "Install this ZIP through KernelSU/SukiSU/Magisk module manager."
-          ui_print "If your manager supports Magisk module ZIPs, it will handle extraction."
-          exit 0
-          EOS
-
-          chmod 0755 "$MOD/post-fs-data.sh" "$MOD/service.sh" "$MOD/uninstall.sh" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/update-binary"
-          sed -i 's/^          //' "$MOD"/*.sh "$MOD/module.prop" "$MOD/customize.sh" "$MOD/META-INF/com/google/android/"* || true
-
-          zip_name="OP13_ZRAM_LZ4_Tuner_v81_${{ github.run_number }}.zip"
-          ( cd "$MOD" && zip -r9 "../artifacts/$zip_name" . >/dev/null )
-          sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
-
       - name: "Clean-source audit and debug collection"
         if: always()
         shell: bash
@@ -1116,7 +1055,7 @@ jobs:
               echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
               echo "- SUSFS source: CCTV18 only."
               echo "- ZRAM/LZ4 config enabled: ${{ inputs.zram_lz4 }} / ${{ inputs.zram_comp }}."
-              echo "- Separate ZRAM tuner module zip generated: ${{ inputs.package_zram_tuner_zip }}."
+              echo "- ZRAM runtime tuning: use the X1 Kernel Manager module (separate tuner zip removed)."
               echo ""
               echo "## Outputs"
               find artifacts -maxdepth 1 -type f -printf '- `%f`\n' 2>/dev/null | sort
