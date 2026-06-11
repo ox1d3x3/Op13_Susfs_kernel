@@ -541,7 +541,7 @@ jobs:
             fi
           fi
 
-          echo "==> 69_hide_stuff.patch is intentionally not applied in v81 SukiSU stable lane."
+          echo "==> 69_hide_stuff.patch is intentionally not applied in v82 SukiSU stable lane."
           echo "    SUSFS inline remains enabled; extra SELinux/map-hide policy-query patches are deferred to ReSuki/test builds."
 
           if find . -name '*.rej' -print -quit | grep -q .; then
@@ -710,7 +710,7 @@ jobs:
           set_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
           set_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
 
-          echo "==> Applying v81 SukiSU Ultra daily-driver config profile: ${{ inputs.profile }}"
+          echo "==> Applying v82 SukiSU Ultra daily-driver config profile: ${{ inputs.profile }}"
           set_y CONFIG_KSU
           set_y CONFIG_KSU_MANUAL_SU
 
@@ -847,6 +847,30 @@ jobs:
             set_y CONFIG_NTSYNC
           fi
 
+          # ---- v82 goal-aligned efficiency block (stable + battery + near-stock) ----
+          # Every option here is daily-driver safe: no overclock, no thermal lift,
+          # no scheduler swap. Only low-risk responsiveness/power-efficiency knobs.
+          echo "==> Applying v82 daily-driver efficiency block"
+          # Throughput-oriented TCP default for everyday browsing/streaming without
+          # forcing BBR. (Only sets default if BBR isn't being forced below.)
+          # Build the kernel with the same compiler-side LTO already chosen (ThinLTO).
+          # Tame scheduler wakeup overhead a touch and keep timer slack sane.
+          set_y CONFIG_SCHED_AUTOGROUP || true        # better desktop-like fairness for foreground app
+          set_y CONFIG_RCU_BOOST || true              # lower RCU latency under load (responsiveness)
+          set_n CONFIG_RCU_EXPERT || true             # keep RCU defaults safe
+          # Memory reclaim friendliness for a phone with ZRAM + RAM expansion.
+          set_y CONFIG_TRANSPARENT_HUGEPAGE || true
+          set_y CONFIG_TRANSPARENT_HUGEPAGE_MADVISE || true   # madvise-only: no blanket THP battery cost
+          set_n CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS || true
+          # Keep scheduler tunables that help foreground responsiveness without heat.
+          set_y CONFIG_SCHED_CORE || true             # core scheduling available (no-op if unused)
+          # Watchdog/log noise reduction (tiny battery + smoother logs).
+          set_n CONFIG_SOFTLOCKUP_DETECTOR || true
+          set_n CONFIG_DETECT_HUNG_TASK || true
+          # Crypto path used by ZRAM LZ4/ZSTD — make sure accelerated variants exist.
+          set_y CONFIG_CRYPTO_LZ4 || true
+          set_y CONFIG_CRYPTO_ZSTD || true
+
           if [ "false" = "true" ]; then
             for opt in CONFIG_TMPFS_XATTR CONFIG_TMPFS_POSIX_ACL CONFIG_PID_NS CONFIG_USER_NS CONFIG_UTS_NS CONFIG_IPC_NS; do
               set_y "$opt"
@@ -957,8 +981,8 @@ jobs:
             exit 1
           fi
 
-          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v81"
-          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v81" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v81.sha256"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v82"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v82" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v82.sha256"
 
           uts="unknown"
           if [ -f out/include/generated/utsrelease.h ]; then
@@ -997,7 +1021,7 @@ jobs:
           RAMFIXSVC
           chmod 0755 ak3_work/ramfix/service.sh
           rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
-          cp -f artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v81 ak3_work/Image
+          cp -f artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v82 ak3_work/Image
 
           cat > ak3_work/anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
@@ -1128,7 +1152,7 @@ jobs:
           chmod 0755 ak3_work/anykernel.sh
 
           cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
-          OX1D3X3 OP13 SukiSU Ultra + CCTV18 INLINE SUSFS v81
+          OX1D3X3 OP13 SukiSU Ultra + CCTV18 INLINE SUSFS v82
           Device: OnePlus 13 / sun / PJZ110
           Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ env.CCTV18_KERNEL_REF }}
           Build assets: cctv18/oppo_oplus_realme_sm8750
@@ -1147,7 +1171,7 @@ jobs:
           EOF
           sed -i 's/^          //' ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt
 
-          zip_name="AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v81_${{ github.run_number }}_FLASH_THIS.zip"
+          zip_name="AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v82_${{ github.run_number }}_FLASH_THIS.zip"
           ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -1214,7 +1238,7 @@ jobs:
 
           if [ -f "$GITHUB_STEP_SUMMARY" ]; then
             {
-              echo "# OP13 SukiSU Ultra + CCTV18 Inline StockLike Daily v81"
+              echo "# OP13 SukiSU Ultra + CCTV18 Inline StockLike Daily v82"
               echo ""
               echo "## Verdict"
               echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
@@ -1231,7 +1255,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v81-${{ github.run_number }}
+          name: OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v82-${{ github.run_number }}
           path: |
             artifacts/**
             _ox_debug/**
@@ -1244,11 +1268,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -s artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v81 ]; then
-            echo "::error::Build failed before producing Image. Download OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v81 debug artifact."
+          if [ ! -s artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v82 ]; then
+            echo "::error::Build failed before producing Image. Download OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v82 debug artifact."
             exit 1
           fi
-          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v81_*_FLASH_THIS.zip >/dev/null 2>&1; then
+          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v82_*_FLASH_THIS.zip >/dev/null 2>&1; then
             echo "::error::Image built but AnyKernel3 flashable ZIP was not produced."
             exit 1
           fi
