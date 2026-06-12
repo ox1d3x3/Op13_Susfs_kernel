@@ -62,10 +62,15 @@ on:
         options: [inline_susfs, resukisu_auto, tracepoint_test]
         default: inline_susfs
       kernel_suffix:
-        description: "Stock-like LOCALVERSION without leading dash. Leave default for current OP13 stock mimic."
+        description: "Stock-like LOCALVERSION without leading dash (this is the real uname -r). Leave default for current OP13 stock mimic / best app compatibility."
         required: false
         type: string
         default: "android15-8-g7e1f3c083cc6-abogki467167594-4k"
+      kernel_name:
+        description: "Display name shown in kernel-manager apps and the flash banner (does NOT change uname -r). Customise this freely, e.g. 'OX13-ReSukiSU'."
+        required: false
+        type: string
+        default: "PJZ110 | ReSukiSU [Inline StockLike] + CCTV18 SUSFS (OP-OX)"
       optimise:
         description: "O2 is stable daily-driver default. O3 is test-only."
         required: true
@@ -594,7 +599,7 @@ jobs:
           set_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
           set_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
 
-          echo "==> Applying v82 ReSukiSU daily-driver config profile: ${{ inputs.profile }}"
+          echo "==> Applying v83 ReSukiSU daily-driver config profile: ${{ inputs.profile }}"
           set_y CONFIG_KSU
           
           if [ "${{ inputs.kpm_enable }}" = "true" ]; then
@@ -729,21 +734,6 @@ jobs:
             set_y CONFIG_NTSYNC
           fi
 
-          # ---- v82 goal-aligned efficiency block (stable + battery + near-stock) ----
-          # Every option here is daily-driver safe: no overclock, no thermal lift,
-          # no scheduler swap. Only low-risk responsiveness/power-efficiency knobs.
-          echo "==> Applying v82 daily-driver efficiency block"
-          set_y CONFIG_SCHED_AUTOGROUP || true
-          set_y CONFIG_RCU_BOOST || true
-          set_n CONFIG_RCU_EXPERT || true
-          set_y CONFIG_TRANSPARENT_HUGEPAGE || true
-          set_y CONFIG_TRANSPARENT_HUGEPAGE_MADVISE || true
-          set_n CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS || true
-          set_y CONFIG_SCHED_CORE || true
-          set_n CONFIG_SOFTLOCKUP_DETECTOR || true
-          set_n CONFIG_DETECT_HUNG_TASK || true
-          set_y CONFIG_CRYPTO_LZ4 || true
-          set_y CONFIG_CRYPTO_ZSTD || true
 
           if [ "false" = "true" ]; then
             for opt in CONFIG_TMPFS_XATTR CONFIG_TMPFS_POSIX_ACL CONFIG_PID_NS CONFIG_USER_NS CONFIG_UTS_NS CONFIG_IPC_NS; do
@@ -845,8 +835,8 @@ jobs:
             exit 1
           fi
 
-          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v82"
-          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v82" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v82.sha256"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v83"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v83" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v83.sha256"
 
           uts="unknown"
           if [ -f out/include/generated/utsrelease.h ]; then
@@ -885,7 +875,7 @@ jobs:
           RAMFIXSVC
           chmod 0755 ak3_work/ramfix/service.sh
           rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
-          cp -f artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v82 ak3_work/Image
+          cp -f artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v83 ak3_work/Image
 
           cat > ak3_work/anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
@@ -895,7 +885,7 @@ jobs:
           ### AnyKernel setup
           # global properties
           properties() { '
-          kernel.string=PJZ110 | ReSukiSU [Inline StockLike] + CCTV18 SUSFS (OP-OX)
+          kernel.string=${{ inputs.kernel_name }}
           do.devicecheck=0
           do.modules=0
           do.systemless=0
@@ -1016,7 +1006,7 @@ jobs:
           chmod 0755 ak3_work/anykernel.sh
 
           cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
-          OX1D3X3 OP13 ReSukiSU + CCTV18 INLINE SUSFS v82
+          OX1D3X3 OP13 ReSukiSU + CCTV18 INLINE SUSFS v83
           Device: OnePlus 13 / sun / PJZ110
           Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ env.CCTV18_KERNEL_REF }}
           Build assets: cctv18/oppo_oplus_realme_sm8750
@@ -1035,7 +1025,7 @@ jobs:
           EOF
           sed -i 's/^          //' ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt
 
-          zip_name="AK3_OP13_ReSukiSU_CCTV18_inline_stocklike_v82_${{ github.run_number }}_FLASH_THIS.zip"
+          zip_name="AK3_OP13_ReSukiSU_CCTV18_inline_stocklike_v83_${{ github.run_number }}_FLASH_THIS.zip"
           ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -1102,7 +1092,7 @@ jobs:
 
           if [ -f "$GITHUB_STEP_SUMMARY" ]; then
             {
-              echo "# OP13 ReSukiSU + CCTV18 Inline StockLike Daily v82"
+              echo "# OP13 ReSukiSU + CCTV18 Inline StockLike Daily v83"
               echo ""
               echo "## Verdict"
               echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
@@ -1119,7 +1109,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: OP13-RESUKISU-CCTV18-INLINE-STOCKLIKE-v82-${{ github.run_number }}
+          name: OP13-RESUKISU-CCTV18-INLINE-STOCKLIKE-v83-${{ github.run_number }}
           path: |
             artifacts/**
             _ox_debug/**
@@ -1132,11 +1122,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -s artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v82 ]; then
-            echo "::error::Build failed before producing Image. Download OP13-RESUKISU-CCTV18-INLINE-STOCKLIKE-v82 debug artifact."
+          if [ ! -s artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v83 ]; then
+            echo "::error::Build failed before producing Image. Download OP13-RESUKISU-CCTV18-INLINE-STOCKLIKE-v83 debug artifact."
             exit 1
           fi
-          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_ReSukiSU_CCTV18_inline_stocklike_v82_*_FLASH_THIS.zip >/dev/null 2>&1; then
+          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_ReSukiSU_CCTV18_inline_stocklike_v83_*_FLASH_THIS.zip >/dev/null 2>&1; then
             echo "::error::Image built but AnyKernel3 flashable ZIP was not produced."
             exit 1
           fi
