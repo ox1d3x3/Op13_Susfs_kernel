@@ -24,7 +24,7 @@ on:
         options: [stock_daily, stock_plus, minimal_safe, debug_only]
         default: stock_daily
       sukisu_ref:
-        description: "SukiSU Ultra ref. builtin is recommended for clean inline SUSFS daily-driver."
+        description: "SukiSU Ultra ref. 'builtin' (default) tracks the builtin branch HEAD; it boots fine but the manager may show a harmless 'Manager/driver version mismatch' (driver is newer than the released app). To remove that cosmetic warning, set this to the tag 'v4.1.3' so driver and manager match exactly."
         required: true
         type: string
         default: "builtin"

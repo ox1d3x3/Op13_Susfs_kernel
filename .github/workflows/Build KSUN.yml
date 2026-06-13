@@ -125,11 +125,6 @@ on:
           - lzo-rle
           - zstd
         default: lz4
-      package_zram_tuner_zip:
-        description: "Deprecated: ZRAM tuning is now handled by the X1 Kernel Manager module. This no longer produces a zip."
-        required: true
-        type: boolean
-        default: true
       ntsync:
         description: "Enable NTSYNC config if available."
         required: true
