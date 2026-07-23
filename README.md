@@ -3,7 +3,7 @@
   Repo: ox1d3x3/Op13_Susfs_kernel
 -->
 
-<h1 align="center">If UniWRT is useful to you, a ⭐ helps others find it.</h1>
+<h1 align="center">If This Kernel is useful to you, a ⭐ helps others find it.</h1>
 
 <div align="center">
 
