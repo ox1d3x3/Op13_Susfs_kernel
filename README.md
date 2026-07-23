@@ -3,6 +3,8 @@
   Repo: ox1d3x3/Op13_Susfs_kernel
 -->
 
+<h1 align="center">If UniWRT is useful to you, a ⭐ helps others find it.</h1>
+
 <div align="center">
 
 <img src="./.github/assets/hero.svg" alt="OP13 GKI Kernel banner" width="100%" />
