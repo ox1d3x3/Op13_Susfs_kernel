@@ -10,7 +10,7 @@ env:
   CCTV18_BUILD_REPO: cctv18/oppo_oplus_realme_sm8750
   CCTV18_COMMON_REPO: cctv18/android_kernel_common_oneplus_sm8750
   CCTV18_TOOLCHAIN_RELEASE: LLVM-Clang18-r510928
-  CCACHE_DIR: ${{ github.workspace }}/.ccache_op13_ksun_cctv18_v84
+  CCACHE_DIR: ${{ github.workspace }}/.ccache_op13_ksun_cctv18_v86
   CCACHE_MAXSIZE: 8G
 
 on:
@@ -167,7 +167,7 @@ on:
         default: true
 
 concurrency:
-  group: op13-ksun-cctv18-clean-v84-${{ github.ref }}
+  group: op13-ksun-cctv18-clean-v86-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -243,10 +243,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-op13-ksun-cctv18-v84-${{ inputs.profile }}-${{ inputs.susfs_enable }}-${{ inputs.ksun_ref }}-${{ github.ref_name }}
+          key: ccache-${{ runner.os }}-op13-ksun-cctv18-v86-${{ inputs.profile }}-${{ inputs.susfs_enable }}-${{ inputs.ksun_ref }}-${{ github.ref_name }}
           restore-keys: |
-            ccache-${{ runner.os }}-op13-ksun-cctv18-v84-${{ inputs.profile }}-${{ inputs.susfs_enable }}-
-            ccache-${{ runner.os }}-op13-ksun-cctv18-v84-
+            ccache-${{ runner.os }}-op13-ksun-cctv18-v86-${{ inputs.profile }}-${{ inputs.susfs_enable }}-
+            ccache-${{ runner.os }}-op13-ksun-cctv18-v86-
 
       - name: "Install build dependencies"
         shell: bash
@@ -437,8 +437,47 @@ jobs:
           fi
 
           if [ -f 69_hide_stuff.patch ]; then
-            echo "==> Applying CCTV18 69_hide_stuff.patch"
-            patch -p1 -N -F 3 < 69_hide_stuff.patch || true
+            # v86 FIX (KSUN build failure on 6.6.118):
+            # 69_hide_stuff.patch modifies fs/proc/task_mmu.c and its hunks use
+            # SUSFS's "bypass_orig_flow:" label as CONTEXT -- i.e. it assumes the
+            # SUSFS task_mmu.c hunk already applied. This lane's audited policy
+            # deliberately TOLERATES a ./fs/proc/task_mmu.c reject, so that context
+            # can be absent. Applying with "|| true" then left the file half-patched:
+            # "struct dentry *dentry;" and the "bypass:" label were inserted while
+            # the hunks that USE them failed, producing
+            #   error: unused variable 'dentry'   [-Werror,-Wunused-variable]
+            #   error: unused label 'bypass'      [-Werror,-Wunused-label]
+            # Fix: dry-run first and apply ALL-OR-NOTHING, matching the discipline
+            # already used by clean_apply_optional_patch below. If it cannot apply
+            # fully, skip it entirely rather than contaminate task_mmu.c. This patch
+            # is supplementary /proc hiding only -- SUSFS provides the real hiding,
+            # and the ReSukiSU/SukiSU lanes skip it outright and boot fine.
+            echo "==> Checking CCTV18 69_hide_stuff.patch (all-or-nothing)"
+            if patch --dry-run -p1 -N -F 3 < 69_hide_stuff.patch \
+                 > "$GITHUB_WORKSPACE/_ox_debug/dryrun-69_hide_stuff.log" 2>&1; then
+              echo "==> Applying CCTV18 69_hide_stuff.patch (dry-run clean)"
+              patch -p1 -N -F 3 < 69_hide_stuff.patch \
+                > "$GITHUB_WORKSPACE/_ox_debug/apply-69_hide_stuff.log" 2>&1 || true
+            else
+              echo "::warning::69_hide_stuff.patch would not apply cleanly (expected when the SUSFS task_mmu.c hunk rejected); skipping it to avoid partial patch contamination."
+              cat "$GITHUB_WORKSPACE/_ox_debug/dryrun-69_hide_stuff.log" || true
+            fi
+            # Safety net (defence in depth): if task_mmu.c somehow still ends up
+            # with an orphaned label/declaration, strip them here rather than
+            # failing deep in the compile with -Werror. Both checks are
+            # conservative: they only fire when the symbol has NO real user.
+            if [ -f fs/proc/task_mmu.c ]; then
+              if grep -qE '^[[:space:]]*bypass:[[:space:]]*$' fs/proc/task_mmu.c \
+                 && ! grep -q 'goto bypass;' fs/proc/task_mmu.c; then
+                echo "::warning::Removing orphaned 'bypass:' label from fs/proc/task_mmu.c"
+                sed -i '/^[[:space:]]*bypass:[[:space:]]*$/d' fs/proc/task_mmu.c
+              fi
+              if grep -qE '^[[:space:]]*struct dentry \*dentry;[[:space:]]*$' fs/proc/task_mmu.c \
+                 && ! grep -qE '\bdentry[[:space:]]*(=|->)' fs/proc/task_mmu.c; then
+                echo "::warning::Removing orphaned 'struct dentry *dentry;' from fs/proc/task_mmu.c"
+                sed -i '/^[[:space:]]*struct dentry \*dentry;[[:space:]]*$/d' fs/proc/task_mmu.c
+              fi
+            fi
           fi
 
           if find . -name '*.rej' -print -quit | grep -q .; then
@@ -574,7 +613,7 @@ jobs:
           set_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
           set_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
 
-          echo "==> Applying v84 daily-driver config profile: ${{ inputs.profile }}"
+          echo "==> Applying v86 daily-driver config profile: ${{ inputs.profile }}"
           set_y CONFIG_KSU
 
           echo "==> Requested KernelSU hook/audit mode: ${{ inputs.hook_mode }}"
@@ -799,8 +838,8 @@ jobs:
             exit 1
           fi
 
-          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v84"
-          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v84" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v84.sha256"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v86"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v86" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v86.sha256"
 
           uts="unknown"
           if [ -f out/include/generated/utsrelease.h ]; then
@@ -818,6 +857,19 @@ jobs:
           set -euo pipefail
           rm -rf ak3_work
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3_work
+          git -C ak3_work rev-parse HEAD | tee "$GITHUB_WORKSPACE/_ox_debug/anykernel3_commit.txt"
+          # --- AK3 naming-convention guard (v86) ---
+          # AK3 renamed its anykernel.sh settings to UPPERCASE. We write both
+          # spellings, but if upstream ever changes convention AGAIN this guard
+          # makes it obvious in the log instead of silently shipping a zip that
+          # aborts at flash time with "Flash failed".
+          if grep -q '\$BLOCK' ak3_work/tools/ak3-core.sh; then
+            echo "AK3 convention: UPPERCASE (\$BLOCK) - our uppercase vars will be used."
+          elif grep -q '\$block' ak3_work/tools/ak3-core.sh; then
+            echo "AK3 convention: lowercase (\$block) - our legacy aliases will be used."
+          else
+            echo "::warning::Could not detect AK3 boot-partition variable convention in ak3-core.sh. Flashing may fail; inspect _ox_debug/anykernel3_commit.txt."
+          fi
           # --- Bundle a best-effort RAM Expansion fix module into the AK3 zip ---
           mkdir -p ak3_work/ramfix
           cat > ak3_work/ramfix/module.prop <<'RAMFIXPROP'
@@ -840,7 +892,7 @@ jobs:
           RAMFIXSVC
           chmod 0755 ak3_work/ramfix/service.sh
           rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
-          cp -f artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v84 ak3_work/Image
+          cp -f artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v86 ak3_work/Image
 
           cat > ak3_work/anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
@@ -871,12 +923,25 @@ jobs:
           ### AnyKernel install
           ## boot shell variables
           # OP13 / PJZ110 is A/B slot device. Use partition-name detection, not old omap path.
+          # v86 FLASH FIX: AnyKernel3 upstream renamed these settings to UPPERCASE
+          # (BLOCK, IS_SLOT_DEVICE, ...). This workflow clones AK3 master unpinned,
+          # so a fresh build picks up the new ak3-core.sh, which IGNORES the old
+          # lowercase names. With $BLOCK unset, AK3 cannot resolve the boot
+          # partition and aborts immediately after "Installing..." -> "Flash failed".
+          # We therefore set BOTH spellings: uppercase for current AK3, lowercase
+          # for older/pinned AK3 revisions. Harmless either way.
+          BLOCK=boot
+          IS_SLOT_DEVICE=auto
+          SLOT_SELECT=active
+          RAMDISK_COMPRESSION=auto
+          PATCH_VBMETA_FLAG=auto
+          NO_MAGISK_CHECK=1
+          # legacy lowercase aliases (older AnyKernel3)
           block=boot
           is_slot_device=auto
           slot_select=active
           ramdisk_compression=auto
           patch_vbmeta_flag=auto
-          no_vbmeta_partition_patch=1
           no_magisk_check=1
 
           # import functions/variables and setup patching - see for reference (DO NOT REMOVE)
@@ -971,7 +1036,7 @@ jobs:
           chmod 0755 ak3_work/anykernel.sh
 
           cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
-          OX1D3X3 OP13 KSUN + CCTV18 CLEAN SUSFS v84
+          OX1D3X3 OP13 KSUN + CCTV18 CLEAN SUSFS v86
           Device: OnePlus 13 / sun / PJZ110
           Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ inputs.cctv18_kernel_ref }}
           Build assets: cctv18/oppo_oplus_realme_sm8750
@@ -989,7 +1054,7 @@ jobs:
           EOF
           sed -i 's/^          //' ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt
 
-          zip_name="AK3_OP13_KSUN_CCTV18_clean_stocklike_v84_${{ github.run_number }}_FLASH_THIS.zip"
+          zip_name="AK3_OP13_KSUN_CCTV18_clean_stocklike_v86_${{ github.run_number }}_FLASH_THIS.zip"
           ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -1018,7 +1083,7 @@ jobs:
           set -euo pipefail
           mkdir -p _ox_debug artifacts
           {
-            echo "Workflow: OP13 KSUN CCTV18 Clean StockLike Daily v84"
+            echo "Workflow: OP13 KSUN CCTV18 Clean StockLike Daily v86"
             echo "Profile: ${{ inputs.profile }}"
             echo "KSUN ref: ${{ inputs.ksun_ref }}"
             echo "SUSFS enabled: ${{ inputs.susfs_enable }}"
@@ -1050,7 +1115,7 @@ jobs:
 
           if [ -f "$GITHUB_STEP_SUMMARY" ]; then
             {
-              echo "# OP13 KSUN + CCTV18 Clean StockLike Daily v84"
+              echo "# OP13 KSUN + CCTV18 Clean StockLike Daily v86"
               echo ""
               echo "## Verdict"
               echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
@@ -1067,7 +1132,7 @@ jobs:
         if: always() && (inputs.upload_debug == true || success())
         uses: actions/upload-artifact@v6
         with:
-          name: OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v84-${{ github.run_number }}
+          name: OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v86-${{ github.run_number }}
           path: |
             artifacts/**
             _ox_debug/**
@@ -1080,11 +1145,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -s artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v84 ]; then
-            echo "::error::Build failed before producing Image. Download OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v84 debug artifact."
+          if [ ! -s artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v86 ]; then
+            echo "::error::Build failed before producing Image. Download OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v86 debug artifact."
             exit 1
           fi
-          if [ "${{ inputs.package_ak3 }}" = "true" ] && ! ls artifacts/AK3_OP13_KSUN_CCTV18_clean_stocklike_v84_*_FLASH_THIS.zip >/dev/null 2>&1; then
+          if [ "${{ inputs.package_ak3 }}" = "true" ] && ! ls artifacts/AK3_OP13_KSUN_CCTV18_clean_stocklike_v86_*_FLASH_THIS.zip >/dev/null 2>&1; then
             echo "::error::Image built but AnyKernel3 flashable ZIP was not produced."
             exit 1
           fi
