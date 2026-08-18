@@ -9,7 +9,7 @@ env:
   DEVICE_CODENAME: sun
   CCTV18_BUILD_REPO: cctv18/oppo_oplus_realme_sm8750
   CCTV18_COMMON_REPO: cctv18/android_kernel_common_oneplus_sm8750
-  CCTV18_KERNEL_REF: oneplus/sm8750_v_16.0.0_oneplus_13_6.6.89
+  CCTV18_KERNEL_REF: oneplus/sm8750_b_16.0.0_oneplus_13_6.6.118
   CCTV18_TOOLCHAIN_RELEASE: LLVM-Clang18-r510928
   CCACHE_DIR: ${{ github.workspace }}/.ccache_op13_sukisu_cctv18
   CCACHE_MAXSIZE: 8G
@@ -65,7 +65,7 @@ on:
         description: "Stock-like LOCALVERSION without leading dash (this is the real uname -r). Leave default for current OP13 stock mimic / best app compatibility."
         required: false
         type: string
-        default: "android15-8-g7e1f3c083cc6-abogki467167594-4k"
+        default: "android15-8-g93e223c276e7-abogki500782043-4k"
       kernel_name:
         description: "Display name shown in kernel-manager apps and the flash banner (does NOT change uname -r). Customise this freely, e.g. 'OX13-SukiSU'."
         required: false
@@ -546,7 +546,7 @@ jobs:
             fi
           fi
 
-          echo "==> 69_hide_stuff.patch is intentionally not applied in v83 SukiSU stable lane."
+          echo "==> 69_hide_stuff.patch is intentionally not applied in v84 SukiSU stable lane."
           echo "    SUSFS inline remains enabled; extra SELinux/map-hide policy-query patches are deferred to ReSuki/test builds."
 
           if find . -name '*.rej' -print -quit | grep -q .; then
@@ -565,7 +565,7 @@ jobs:
 
           {
             echo "==> SukiSU + CCTV18 SELinux policy-query compatibility guard"
-            echo "v77 reached final link with SukiSU SUSFS_INLINE_HOOK + KPM + SUSFS v2.1.0."
+            echo "v77 reached final link with SukiSU SUSFS_INLINE_HOOK + KPM + SUSFS v2.2.0."
             echo "The failure was unresolved SELinux policy-query symbols, not root/SUSFS integration."
             echo "For the stable daily-driver SukiSU lane, disable only the source-level SELinux policy-query replacement blocks in hooks.c and selinuxfs.c."
             echo "This does not import another SUSFS tree and does not touch the core SUSFS fs/include payload."
@@ -715,7 +715,7 @@ jobs:
           set_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
           set_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
 
-          echo "==> Applying v83 SukiSU Ultra daily-driver config profile: ${{ inputs.profile }}"
+          echo "==> Applying v84 SukiSU Ultra daily-driver config profile: ${{ inputs.profile }}"
           set_y CONFIG_KSU
           set_y CONFIG_KSU_MANUAL_SU
 
@@ -963,8 +963,8 @@ jobs:
             exit 1
           fi
 
-          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v83"
-          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v83" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v83.sha256"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v84"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v84" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v84.sha256"
 
           uts="unknown"
           if [ -f out/include/generated/utsrelease.h ]; then
@@ -1003,7 +1003,7 @@ jobs:
           RAMFIXSVC
           chmod 0755 ak3_work/ramfix/service.sh
           rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
-          cp -f artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v83 ak3_work/Image
+          cp -f artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v84 ak3_work/Image
 
           cat > ak3_work/anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
@@ -1058,7 +1058,7 @@ jobs:
           ui_print '===================================================='
           ui_print ' '
           ui_print 'PJZ110 | SukiSU Ultra [Inline StockLike Daily] + CCTV18 SUSFS'
-          ui_print 'Kernel : 6.6.89-${{ inputs.kernel_suffix }}'
+          ui_print 'Kernel : 6.6.118-${{ inputs.kernel_suffix }}'
           ui_print 'Hook   : ${{ inputs.hook_mode }} (target: inline SUSFS)'
           ui_print 'Audit  : CONFIG_KSU + CONFIG_KSU_SUSFS + inline hook audit'
           ui_print 'Build  : #${{ github.run_number }} (${{ inputs.kernel_suffix }})'
@@ -1134,7 +1134,7 @@ jobs:
           chmod 0755 ak3_work/anykernel.sh
 
           cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
-          OX1D3X3 OP13 SukiSU Ultra + CCTV18 INLINE SUSFS v83
+          OX1D3X3 OP13 SukiSU Ultra + CCTV18 INLINE SUSFS v84
           Device: OnePlus 13 / sun / PJZ110
           Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ env.CCTV18_KERNEL_REF }}
           Build assets: cctv18/oppo_oplus_realme_sm8750
@@ -1153,7 +1153,7 @@ jobs:
           EOF
           sed -i 's/^          //' ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt
 
-          zip_name="AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v83_${{ github.run_number }}_FLASH_THIS.zip"
+          zip_name="AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v84_${{ github.run_number }}_FLASH_THIS.zip"
           ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -1220,7 +1220,7 @@ jobs:
 
           if [ -f "$GITHUB_STEP_SUMMARY" ]; then
             {
-              echo "# OP13 SukiSU Ultra + CCTV18 Inline StockLike Daily v83"
+              echo "# OP13 SukiSU Ultra + CCTV18 Inline StockLike Daily v84"
               echo ""
               echo "## Verdict"
               echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
@@ -1237,7 +1237,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v83-${{ github.run_number }}
+          name: OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v84-${{ github.run_number }}
           path: |
             artifacts/**
             _ox_debug/**
@@ -1250,11 +1250,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -s artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v83 ]; then
-            echo "::error::Build failed before producing Image. Download OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v83 debug artifact."
+          if [ ! -s artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v84 ]; then
+            echo "::error::Build failed before producing Image. Download OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v84 debug artifact."
             exit 1
           fi
-          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v83_*_FLASH_THIS.zip >/dev/null 2>&1; then
+          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v84_*_FLASH_THIS.zip >/dev/null 2>&1; then
             echo "::error::Image built but AnyKernel3 flashable ZIP was not produced."
             exit 1
           fi
