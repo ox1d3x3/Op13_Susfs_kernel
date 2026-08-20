@@ -24,10 +24,10 @@ on:
         options: [stock_daily, stock_plus, minimal_safe, debug_only]
         default: stock_daily
       sukisu_ref:
-        description: "SukiSU Ultra ref. 'builtin' (default) tracks the builtin branch HEAD; it boots fine but the manager may show a harmless 'Manager/driver version mismatch' (driver is newer than the released app). To remove that cosmetic warning, set this to the tag 'v4.1.3' so driver and manager match exactly."
+        description: "SukiSU Ultra ref. DEFAULT IS PINNED to 6c13a06 -- the last builtin-branch commit BEFORE upstream commit b8279c3 'kernel, ksud, manager: implement uapi version', which changed the kernel<->manager UAPI. Tracking 'builtin' HEAD gives a driver whose UAPI the released v4.1.3 manager (40796) cannot speak, so App Profile / Superuser toggles fail with 'Failed to update App Profile' even though su still works. Do NOT set this to the tag 'v4.1.3' -- that tag is NOT on the builtin branch and would lose built-in integration. Switch back to 'builtin' only once a SukiSU manager implementing the new UAPI is released."
         required: true
         type: string
-        default: "builtin"
+        default: "6c13a0695a1115e1000c998872b66f4ff5b2f11e"
       kpm_enable:
         description: "Enable SukiSU KPM support. Kernel support only; no random KPM modules bundled."
         required: true
@@ -546,7 +546,7 @@ jobs:
             fi
           fi
 
-          echo "==> 69_hide_stuff.patch is intentionally not applied in v86 SukiSU stable lane."
+          echo "==> 69_hide_stuff.patch is intentionally not applied in v89 SukiSU stable lane."
           echo "    SUSFS inline remains enabled; extra SELinux/map-hide policy-query patches are deferred to ReSuki/test builds."
 
           if find . -name '*.rej' -print -quit | grep -q .; then
@@ -715,7 +715,7 @@ jobs:
           set_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
           set_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
 
-          echo "==> Applying v86 SukiSU Ultra daily-driver config profile: ${{ inputs.profile }}"
+          echo "==> Applying v89 SukiSU Ultra daily-driver config profile: ${{ inputs.profile }}"
           set_y CONFIG_KSU
           set_y CONFIG_KSU_MANUAL_SU
 
@@ -963,8 +963,8 @@ jobs:
             exit 1
           fi
 
-          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v86"
-          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v86" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v86.sha256"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v89"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v89" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v89.sha256"
 
           uts="unknown"
           if [ -f out/include/generated/utsrelease.h ]; then
@@ -982,7 +982,7 @@ jobs:
           rm -rf ak3_work
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3_work
           git -C ak3_work rev-parse HEAD | tee "$GITHUB_WORKSPACE/_ox_debug/anykernel3_commit.txt"
-          # --- AK3 naming-convention guard (v86) ---
+          # --- AK3 naming-convention guard (v89) ---
           # AK3 renamed its anykernel.sh settings to UPPERCASE. We write both
           # spellings, but if upstream ever changes convention AGAIN this guard
           # makes it obvious in the log instead of silently shipping a zip that
@@ -1016,7 +1016,7 @@ jobs:
           RAMFIXSVC
           chmod 0755 ak3_work/ramfix/service.sh
           rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
-          cp -f artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v86 ak3_work/Image
+          cp -f artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v89 ak3_work/Image
 
           cat > ak3_work/anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
@@ -1047,7 +1047,7 @@ jobs:
           ### AnyKernel install
           ## boot shell variables
           # OP13 / PJZ110 is A/B slot device. Use partition-name detection, not old omap path.
-          # v86 FLASH FIX: AnyKernel3 upstream renamed these settings to UPPERCASE
+          # v89 FLASH FIX: AnyKernel3 upstream renamed these settings to UPPERCASE
           # (BLOCK, IS_SLOT_DEVICE, ...). This workflow clones AK3 master unpinned,
           # so a fresh build picks up the new ak3-core.sh, which IGNORES the old
           # lowercase names. With $BLOCK unset, AK3 cannot resolve the boot
@@ -1160,7 +1160,7 @@ jobs:
           chmod 0755 ak3_work/anykernel.sh
 
           cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
-          OX1D3X3 OP13 SukiSU Ultra + CCTV18 INLINE SUSFS v86
+          OX1D3X3 OP13 SukiSU Ultra + CCTV18 INLINE SUSFS v89
           Device: OnePlus 13 / sun / PJZ110
           Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ env.CCTV18_KERNEL_REF }}
           Build assets: cctv18/oppo_oplus_realme_sm8750
@@ -1179,7 +1179,7 @@ jobs:
           EOF
           sed -i 's/^          //' ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt
 
-          zip_name="AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v86_${{ github.run_number }}_FLASH_THIS.zip"
+          zip_name="AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v89_${{ github.run_number }}_FLASH_THIS.zip"
           ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -1246,7 +1246,7 @@ jobs:
 
           if [ -f "$GITHUB_STEP_SUMMARY" ]; then
             {
-              echo "# OP13 SukiSU Ultra + CCTV18 Inline StockLike Daily v86"
+              echo "# OP13 SukiSU Ultra + CCTV18 Inline StockLike Daily v89"
               echo ""
               echo "## Verdict"
               echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
@@ -1263,7 +1263,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v86-${{ github.run_number }}
+          name: OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v89-${{ github.run_number }}
           path: |
             artifacts/**
             _ox_debug/**
@@ -1276,11 +1276,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -s artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v86 ]; then
-            echo "::error::Build failed before producing Image. Download OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v86 debug artifact."
+          if [ ! -s artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v89 ]; then
+            echo "::error::Build failed before producing Image. Download OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v89 debug artifact."
             exit 1
           fi
-          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v86_*_FLASH_THIS.zip >/dev/null 2>&1; then
+          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v89_*_FLASH_THIS.zip >/dev/null 2>&1; then
             echo "::error::Image built but AnyKernel3 flashable ZIP was not produced."
             exit 1
           fi
