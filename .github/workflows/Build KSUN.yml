@@ -10,7 +10,7 @@ env:
   CCTV18_BUILD_REPO: cctv18/oppo_oplus_realme_sm8750
   CCTV18_COMMON_REPO: cctv18/android_kernel_common_oneplus_sm8750
   CCTV18_TOOLCHAIN_RELEASE: LLVM-Clang18-r510928
-  CCACHE_DIR: ${{ github.workspace }}/.ccache_op13_ksun_cctv18_v88
+  CCACHE_DIR: ${{ github.workspace }}/.ccache_op13_ksun_cctv18_v92
   CCACHE_MAXSIZE: 8G
 
 on:
@@ -167,7 +167,7 @@ on:
         default: true
 
 concurrency:
-  group: op13-ksun-cctv18-clean-v88-${{ github.ref }}
+  group: op13-ksun-cctv18-clean-v92-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -243,10 +243,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-op13-ksun-cctv18-v88-${{ inputs.profile }}-${{ inputs.susfs_enable }}-${{ inputs.ksun_ref }}-${{ github.ref_name }}
+          key: ccache-${{ runner.os }}-op13-ksun-cctv18-v92-${{ inputs.profile }}-${{ inputs.susfs_enable }}-${{ inputs.ksun_ref }}-${{ github.ref_name }}
           restore-keys: |
-            ccache-${{ runner.os }}-op13-ksun-cctv18-v88-${{ inputs.profile }}-${{ inputs.susfs_enable }}-
-            ccache-${{ runner.os }}-op13-ksun-cctv18-v88-
+            ccache-${{ runner.os }}-op13-ksun-cctv18-v92-${{ inputs.profile }}-${{ inputs.susfs_enable }}-
+            ccache-${{ runner.os }}-op13-ksun-cctv18-v92-
 
       - name: "Install build dependencies"
         shell: bash
@@ -399,7 +399,7 @@ jobs:
           cp -af susfs4ksu/kernel_patches/include/linux/. common/include/linux/
           cp -f "$SUSFS_PATCH" common/
 
-          # v88: 69_hide_stuff.patch is deliberately NOT staged for this lane.
+          # v92: 69_hide_stuff.patch is deliberately NOT staged for this lane.
           # It has 4 hunks against fs/proc/task_mmu.c. Hunks 1, 2 and 4 (which ADD
           # show_vma_header_prefix_fake(), "struct dentry *dentry;" and the "bypass:"
           # label) match near-stock context and apply, but hunk 3 -- the only hunk
@@ -415,6 +415,38 @@ jobs:
           rm -f common/69_hide_stuff.patch
 
           cd common
+          # ---- v92: upstream security fix CVE-2026-43499 (rtmutex) ----
+          # NULL-pointer dereference in remove_waiter(): when called via
+          # rt_mutex_start_proxy_lock(), waiter->task may be NULL (never enqueued).
+          # From cctv18/oppo_oplus_realme_sm8750, the asset repo already cloned here.
+          # CCTV18's own 6.6.118 builder applies it unconditionally (no "|| true").
+          # SAFETY: touches ONLY kernel/locking/rtmutex.c and rtmutex_api.c -- no
+          # headers, so no struct/prototype change and no GKI 2.0 KMI impact.
+          # Verified absent from the 6.6.118 source. All-or-nothing: skip + warn
+          # rather than half-patch core locking code.
+          CVE_PATCH="$GITHUB_WORKSPACE/cctv18_assets/other_patch/cve-2026-43499-rtmutex-6.6.patch"
+          if [ -f "$CVE_PATCH" ]; then
+            if patch --dry-run -p1 -N -F 3 < "$CVE_PATCH" \
+                 > "$GITHUB_WORKSPACE/_ox_debug/dryrun-cve-2026-43499.log" 2>&1; then
+              patch -p1 -N -F 3 < "$CVE_PATCH" \
+                > "$GITHUB_WORKSPACE/_ox_debug/apply-cve-2026-43499.log" 2>&1
+              if grep -q "waiter_task" kernel/locking/rtmutex.c; then
+                echo "==> CVE-2026-43499 rtmutex security patch APPLIED and verified."
+                echo "CVE-2026-43499: applied" > "$GITHUB_WORKSPACE/_ox_debug/cve-status.txt"
+              else
+                echo "::warning::CVE-2026-43499 patch reported success but the fix marker is missing. Treating as NOT applied."
+                echo "CVE-2026-43499: NOT applied (verification failed)" > "$GITHUB_WORKSPACE/_ox_debug/cve-status.txt"
+              fi
+            else
+              echo "::warning::CVE-2026-43499 rtmutex patch would not apply cleanly. Skipped -- kernel is NOT patched for this CVE."
+              echo "CVE-2026-43499: SKIPPED (dry-run failed)" > "$GITHUB_WORKSPACE/_ox_debug/cve-status.txt"
+              cat "$GITHUB_WORKSPACE/_ox_debug/dryrun-cve-2026-43499.log" || true
+            fi
+          else
+            echo "::warning::CVE-2026-43499 patch not found in cctv18_assets/other_patch; skipping."
+            echo "CVE-2026-43499: patch file not found" > "$GITHUB_WORKSPACE/_ox_debug/cve-status.txt"
+          fi
+
           echo "==> Applying CCTV18 SUSFS patch with policy: ${{ inputs.susfs_patch_policy }}"
           set +e
           patch -p1 -N -F 3 < "50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch" 2>&1 | tee "$GITHUB_WORKSPACE/_ox_debug/cctv18-susfs-patch.log"
@@ -448,7 +480,7 @@ jobs:
           fi
 
           if [ -f 69_hide_stuff.patch ]; then
-            # v88 FIX (KSUN build failure on 6.6.118):
+            # v92 FIX (KSUN build failure on 6.6.118):
             # 69_hide_stuff.patch modifies fs/proc/task_mmu.c and its hunks use
             # SUSFS's "bypass_orig_flow:" label as CONTEXT -- i.e. it assumes the
             # SUSFS task_mmu.c hunk already applied. This lane's audited policy
@@ -624,7 +656,7 @@ jobs:
           set_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
           set_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
 
-          echo "==> Applying v88 daily-driver config profile: ${{ inputs.profile }}"
+          echo "==> Applying v92 daily-driver config profile: ${{ inputs.profile }}"
           set_y CONFIG_KSU
 
           echo "==> Requested KernelSU hook/audit mode: ${{ inputs.hook_mode }}"
@@ -649,22 +681,32 @@ jobs:
           esac
 
           if [ "${{ inputs.susfs_enable }}" = "true" ]; then
+            # v92: only the 10 SUSFS options that ACTUALLY EXIST in the root driver.
+            # Verified against the Kconfig of all three projects (SukiSU-Ultra,
+            # ReSukiSU, pershoot/KernelSU-Next) -- each defines exactly these 10.
+            # REMOVED because no project defines them, so olddefconfig silently
+            # dropped them and they only created false confidence:
+            #   CONFIG_KSU_SUSFS_TRY_UMOUNT
+            #   CONFIG_KSU_SUSFS_SUS_SU                     (deprecated upstream)
+            #   CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
+            #   CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
+            # Per-app unmounting is handled by the manager's App Profile
+            # ("umount modules"), not by a kernel config symbol.
             for opt in \
               CONFIG_KSU_SUSFS \
               CONFIG_KSU_SUSFS_SUS_PATH \
               CONFIG_KSU_SUSFS_SUS_MOUNT \
-              CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT \
-              CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT \
               CONFIG_KSU_SUSFS_SUS_KSTAT \
-              CONFIG_KSU_SUSFS_TRY_UMOUNT \
+              CONFIG_KSU_SUSFS_SUS_MAP \
               CONFIG_KSU_SUSFS_SPOOF_UNAME \
-              CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
               CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-              CONFIG_KSU_SUSFS_OPEN_REDIRECT \
-              CONFIG_KSU_SUSFS_SUS_SU \
-              CONFIG_KSU_SUSFS_SUS_MAP; do
+              CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+              CONFIG_KSU_SUSFS_OPEN_REDIRECT; do
               set_y "$opt"
             done
+            # Battery/performance: SUSFS kernel logging is pure overhead on a daily
+            # driver (it logs on SUSFS operations). Upstream defaults it to y; we
+            # force it off.
             set_n CONFIG_KSU_SUSFS_ENABLE_LOG
           fi
 
@@ -718,14 +760,39 @@ jobs:
               CONFIG_NETFILTER_XT_MATCH_CONNTRACK \
               CONFIG_NETFILTER_XT_MATCH_MARK \
               CONFIG_NETFILTER_XT_TARGET_MARK \
-              CONFIG_NETFILTER_XT_TARGET_TTL \
-              CONFIG_NETFILTER_XT_MATCH_TTL \
+              CONFIG_NETFILTER_XT_TARGET_HL \
+              CONFIG_NETFILTER_XT_MATCH_HL \
               CONFIG_IP_SET \
+              CONFIG_IP_SET_BITMAP_IP \
+              CONFIG_IP_SET_BITMAP_IPMAC \
+              CONFIG_IP_SET_BITMAP_PORT \
               CONFIG_IP_SET_HASH_IP \
+              CONFIG_IP_SET_HASH_IPMARK \
+              CONFIG_IP_SET_HASH_IPPORT \
+              CONFIG_IP_SET_HASH_IPPORTIP \
+              CONFIG_IP_SET_HASH_IPPORTNET \
+              CONFIG_IP_SET_HASH_IPMAC \
+              CONFIG_IP_SET_HASH_MAC \
               CONFIG_IP_SET_HASH_NET \
-              CONFIG_NETFILTER_XT_MATCH_SET; do
+              CONFIG_IP_SET_HASH_NETNET \
+              CONFIG_IP_SET_HASH_NETPORT \
+              CONFIG_IP_SET_HASH_NETPORTNET \
+              CONFIG_IP_SET_HASH_NETIFACE \
+              CONFIG_IP_SET_LIST_SET \
+              CONFIG_NETFILTER_XT_SET; do
               set_y "$opt"
             done
+            # v92: symbol-name corrections verified against the real 6.6.118
+            # net/netfilter Kconfig. The following DID NOT EXIST and were silently
+            # dropped by olddefconfig, so these features were never actually built:
+            #   CONFIG_NETFILTER_XT_TARGET_HL -> real symbol is ..._TARGET_HL
+            #   CONFIG_NETFILTER_XT_MATCH_TTL  -> real symbol is ..._MATCH_HL
+            #     (upstream merged them: "adds the HL (for IPv6) and TTL (for IPv4)")
+            #   CONFIG_NETFILTER_XT_MATCH_SET  -> real symbol is CONFIG_NETFILTER_XT_SET
+            #     (without it CONFIG_IP_SET is unusable from iptables)
+            # The extra IP_SET_* variants match CCTV18's own builder and make ipset
+            # actually usable for firewall / ad-block modules.
+            scripts/config --file "$cfg" --set-val CONFIG_IP_SET_MAX 65534 || true
           fi
 
           # Avoid the previous DEFAULT_BBR choice warning by clearing DEFAULT_BBR before handling BBR mode.
@@ -746,6 +813,7 @@ jobs:
           if [ "${{ inputs.ntsync }}" = "true" ]; then
             set_y CONFIG_NTSYNC
           fi
+
 
 
           if [ "${{ inputs.droidspaces }}" = "true" ]; then
@@ -812,7 +880,34 @@ jobs:
           fi
 
           echo "==> Final config scan"
-          grep -E 'CONFIG_KSU|CONFIG_LOCALVERSION|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_BBR|CONFIG_IP_SET|CONFIG_NTSYNC|CONFIG_LTO|CONFIG_CC_OPTIMIZE|CONFIG_NETFILTER_XT_TARGET_TTL|CONFIG_ADIOS|CONFIG_BBG|CONFIG_BASEBAND|CONFIG_ZRAM|CONFIG_ZSMALLOC|CONFIG_CRYPTO_LZ4|CONFIG_LZ4|CONFIG_ZSTD' out/.config | tee "$GITHUB_WORKSPACE/_ox_debug/config-scan.txt" || true
+          grep -E 'CONFIG_KSU|CONFIG_LOCALVERSION|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_BBR|CONFIG_IP_SET|CONFIG_NTSYNC|CONFIG_LTO|CONFIG_CC_OPTIMIZE|CONFIG_NETFILTER_XT_TARGET_HL|CONFIG_ADIOS|CONFIG_BBG|CONFIG_BASEBAND|CONFIG_ZRAM|CONFIG_ZSMALLOC|CONFIG_CRYPTO_LZ4|CONFIG_LZ4|CONFIG_ZSTD' out/.config | tee "$GITHUB_WORKSPACE/_ox_debug/config-scan.txt" || true
+
+          # ---- v92 SUSFS config audit ----
+          # Verifies that every SUSFS option we asked for actually landed as =y in
+          # the FINAL .config. Previously four options were requested that no root
+          # project defines, so olddefconfig silently dropped them and the build
+          # looked correct while the features were absent. This turns that class of
+          # silent failure into a visible warning.
+          {
+            echo "SUSFS config audit (expected =y unless noted)"
+            for s in CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT \
+                     CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SUS_MAP \
+                     CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+                     CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_OPEN_REDIRECT; do
+              if grep -q "^${s}=y" out/.config; then
+                echo "  OK       ${s}=y"
+              else
+                echo "  MISSING  ${s} (requested but not enabled)"
+                echo "::warning::SUSFS option ${s} was requested but is NOT enabled in the final .config."
+              fi
+            done
+            if grep -q "^CONFIG_KSU_SUSFS_ENABLE_LOG=y" out/.config; then
+              echo "  NOTE     CONFIG_KSU_SUSFS_ENABLE_LOG=y (expected off for battery)"
+              echo "::warning::SUSFS kernel logging is ON; this costs battery on a daily driver."
+            else
+              echo "  OK       CONFIG_KSU_SUSFS_ENABLE_LOG disabled (battery-friendly)"
+            fi
+          } | tee "$GITHUB_WORKSPACE/_ox_debug/susfs-config-audit.txt" || true
 
       - name: "Build kernel"
         id: build
@@ -838,7 +933,7 @@ jobs:
           fi
           echo "==> KBUILD_BUILD_TIMESTAMP=$KBUILD_BUILD_TIMESTAMP"
 
-          # ---- v88: unconditional task_mmu.c orphan repair (runs after ALL patching) ----
+          # ---- v92: unconditional task_mmu.c orphan repair (runs after ALL patching) ----
           # CCTV18's 69_hide_stuff.patch has 4 hunks against fs/proc/task_mmu.c:
           #   hunk 2 -> adds  "struct dentry *dentry;"   (generic context, applies to stock)
           #   hunk 4 -> adds  "bypass:" label            (generic context, applies to stock)
@@ -886,7 +981,7 @@ jobs:
           grep -nE 'show_vma_header_prefix_fake|struct dentry \*dentry;|^[[:space:]]*bypass:|goto bypass;' fs/proc/task_mmu.c || echo "    none found (clean)"
 
           MAKE_ARGS=(O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 CC="ccache clang")
-          # v88 safety valve: downstream hiding patches can leave cosmetically-unused
+          # v92 safety valve: downstream hiding patches can leave cosmetically-unused
           # symbols behind when a dependent hunk rejects. Downgrade ONLY these two
           # warning classes from errors so a cosmetic leftover can never again kill an
           # otherwise-good build. Everything else stays -Werror.
@@ -902,8 +997,8 @@ jobs:
             exit 1
           fi
 
-          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v88"
-          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v88" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v88.sha256"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v92"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v92" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v92.sha256"
 
           uts="unknown"
           if [ -f out/include/generated/utsrelease.h ]; then
@@ -922,7 +1017,7 @@ jobs:
           rm -rf ak3_work
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3_work
           git -C ak3_work rev-parse HEAD | tee "$GITHUB_WORKSPACE/_ox_debug/anykernel3_commit.txt"
-          # --- AK3 naming-convention guard (v88) ---
+          # --- AK3 naming-convention guard (v92) ---
           # AK3 renamed its anykernel.sh settings to UPPERCASE. We write both
           # spellings, but if upstream ever changes convention AGAIN this guard
           # makes it obvious in the log instead of silently shipping a zip that
@@ -956,7 +1051,7 @@ jobs:
           RAMFIXSVC
           chmod 0755 ak3_work/ramfix/service.sh
           rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
-          cp -f artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v88 ak3_work/Image
+          cp -f artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v92 ak3_work/Image
 
           cat > ak3_work/anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
@@ -987,7 +1082,7 @@ jobs:
           ### AnyKernel install
           ## boot shell variables
           # OP13 / PJZ110 is A/B slot device. Use partition-name detection, not old omap path.
-          # v88 FLASH FIX: AnyKernel3 upstream renamed these settings to UPPERCASE
+          # v92 FLASH FIX: AnyKernel3 upstream renamed these settings to UPPERCASE
           # (BLOCK, IS_SLOT_DEVICE, ...). This workflow clones AK3 master unpinned,
           # so a fresh build picks up the new ak3-core.sh, which IGNORES the old
           # lowercase names. With $BLOCK unset, AK3 cannot resolve the boot
@@ -1100,7 +1195,7 @@ jobs:
           chmod 0755 ak3_work/anykernel.sh
 
           cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
-          OX1D3X3 OP13 KSUN + CCTV18 CLEAN SUSFS v88
+          OX1D3X3 OP13 KSUN + CCTV18 CLEAN SUSFS v92
           Device: OnePlus 13 / sun / PJZ110
           Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ inputs.cctv18_kernel_ref }}
           Build assets: cctv18/oppo_oplus_realme_sm8750
@@ -1118,7 +1213,7 @@ jobs:
           EOF
           sed -i 's/^          //' ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt
 
-          zip_name="AK3_OP13_KSUN_CCTV18_clean_stocklike_v88_${{ github.run_number }}_FLASH_THIS.zip"
+          zip_name="AK3_OP13_KSUN_CCTV18_clean_stocklike_v92_${{ github.run_number }}_FLASH_THIS.zip"
           ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -1147,7 +1242,7 @@ jobs:
           set -euo pipefail
           mkdir -p _ox_debug artifacts
           {
-            echo "Workflow: OP13 KSUN CCTV18 Clean StockLike Daily v88"
+            echo "Workflow: OP13 KSUN CCTV18 Clean StockLike Daily v92"
             echo "Profile: ${{ inputs.profile }}"
             echo "KSUN ref: ${{ inputs.ksun_ref }}"
             echo "SUSFS enabled: ${{ inputs.susfs_enable }}"
@@ -1179,7 +1274,7 @@ jobs:
 
           if [ -f "$GITHUB_STEP_SUMMARY" ]; then
             {
-              echo "# OP13 KSUN + CCTV18 Clean StockLike Daily v88"
+              echo "# OP13 KSUN + CCTV18 Clean StockLike Daily v92"
               echo ""
               echo "## Verdict"
               echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
@@ -1196,7 +1291,7 @@ jobs:
         if: always() && (inputs.upload_debug == true || success())
         uses: actions/upload-artifact@v6
         with:
-          name: OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v88-${{ github.run_number }}
+          name: OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v92-${{ github.run_number }}
           path: |
             artifacts/**
             _ox_debug/**
@@ -1209,11 +1304,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -s artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v88 ]; then
-            echo "::error::Build failed before producing Image. Download OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v88 debug artifact."
+          if [ ! -s artifacts/Image_OP13_KSUN_CCTV18_clean_stocklike_v92 ]; then
+            echo "::error::Build failed before producing Image. Download OP13-KSUN-CCTV18-CLEAN-STOCKLIKE-v92 debug artifact."
             exit 1
           fi
-          if [ "${{ inputs.package_ak3 }}" = "true" ] && ! ls artifacts/AK3_OP13_KSUN_CCTV18_clean_stocklike_v88_*_FLASH_THIS.zip >/dev/null 2>&1; then
+          if [ "${{ inputs.package_ak3 }}" = "true" ] && ! ls artifacts/AK3_OP13_KSUN_CCTV18_clean_stocklike_v92_*_FLASH_THIS.zip >/dev/null 2>&1; then
             echo "::error::Image built but AnyKernel3 flashable ZIP was not produced."
             exit 1
           fi
