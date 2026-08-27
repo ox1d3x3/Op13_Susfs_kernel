@@ -18,9 +18,6 @@
 <a href="../../actions/workflows/Build%20SukiSU_Ultra.yml">
   <img alt="SukiSU Ultra build" src="https://img.shields.io/badge/build-SukiSU%20Ultra-0A84FF?style=flat-square&logo=github" />
 </a>
-<a href="../../actions/workflows/Build%20KSUN.yml">
-  <img alt="KernelSU-Next build" src="https://img.shields.io/badge/build-KernelSU--Next-0A84FF?style=flat-square&logo=github" />
-</a>
 
 <br/>
 
@@ -38,7 +35,7 @@
 <br/>
 
 <img alt="Device" src="https://img.shields.io/badge/Device-OnePlus%2013%20(PJZ110%20%C2%B7%20sun)-111111?style=flat-square" />
-<img alt="Kernel" src="https://img.shields.io/badge/Kernel-6.6.89%20(GKI%202.0)-111111?style=flat-square" />
+<img alt="Kernel" src="https://img.shields.io/badge/Kernel-6.6.118%20(GKI%202.0)-111111?style=flat-square" />
 <img alt="Android" src="https://img.shields.io/badge/Android-15%20%2F%2016-111111?style=flat-square" />
 
 </div>
@@ -52,14 +49,21 @@ A daily‑driver focused **Linux 6.6 GKI 2.0** kernel for the **OnePlus 13**
 **stock‑like, stable baseline** with modern root + hiding support and a few
 opt‑in performance and battery tweaks — not a maxed‑out benchmark build.
 
-Three root solutions are offered as separate build **lanes**, all sharing the
+Two root solutions are offered as separate build **lanes**, both sharing the
 same CCTV18 OP13 source, toolchain and SUSFS tree:
 
 | Lane | Workflow | Root solution | Pick it if… |
 |---|---|---|---|
-| **ReSukiSU** | `Build_ReSukiSU.yml` | [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU) (SukiSU fork) | you want the SukiSU feature set with the ReSukiSU manager/metamodule stack |
-| **SukiSU Ultra** | `Build SukiSU_Ultra.yml` | [SukiSU‑Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) | you want upstream SukiSU Ultra with KPM + inline SUSFS |
-| **KernelSU‑Next** | `Build KSUN.yml` | [KernelSU‑Next](https://github.com/KernelSU-Next/KernelSU-Next) | you prefer the classic KernelSU‑Next experience |
+| **SukiSU Ultra** | `Build SukiSU_Ultra.yml` | [SukiSU‑Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) | you want SukiSU Ultra with KPM + inline SUSFS |
+| **ReSukiSU** | `Build_ReSukiSU.yml` | [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU) (SukiSU fork) | you want the SukiSU feature set with the ReSukiSU manager stack |
+
+> **KernelSU‑Next lane is DEPRECATED** (archived at
+> [`docs/deprecated/Build_KSUN.yml.deprecated`](./docs/deprecated/Build_KSUN.yml.deprecated)).
+> pershoot's `dev-susfs` branch was force‑pushed and now requires SUSFS helpers
+> (`susfs_is/set/clear_current_proc_no_su`) that CCTV18's `susfs4oki` does not
+> provide, so it cannot build against this project's SUSFS tree. No commit
+> remains that has SUSFS support *without* that dependency. See
+> [`docs/deprecated/WHY_KSUN_DEPRECATED.md`](./docs/deprecated/WHY_KSUN_DEPRECATED.md).
 
 > **Builds are produced as GitHub Actions artifacts** on each manual run. If a
 > tagged release exists, grab the ZIP from **[Releases](../../releases)**;
@@ -74,9 +78,9 @@ same CCTV18 OP13 source, toolchain and SUSFS tree:
 
 ## Build matrix
 
-All three lanes are **manually triggered** (`workflow_dispatch`) and share:
+Both lanes are **manually triggered** (`workflow_dispatch`) and share:
 
-- **Source:** `cctv18/android_kernel_common_oneplus_sm8750` @ `oneplus/sm8750_v_16.0.0_oneplus_13_6.6.89`
+- **Source:** `cctv18/android_kernel_common_oneplus_sm8750` @ `oneplus/sm8750_b_16.0.0_oneplus_13_6.6.118`
 - **Toolchain:** CCTV18 prebuilt **LLVM/Clang 18** (`LLVM-Clang18-r510928`) + build‑tools
 - **SUSFS:** `cctv18/susfs4oki` @ `oki-android15-6.6` (single source — no mixed SUSFS trees)
 - **Packaging:** [osm0sis/AnyKernel3](https://github.com/osm0sis/AnyKernel3), boot detection fixed for the A/B `sun` layout
@@ -87,7 +91,7 @@ All three lanes are **manually triggered** (`workflow_dispatch`) and share:
 | Input | What it does | Sensible default |
 |---|---|---|
 | `profile` | `stock_daily` / `stock_plus` / `minimal_safe` / `debug_only` | `stock_daily` |
-| root ref | `resukisu_ref` / `sukisu_ref` / `ksun_ref` | `main` · `builtin` · `dev-susfs` |
+| root ref | `sukisu_ref` / `resukisu_ref` | **pinned commits** (see “Why the root refs are pinned”) |
 | `SUSFS` / `susfs_enable` | Enable CCTV18 SUSFS | On |
 | `susfs_patch_policy` | `strict` / `audited_cctv18` / `native_cctv18` | `audited_cctv18` |
 | `hook_mode` | Hook target (inline SUSFS vs. auto/kprobe) | `inline_susfs` / `cctv18_susfs_auto` |
@@ -171,7 +175,7 @@ scheduler, **Baseband‑Guard**, **Re:Kernel**, **FengChi/HMBIRD** scheduler,
 reboot, and it prefers LZ4 when supported. It is safe by design — it will **not**
 reset ZRAM if it's already active.
 
-> Switching lanes (e.g. SukiSU → KSUN)? Reinstall the SUSFS module afterwards to
+> Switching lanes (e.g. SukiSU → ReSukiSU)? Reinstall the SUSFS module afterwards to
 > clear stale module state.
 
 ---

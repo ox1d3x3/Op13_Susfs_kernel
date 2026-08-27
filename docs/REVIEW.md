@@ -1,3 +1,7 @@
+> **Update (v95):** the KernelSU-Next lane described in parts of this document
+> is **deprecated**. See `docs/deprecated/WHY_KSUN_DEPRECATED.md`. The supported
+> lanes are SukiSU Ultra and ReSukiSU.
+
 # Project Review — Op13_Susfs_kernel
 
 A structured review of the repository's build system, with prioritized findings

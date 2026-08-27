@@ -2,7 +2,7 @@ name: Clean Caches
 
 # Manually purge all ccache-* GitHub Actions caches for this repo and reset the
 # runner scratch space. Use this when you suspect cache contamination across the
-# ReSukiSU / SukiSU Ultra / KSUN build lanes.
+# SukiSU Ultra / ReSukiSU build lanes. (KSUN lane deprecated -- see docs/deprecated/)
 
 on:
   workflow_dispatch:

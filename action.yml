@@ -1,5 +1,11 @@
 # =============================================================================
 # Portable OnePlus GKI kernel composite action (KSU / KSUN + SUSFS lane)
+#
+# STATUS: LEGACY / UNSUPPORTED. This composite action is NOT used by the OP13
+# release lanes (Build SukiSU_Ultra.yml / Build_ReSukiSU.yml) and is kept only
+# for forks targeting other devices. Its KSUN path is subject to the same
+# upstream breakage that caused the KSUN lane to be deprecated -- see
+# docs/deprecated/WHY_KSUN_DEPRECATED.md. It is not validated by this project.
 # -----------------------------------------------------------------------------
 # This is the GENERIC, device-agnostic builder. It syncs sources with Google's
 # `repo` tool (see manifest.xml), pulls AnyKernel3 + kernel_patches from
