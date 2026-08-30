@@ -56,11 +56,11 @@ on:
         options: [audited_cctv18, strict, native_cctv18]
         default: audited_cctv18
       hook_mode:
-        description: "Hook source. manual_susfs (DEFAULT) = SukiSU installs its own hooks; REQUIRED for `su` to work from adb shell / terminal apps. inline_susfs uses only SUSFS-inlined hooks, whose fs/exec.c guard (susfs_is_current_proc_umounted -> goto orig_flow) skips the su hook for every app and shell, so `su` fails there with ENOENT. SUSFS features are identical in both modes."
+        description: "Hook source. inline_susfs uses the SUSFS-inlined hooks (the supported target for these refs)."
         required: true
         type: choice
-        options: [manual_susfs, inline_susfs, sukisu_auto, kprobe_test]
-        default: manual_susfs
+        options: [inline_susfs, sukisu_auto, kprobe_test]
+        default: inline_susfs
       kernel_suffix:
         description: "Stock-like LOCALVERSION without leading dash (this is the real uname -r). Leave default for current OP13 stock mimic / best app compatibility."
         required: false
@@ -420,7 +420,7 @@ jobs:
             echo "sukisu_tag=$tag" >> "$GITHUB_OUTPUT"
           fi
 
-          # v100: apk_sign.patch is OFF by default. SukiSU Ultra ships its own
+          # v101: apk_sign.patch is OFF by default. SukiSU Ultra ships its own
           # manager-signature verification, so CCTV18's KernelSU apk_sign.patch is
           # unnecessary here and never dry-runs cleanly on the SukiSU tree -- it only
           # produced a recurring skip-warning. Set OX_TRY_APK_SIGN=1 in the workflow
@@ -522,7 +522,7 @@ jobs:
           echo "Reason: v77 reached final link, then failed on SELinux policy-query symbols. Keep this lane clean and compile-safe first."
 
           cd common
-          # ---- v100: upstream security fix CVE-2026-43499 (rtmutex) ----
+          # ---- v101: upstream security fix CVE-2026-43499 (rtmutex) ----
           # Fixes a NULL-pointer dereference in remove_waiter(): when called via
           # rt_mutex_start_proxy_lock(), waiter->task may be NULL (never enqueued),
           # and the old code dereferenced it unconditionally.
@@ -589,14 +589,77 @@ jobs:
             fi
           fi
 
-          echo "==> 69_hide_stuff.patch is intentionally not applied in v100 SukiSU stable lane."
+          echo "==> 69_hide_stuff.patch is intentionally not applied in v101 SukiSU stable lane."
           echo "    SUSFS inline remains enabled; extra SELinux/map-hide policy-query patches are deferred to ReSuki/test builds."
 
+
+          # ---- v101: fix `su` from shells (adb shell, Termux, terminal apps) ----
+          # CCTV18's SUSFS patch inlines this into fs/exec.c:
+          #     if (likely(susfs_is_current_proc_umounted()))
+          #             goto orig_flow;                 <-- skips the su hook
+          #     if (static_branch_likely(&ksu_su_compat_enabled))
+          #             ksu_handle_execveat_sucompat(...);
+          #     orig_flow:
+          # Every SUSFS-"umounted" process -- which is every zygote-spawned app AND
+          # shell context -- jumps past the su hook, so execve of /system/bin/su is
+          # never redirected and fails with ENOENT ("cannot execute: required file
+          # not found"). The stat/faccessat hooks are inlined WITHOUT that guard,
+          # which is why `su` still LOOKS present. Apps that take root through the
+          # binder/supercall path are unaffected; only `su` via execve breaks.
+          #
+          # These refs expose NO KSU_*_HOOK selector (verified: the Kconfig defines
+          # only CONFIG_KSU_SUSFS), so there is no alternative hook to pick -- the
+          # guard has to be removed at source.
+          #
+          # This does NOT weaken hiding: ksu_handle_execveat_sucompat() checks the
+          # allowlist itself (__ksu_is_allow_uid_for_current) and does nothing for
+          # unauthorised uids. Every SUSFS feature stays enabled.
+          python3 - <<'OXSUFIX'
+          import re
+          p = "fs/exec.c"
+          try:
+              s = open(p).read()
+          except OSError:
+              print("fs/exec.c not found; skipping su-hook fix")
+              raise SystemExit(0)
+          orig = s
+          guard = re.compile(r'[ \t]*if \(likely\(susfs_is_current_proc_umounted\(\)\)\)\n[ \t]*goto orig_flow;\n\n?')
+          if guard.search(s) and "ksu_handle_execveat_sucompat" in s:
+              s = guard.sub(
+                  '\t/* OX FIX: upstream skipped the su hook for every SUSFS-"umounted"\n'
+                  '\t * process (all apps + shell), so execve of /system/bin/su was never\n'
+                  '\t * redirected -> ENOENT. sucompat still checks the allowlist itself,\n'
+                  '\t * so running it unconditionally weakens no hiding. */\n', s, count=1)
+              # label would now be unreferenced -> -Wunused-label breaks -Werror
+              if "goto orig_flow" not in s:
+                  s = re.sub(r'^orig_flow:\n', '', s, count=1, flags=re.M)
+          if s != orig:
+              open(p, "w").write(s)
+              print("su-hook fix APPLIED to fs/exec.c")
+          else:
+              print("su-hook fix NOT applied (guard pattern absent)")
+          OXSUFIX
+
+          # verify the outcome rather than trusting the edit
+          if grep -q "OX FIX" fs/exec.c 2>/dev/null; then
+            echo "==> su-hook fix verified present in fs/exec.c"
+            if grep -q "goto orig_flow" fs/exec.c || grep -qE "^orig_flow:" fs/exec.c; then
+              echo "::error::su-hook fix left a dangling goto or orphan label in fs/exec.c."
+              exit 1
+            fi
+            grep -q "ksu_handle_execveat_sucompat" fs/exec.c || {
+              echo "::error::su-hook fix removed the sucompat call; aborting."; exit 1; }
+            echo "su-hook fix: applied and structurally clean" > "$GITHUB_WORKSPACE/_ox_debug/su-hook-fix.txt"
+          else
+            echo "::warning::su-hook fix was NOT applied (SUSFS may not have inlined the guard). \`su\` from shells may not work."
+            echo "su-hook fix: NOT applied" > "$GITHUB_WORKSPACE/_ox_debug/su-hook-fix.txt"
+          fi
           if find . -name '*.rej' -print -quit | grep -q .; then
             echo "::error::Unexpected patch rejects remain after CCTV18 SUSFS stage."
             find . -name '*.rej' -print | tee "$GITHUB_WORKSPACE/_ox_debug/rejects-after-susfs-stage.txt"
             exit 1
           fi
+
 
       - name: "SukiSU SELinux policy-query compatibility guard"
         if: ${{ inputs.SUSFS == 'On' }}
@@ -758,7 +821,7 @@ jobs:
           set_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
           set_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
 
-          echo "==> Applying v100 SukiSU Ultra daily-driver config profile: ${{ inputs.profile }}"
+          echo "==> Applying v101 SukiSU Ultra daily-driver config profile: ${{ inputs.profile }}"
           set_y CONFIG_KSU
           set_y CONFIG_KSU_MANUAL_SU
 
@@ -797,18 +860,6 @@ jobs:
               set_n CONFIG_KSU_WITH_KPROBES
               set_n CONFIG_KSU_TRACEPOINT_HOOK
               ;;
-            manual_susfs)
-              # v100 RECOMMENDED. SukiSU installs its OWN manual hooks, which call
-              # ksu_handle_execveat_sucompat() directly with NO umounted guard, so
-              # `su` works from adb shell and terminal apps.
-              # SUSFS is NOT weakened: CONFIG_KSU_SUSFS and all 9 SUSFS feature
-              # options are unchanged -- only the hook SOURCE differs.
-              set_y CONFIG_KSU_MANUAL_HOOK
-              set_n CONFIG_KSU_NONE_HOOK
-              set_n CONFIG_KSU_KPROBES_HOOK
-              set_n CONFIG_KSU_WITH_KPROBES
-              set_n CONFIG_KSU_TRACEPOINT_HOOK
-              ;;
             sukisu_auto)
               # Let the selected SukiSU ref choose its hook defaults. Useful only for testing.
               true
@@ -822,7 +873,7 @@ jobs:
           esac
 
           if [ "${{ inputs.SUSFS }}" = "On" ]; then
-            # v100: only the 10 SUSFS options that ACTUALLY EXIST in the root driver.
+            # v101: only the 10 SUSFS options that ACTUALLY EXIST in the root driver.
             # Verified against the Kconfig of all three projects (SukiSU-Ultra,
             # ReSukiSU, pershoot/KernelSU-Next) -- each defines exactly these 10.
             # REMOVED because no project defines them, so olddefconfig silently
@@ -928,7 +979,7 @@ jobs:
               CONFIG_IP6_NF_TARGET_MASQUERADE; do
               set_y "$opt"
             done
-            # v100: symbol-name corrections verified against the real 6.6.118
+            # v101: symbol-name corrections verified against the real 6.6.118
             # net/netfilter Kconfig. The following DID NOT EXIST and were silently
             # dropped by olddefconfig, so these features were never actually built:
             #   CONFIG_NETFILTER_XT_TARGET_HL -> real symbol is ..._TARGET_HL
@@ -1014,18 +1065,7 @@ jobs:
             fi
           fi
 
-          if [ "${{ inputs.hook_mode }}" = "manual_susfs" ]; then
-            if grep -q '^CONFIG_KSU_MANUAL_HOOK=y' out/.config; then
-              echo "==> manual_susfs: CONFIG_KSU_MANUAL_HOOK=y confirmed (su via execve will work from shells)."
-            else
-              echo "::error::manual_susfs requested but CONFIG_KSU_MANUAL_HOOK=y is missing after olddefconfig."
-              exit 1
-            fi
-            if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
-              echo "::error::manual_susfs must keep CONFIG_KSU_SUSFS=y; SUSFS must not be weakened."
-              exit 1
-            fi
-          elif [ "${{ inputs.hook_mode }}" = "inline_susfs" ]; then
+          if [ "${{ inputs.hook_mode }}" = "inline_susfs" ]; then
             if grep -Rqs 'config KSU_NONE_HOOK' ../KernelSU/kernel ./drivers/kernelsu 2>/dev/null; then
               if ! grep -q '^CONFIG_KSU_NONE_HOOK=y' out/.config; then
                 echo "::error::inline_susfs requested, but CONFIG_KSU_NONE_HOOK=y is not present after olddefconfig."
@@ -1047,7 +1087,7 @@ jobs:
           echo "==> Final config scan"
           grep -E 'CONFIG_KSU|CONFIG_KPM|CONFIG_KALLSYMS|CONFIG_LOCALVERSION|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_BBR|CONFIG_IP_SET|CONFIG_NTSYNC|CONFIG_LTO|CONFIG_CC_OPTIMIZE|CONFIG_NETFILTER_XT_TARGET_HL|CONFIG_ADIOS|CONFIG_BBG|CONFIG_BASEBAND|CONFIG_ZRAM|CONFIG_ZSMALLOC|CONFIG_CRYPTO_LZ4|CONFIG_LZ4|CONFIG_ZSTD' out/.config | tee "$GITHUB_WORKSPACE/_ox_debug/config-scan.txt" || true
 
-          # ---- v100 SUSFS config audit ----
+          # ---- v101 SUSFS config audit ----
           # Verifies that every SUSFS option we asked for actually landed as =y in
           # the FINAL .config. Previously four options were requested that no root
           # project defines, so olddefconfig silently dropped them and the build
@@ -1108,8 +1148,8 @@ jobs:
             exit 1
           fi
 
-          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v100"
-          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v100" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v100.sha256"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v101"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v101" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v101.sha256"
 
           uts="unknown"
           if [ -f out/include/generated/utsrelease.h ]; then
@@ -1127,7 +1167,7 @@ jobs:
           rm -rf ak3_work
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3_work
           git -C ak3_work rev-parse HEAD | tee "$GITHUB_WORKSPACE/_ox_debug/anykernel3_commit.txt"
-          # --- AK3 naming-convention guard (v100) ---
+          # --- AK3 naming-convention guard (v101) ---
           # AK3 renamed its anykernel.sh settings to UPPERCASE. We write both
           # spellings, but if upstream ever changes convention AGAIN this guard
           # makes it obvious in the log instead of silently shipping a zip that
@@ -1161,7 +1201,7 @@ jobs:
           RAMFIXSVC
           chmod 0755 ak3_work/ramfix/service.sh
           rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
-          cp -f artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v100 ak3_work/Image
+          cp -f artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v101 ak3_work/Image
 
           cat > ak3_work/anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
@@ -1192,7 +1232,7 @@ jobs:
           ### AnyKernel install
           ## boot shell variables
           # OP13 / PJZ110 is A/B slot device. Use partition-name detection, not old omap path.
-          # v100 FLASH FIX: AnyKernel3 upstream renamed these settings to UPPERCASE
+          # v101 FLASH FIX: AnyKernel3 upstream renamed these settings to UPPERCASE
           # (BLOCK, IS_SLOT_DEVICE, ...). This workflow clones AK3 master unpinned,
           # so a fresh build picks up the new ak3-core.sh, which IGNORES the old
           # lowercase names. With $BLOCK unset, AK3 cannot resolve the boot
@@ -1305,7 +1345,7 @@ jobs:
           chmod 0755 ak3_work/anykernel.sh
 
           cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
-          OX1D3X3 OP13 SukiSU Ultra + CCTV18 INLINE SUSFS v100
+          OX1D3X3 OP13 SukiSU Ultra + CCTV18 INLINE SUSFS v101
           Device: OnePlus 13 / sun / PJZ110
           Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ env.CCTV18_KERNEL_REF }}
           Build assets: cctv18/oppo_oplus_realme_sm8750
@@ -1324,7 +1364,7 @@ jobs:
           EOF
           sed -i 's/^          //' ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt
 
-          zip_name="AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v100_${{ github.run_number }}_FLASH_THIS.zip"
+          zip_name="AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v101_${{ github.run_number }}_FLASH_THIS.zip"
           ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -1391,7 +1431,7 @@ jobs:
 
           if [ -f "$GITHUB_STEP_SUMMARY" ]; then
             {
-              echo "# OP13 SukiSU Ultra + CCTV18 Inline StockLike Daily v100"
+              echo "# OP13 SukiSU Ultra + CCTV18 Inline StockLike Daily v101"
               echo ""
               echo "## Verdict"
               echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
@@ -1408,7 +1448,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v100-${{ github.run_number }}
+          name: OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v101-${{ github.run_number }}
           path: |
             artifacts/**
             _ox_debug/**
@@ -1421,11 +1461,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -s artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v100 ]; then
-            echo "::error::Build failed before producing Image. Download OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v100 debug artifact."
+          if [ ! -s artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v101 ]; then
+            echo "::error::Build failed before producing Image. Download OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v101 debug artifact."
             exit 1
           fi
-          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v100_*_FLASH_THIS.zip >/dev/null 2>&1; then
+          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v101_*_FLASH_THIS.zip >/dev/null 2>&1; then
             echo "::error::Image built but AnyKernel3 flashable ZIP was not produced."
             exit 1
           fi
