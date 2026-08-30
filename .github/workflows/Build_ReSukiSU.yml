@@ -13,15 +13,6 @@ env:
   CCTV18_TOOLCHAIN_RELEASE: LLVM-Clang18-r510928
   CCACHE_DIR: ${{ github.workspace }}/.ccache_op13_resukisu_cctv18
   CCACHE_MAXSIZE: 8G
-  # v99 CI build-speed tuning (no effect on the produced kernel):
-  # COMPRESS lets far more objects fit inside CCACHE_MAXSIZE and makes the
-  # GitHub cache upload/download smaller, so warm builds start faster.
-  CCACHE_COMPRESS: "1"
-  CCACHE_COMPRESSLEVEL: "6"
-  # SLOPPINESS raises the hit rate on kernel trees. time_macros is safe here
-  # because the build stamps its timestamp via KBUILD_BUILD_TIMESTAMP, not
-  # via __DATE__/__TIME__.
-  CCACHE_SLOPPINESS: "file_macro,time_macros,include_file_mtime,include_file_ctime,locale"
 
 on:
   workflow_dispatch:
@@ -65,11 +56,11 @@ on:
         options: [audited_cctv18, strict, native_cctv18]
         default: audited_cctv18
       hook_mode:
-        description: "ReSukiSU hook target. inline_susfs is the goal."
+        description: "Hook source. manual_susfs (DEFAULT) = ReSukiSU installs its own hooks; REQUIRED for `su` to work from adb shell / terminal apps. inline_susfs uses only SUSFS-inlined hooks, whose fs/exec.c guard (susfs_is_current_proc_umounted -> goto orig_flow) skips the su hook for every app and shell. SUSFS features are identical in both modes."
         required: true
         type: choice
-        options: [inline_susfs, resukisu_auto, tracepoint_test]
-        default: inline_susfs
+        options: [manual_susfs, inline_susfs, resukisu_auto, tracepoint_test]
+        default: manual_susfs
       kernel_suffix:
         description: "Stock-like LOCALVERSION without leading dash (this is the real uname -r). Leave default for current OP13 stock mimic / best app compatibility."
         required: false
@@ -457,7 +448,7 @@ jobs:
           echo "Reason: keep this build focused on ReSukiSU inline SUSFS first; avoid SELinux policy-query link issues seen on SukiSU builtin."
 
           cd common
-          # ---- v99: upstream security fix CVE-2026-43499 (rtmutex) ----
+          # ---- v100: upstream security fix CVE-2026-43499 (rtmutex) ----
           # Fixes a NULL-pointer dereference in remove_waiter(): when called via
           # rt_mutex_start_proxy_lock(), waiter->task may be NULL (never enqueued),
           # and the old code dereferenced it unconditionally.
@@ -643,7 +634,7 @@ jobs:
           set_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
           set_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
 
-          echo "==> Applying v99 ReSukiSU daily-driver config profile: ${{ inputs.profile }}"
+          echo "==> Applying v100 ReSukiSU daily-driver config profile: ${{ inputs.profile }}"
           set_y CONFIG_KSU
           
           if [ "${{ inputs.kpm_enable }}" = "true" ]; then
@@ -660,11 +651,34 @@ jobs:
           echo "==> Requested ReSukiSU hook target: ${{ inputs.hook_mode }}"
           case "${{ inputs.hook_mode }}" in
             inline_susfs)
-              # ReSukiSU exposes inline SUSFS as CONFIG_KSU_SUSFS in the hook-choice menu.
-              # Do not chase SukiSU's CONFIG_KSU_NONE_HOOK here; that is not the ReSukiSU selector.
+              # SUSFS-inlined hooks only.
+              #
+              # KNOWN LIMITATION -- `su` from a shell does NOT work in this mode.
+              # CCTV18's SUSFS patch inlines this into fs/exec.c:
+              #     if (likely(susfs_is_current_proc_umounted()))
+              #             goto orig_flow;               <-- skips sucompat
+              #     if (static_branch_likely(&ksu_su_compat_enabled))
+              #             ksu_handle_execveat_sucompat(...);
+              # Every SUSFS-"umounted" process (all zygote-spawned apps and shell
+              # contexts) jumps past the su hook, so execve of /system/bin/su is
+              # never redirected -> ENOENT. stat/faccessat are inlined WITHOUT the
+              # guard, so `su` still LOOKS present. Apps using the binder/supercall
+              # path are unaffected; only `su` via execve breaks.
               set_y CONFIG_KSU_SUSFS
               set_n CONFIG_KSU_TRACEPOINT_HOOK
               set_n CONFIG_KSU_MANUAL_HOOK
+              set_n CONFIG_KSU_KPROBES_HOOK
+              set_n CONFIG_KSU_WITH_KPROBES
+              ;;
+            manual_susfs)
+              # v100 RECOMMENDED. ReSukiSU installs its OWN manual hooks, which call
+              # ksu_handle_execveat_sucompat() with NO umounted guard, so `su` works
+              # from adb shell and terminal apps.
+              # SUSFS is NOT weakened: CONFIG_KSU_SUSFS stays on and all 9 SUSFS
+              # feature options are unchanged -- only the hook SOURCE differs.
+              set_y CONFIG_KSU_SUSFS
+              set_y CONFIG_KSU_MANUAL_HOOK
+              set_n CONFIG_KSU_TRACEPOINT_HOOK
               set_n CONFIG_KSU_KPROBES_HOOK
               set_n CONFIG_KSU_WITH_KPROBES
               ;;
@@ -680,7 +694,7 @@ jobs:
           esac
 
           if [ "${{ inputs.SUSFS }}" = "On" ]; then
-            # v99: only the 10 SUSFS options that ACTUALLY EXIST in the root driver.
+            # v100: only the 10 SUSFS options that ACTUALLY EXIST in the root driver.
             # Verified against the Kconfig of all three projects (SukiSU-Ultra,
             # ReSukiSU, pershoot/KernelSU-Next) -- each defines exactly these 10.
             # REMOVED because no project defines them, so olddefconfig silently
@@ -786,7 +800,7 @@ jobs:
               CONFIG_IP6_NF_TARGET_MASQUERADE; do
               set_y "$opt"
             done
-            # v99: symbol-name corrections verified against the real 6.6.118
+            # v100: symbol-name corrections verified against the real 6.6.118
             # net/netfilter Kconfig. The following DID NOT EXIST and were silently
             # dropped by olddefconfig, so these features were never actually built:
             #   CONFIG_NETFILTER_XT_TARGET_HL -> real symbol is ..._TARGET_HL
@@ -866,7 +880,18 @@ jobs:
             fi
           fi
 
-          if [ "${{ inputs.hook_mode }}" = "inline_susfs" ]; then
+          if [ "${{ inputs.hook_mode }}" = "manual_susfs" ]; then
+            if grep -q '^CONFIG_KSU_MANUAL_HOOK=y' out/.config; then
+              echo "==> manual_susfs: CONFIG_KSU_MANUAL_HOOK=y confirmed (su via execve will work from shells)."
+            else
+              echo "::error::manual_susfs requested but CONFIG_KSU_MANUAL_HOOK=y is missing after olddefconfig."
+              exit 1
+            fi
+            if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
+              echo "::error::manual_susfs must keep CONFIG_KSU_SUSFS=y; SUSFS must not be weakened."
+              exit 1
+            fi
+          elif [ "${{ inputs.hook_mode }}" = "inline_susfs" ]; then
             if ! grep -q '^CONFIG_KSU_SUSFS=y' out/.config; then
               echo "::error::inline_susfs requested, but ReSukiSU did not keep CONFIG_KSU_SUSFS=y."
               exit 1
@@ -884,7 +909,7 @@ jobs:
           echo "==> Final config scan"
           grep -E 'CONFIG_KSU|CONFIG_KPM|CONFIG_KALLSYMS|CONFIG_LOCALVERSION|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_BBR|CONFIG_IP_SET|CONFIG_NTSYNC|CONFIG_LTO|CONFIG_CC_OPTIMIZE|CONFIG_NETFILTER_XT_TARGET_HL|CONFIG_ADIOS|CONFIG_BBG|CONFIG_BASEBAND|CONFIG_ZRAM|CONFIG_ZSMALLOC|CONFIG_CRYPTO_LZ4|CONFIG_LZ4|CONFIG_ZSTD' out/.config | tee "$GITHUB_WORKSPACE/_ox_debug/config-scan.txt" || true
 
-          # ---- v99 SUSFS config audit ----
+          # ---- v100 SUSFS config audit ----
           # Verifies that every SUSFS option we asked for actually landed as =y in
           # the FINAL .config. Previously four options were requested that no root
           # project defines, so olddefconfig silently dropped them and the build
@@ -945,8 +970,8 @@ jobs:
             exit 1
           fi
 
-          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v99"
-          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v99" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v99.sha256"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v100"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v100" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v100.sha256"
 
           uts="unknown"
           if [ -f out/include/generated/utsrelease.h ]; then
@@ -964,7 +989,7 @@ jobs:
           rm -rf ak3_work
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3_work
           git -C ak3_work rev-parse HEAD | tee "$GITHUB_WORKSPACE/_ox_debug/anykernel3_commit.txt"
-          # --- AK3 naming-convention guard (v99) ---
+          # --- AK3 naming-convention guard (v100) ---
           # AK3 renamed its anykernel.sh settings to UPPERCASE. We write both
           # spellings, but if upstream ever changes convention AGAIN this guard
           # makes it obvious in the log instead of silently shipping a zip that
@@ -998,7 +1023,7 @@ jobs:
           RAMFIXSVC
           chmod 0755 ak3_work/ramfix/service.sh
           rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
-          cp -f artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v99 ak3_work/Image
+          cp -f artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v100 ak3_work/Image
 
           cat > ak3_work/anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
@@ -1029,7 +1054,7 @@ jobs:
           ### AnyKernel install
           ## boot shell variables
           # OP13 / PJZ110 is A/B slot device. Use partition-name detection, not old omap path.
-          # v99 FLASH FIX: AnyKernel3 upstream renamed these settings to UPPERCASE
+          # v100 FLASH FIX: AnyKernel3 upstream renamed these settings to UPPERCASE
           # (BLOCK, IS_SLOT_DEVICE, ...). This workflow clones AK3 master unpinned,
           # so a fresh build picks up the new ak3-core.sh, which IGNORES the old
           # lowercase names. With $BLOCK unset, AK3 cannot resolve the boot
@@ -1142,7 +1167,7 @@ jobs:
           chmod 0755 ak3_work/anykernel.sh
 
           cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
-          OX1D3X3 OP13 ReSukiSU + CCTV18 INLINE SUSFS v99
+          OX1D3X3 OP13 ReSukiSU + CCTV18 INLINE SUSFS v100
           Device: OnePlus 13 / sun / PJZ110
           Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ env.CCTV18_KERNEL_REF }}
           Build assets: cctv18/oppo_oplus_realme_sm8750
@@ -1161,7 +1186,7 @@ jobs:
           EOF
           sed -i 's/^          //' ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt
 
-          zip_name="AK3_OP13_ReSukiSU_CCTV18_inline_stocklike_v99_${{ github.run_number }}_FLASH_THIS.zip"
+          zip_name="AK3_OP13_ReSukiSU_CCTV18_inline_stocklike_v100_${{ github.run_number }}_FLASH_THIS.zip"
           ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -1228,7 +1253,7 @@ jobs:
 
           if [ -f "$GITHUB_STEP_SUMMARY" ]; then
             {
-              echo "# OP13 ReSukiSU + CCTV18 Inline StockLike Daily v99"
+              echo "# OP13 ReSukiSU + CCTV18 Inline StockLike Daily v100"
               echo ""
               echo "## Verdict"
               echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
@@ -1245,7 +1270,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: OP13-RESUKISU-CCTV18-INLINE-STOCKLIKE-v99-${{ github.run_number }}
+          name: OP13-RESUKISU-CCTV18-INLINE-STOCKLIKE-v100-${{ github.run_number }}
           path: |
             artifacts/**
             _ox_debug/**
@@ -1258,11 +1283,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -s artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v99 ]; then
-            echo "::error::Build failed before producing Image. Download OP13-RESUKISU-CCTV18-INLINE-STOCKLIKE-v99 debug artifact."
+          if [ ! -s artifacts/Image_OP13_ReSukiSU_CCTV18_inline_stocklike_v100 ]; then
+            echo "::error::Build failed before producing Image. Download OP13-RESUKISU-CCTV18-INLINE-STOCKLIKE-v100 debug artifact."
             exit 1
           fi
-          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_ReSukiSU_CCTV18_inline_stocklike_v99_*_FLASH_THIS.zip >/dev/null 2>&1; then
+          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_ReSukiSU_CCTV18_inline_stocklike_v100_*_FLASH_THIS.zip >/dev/null 2>&1; then
             echo "::error::Image built but AnyKernel3 flashable ZIP was not produced."
             exit 1
           fi
