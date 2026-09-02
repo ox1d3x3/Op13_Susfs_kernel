@@ -420,7 +420,7 @@ jobs:
             echo "sukisu_tag=$tag" >> "$GITHUB_OUTPUT"
           fi
 
-          # v102: apk_sign.patch is OFF by default. SukiSU Ultra ships its own
+          # v103: apk_sign.patch is OFF by default. SukiSU Ultra ships its own
           # manager-signature verification, so CCTV18's KernelSU apk_sign.patch is
           # unnecessary here and never dry-runs cleanly on the SukiSU tree -- it only
           # produced a recurring skip-warning. Set OX_TRY_APK_SIGN=1 in the workflow
@@ -503,7 +503,32 @@ jobs:
           rm -rf susfs4ksu
 
           echo "==> Cloning CCTV18 SUSFS only: cctv18/susfs4oki @ ${{ inputs.susfs_ref }}"
-          git clone --depth=1 --branch "${{ inputs.susfs_ref }}" https://github.com/cctv18/susfs4oki.git susfs4ksu
+          # v103: susfs_ref may be a BRANCH/TAG or a COMMIT SHA.
+          # `git clone --branch` only accepts branch/tag names, so a pinned SHA has
+          # to be fetched explicitly (verified working: GitHub allows shallow
+          # fetch-by-SHA on this repo).
+          SUSFS_REF_IN="${{ inputs.susfs_ref }}"
+          if printf '%s' "$SUSFS_REF_IN" | grep -qE '^[0-9a-fA-F]{7,40}$'; then
+            echo "==> Fetching CCTV18 SUSFS at pinned commit $SUSFS_REF_IN"
+            rm -rf susfs4ksu && mkdir -p susfs4ksu
+            git -C susfs4ksu init -q
+            git -C susfs4ksu remote add origin https://github.com/cctv18/susfs4oki.git
+            if git -C susfs4ksu fetch -q --depth=1 origin "$SUSFS_REF_IN"; then
+              git -C susfs4ksu checkout -q FETCH_HEAD
+            else
+              echo "==> Shallow fetch-by-SHA unavailable; falling back to full clone."
+              rm -rf susfs4ksu
+              git clone -q https://github.com/cctv18/susfs4oki.git susfs4ksu
+              git -C susfs4ksu checkout -q "$SUSFS_REF_IN"
+            fi
+            got="$(git -C susfs4ksu rev-parse HEAD)"
+            case "$got" in
+              "$SUSFS_REF_IN"*) echo "==> SUSFS checked out at $got" ;;
+              *) echo "::error::Requested SUSFS ref $SUSFS_REF_IN but got $got."; exit 1 ;;
+            esac
+          else
+            git clone --depth=1 --branch "$SUSFS_REF_IN" https://github.com/cctv18/susfs4oki.git susfs4ksu
+          fi
           git -C susfs4ksu rev-parse HEAD | tee ../_ox_debug/cctv18_susfs_commit.txt
           git -C susfs4ksu remote -v | tee ../_ox_debug/cctv18_susfs_remote.txt
 
@@ -522,7 +547,7 @@ jobs:
           echo "Reason: v77 reached final link, then failed on SELinux policy-query symbols. Keep this lane clean and compile-safe first."
 
           cd common
-          # ---- v102: upstream security fix CVE-2026-43499 (rtmutex) ----
+          # ---- v103: upstream security fix CVE-2026-43499 (rtmutex) ----
           # Fixes a NULL-pointer dereference in remove_waiter(): when called via
           # rt_mutex_start_proxy_lock(), waiter->task may be NULL (never enqueued),
           # and the old code dereferenced it unconditionally.
@@ -589,12 +614,12 @@ jobs:
             fi
           fi
 
-          echo "==> 69_hide_stuff.patch is intentionally not applied in v102 SukiSU stable lane."
+          echo "==> 69_hide_stuff.patch is intentionally not applied in v103 SukiSU stable lane."
           echo "    SUSFS inline remains enabled; extra SELinux/map-hide policy-query patches are deferred to ReSuki/test builds."
 
 
 
-          # ---- v102: verify the SUSFS su-hook guard is the FIXED variant ----
+          # ---- v103: verify the SUSFS su-hook guard is the FIXED variant ----
           # History: CCTV18 susfs4oki 83dcd81 (2026-08-15) guarded the su hook in
           # fs/exec.c with susfs_is_current_proc_umounted(). That flag is set for
           # every SUSFS-"umounted" process -- i.e. every zygote-spawned app AND every
@@ -784,7 +809,7 @@ jobs:
           set_n() { scripts/config --file "$cfg" -d "$(cfg_sym "$1")" || true; }
           set_str() { scripts/config --file "$cfg" --set-str "$(cfg_sym "$1")" "$2" || true; }
 
-          echo "==> Applying v102 SukiSU Ultra daily-driver config profile: ${{ inputs.profile }}"
+          echo "==> Applying v103 SukiSU Ultra daily-driver config profile: ${{ inputs.profile }}"
           set_y CONFIG_KSU
           set_y CONFIG_KSU_MANUAL_SU
 
@@ -836,7 +861,7 @@ jobs:
           esac
 
           if [ "${{ inputs.SUSFS }}" = "On" ]; then
-            # v102: only the 10 SUSFS options that ACTUALLY EXIST in the root driver.
+            # v103: only the 10 SUSFS options that ACTUALLY EXIST in the root driver.
             # Verified against the Kconfig of all three projects (SukiSU-Ultra,
             # ReSukiSU, pershoot/KernelSU-Next) -- each defines exactly these 10.
             # REMOVED because no project defines them, so olddefconfig silently
@@ -942,7 +967,7 @@ jobs:
               CONFIG_IP6_NF_TARGET_MASQUERADE; do
               set_y "$opt"
             done
-            # v102: symbol-name corrections verified against the real 6.6.118
+            # v103: symbol-name corrections verified against the real 6.6.118
             # net/netfilter Kconfig. The following DID NOT EXIST and were silently
             # dropped by olddefconfig, so these features were never actually built:
             #   CONFIG_NETFILTER_XT_TARGET_HL -> real symbol is ..._TARGET_HL
@@ -1050,7 +1075,7 @@ jobs:
           echo "==> Final config scan"
           grep -E 'CONFIG_KSU|CONFIG_KPM|CONFIG_KALLSYMS|CONFIG_LOCALVERSION|CONFIG_TCP_CONG_BBR|CONFIG_DEFAULT_BBR|CONFIG_IP_SET|CONFIG_NTSYNC|CONFIG_LTO|CONFIG_CC_OPTIMIZE|CONFIG_NETFILTER_XT_TARGET_HL|CONFIG_ADIOS|CONFIG_BBG|CONFIG_BASEBAND|CONFIG_ZRAM|CONFIG_ZSMALLOC|CONFIG_CRYPTO_LZ4|CONFIG_LZ4|CONFIG_ZSTD' out/.config | tee "$GITHUB_WORKSPACE/_ox_debug/config-scan.txt" || true
 
-          # ---- v102 SUSFS config audit ----
+          # ---- v103 SUSFS config audit ----
           # Verifies that every SUSFS option we asked for actually landed as =y in
           # the FINAL .config. Previously four options were requested that no root
           # project defines, so olddefconfig silently dropped them and the build
@@ -1111,8 +1136,8 @@ jobs:
             exit 1
           fi
 
-          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v102"
-          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v102" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v102.sha256"
+          cp -f "$image" "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v103"
+          sha256sum "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v103" | tee "$GITHUB_WORKSPACE/artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v103.sha256"
 
           uts="unknown"
           if [ -f out/include/generated/utsrelease.h ]; then
@@ -1130,7 +1155,7 @@ jobs:
           rm -rf ak3_work
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3_work
           git -C ak3_work rev-parse HEAD | tee "$GITHUB_WORKSPACE/_ox_debug/anykernel3_commit.txt"
-          # --- AK3 naming-convention guard (v102) ---
+          # --- AK3 naming-convention guard (v103) ---
           # AK3 renamed its anykernel.sh settings to UPPERCASE. We write both
           # spellings, but if upstream ever changes convention AGAIN this guard
           # makes it obvious in the log instead of silently shipping a zip that
@@ -1164,7 +1189,7 @@ jobs:
           RAMFIXSVC
           chmod 0755 ak3_work/ramfix/service.sh
           rm -rf ak3_work/.git ak3_work/.github ak3_work/README.md || true
-          cp -f artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v102 ak3_work/Image
+          cp -f artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v103 ak3_work/Image
 
           cat > ak3_work/anykernel.sh <<'AK3'
           ### AnyKernel3 Ramdisk Mod Script
@@ -1195,7 +1220,7 @@ jobs:
           ### AnyKernel install
           ## boot shell variables
           # OP13 / PJZ110 is A/B slot device. Use partition-name detection, not old omap path.
-          # v102 FLASH FIX: AnyKernel3 upstream renamed these settings to UPPERCASE
+          # v103 FLASH FIX: AnyKernel3 upstream renamed these settings to UPPERCASE
           # (BLOCK, IS_SLOT_DEVICE, ...). This workflow clones AK3 master unpinned,
           # so a fresh build picks up the new ak3-core.sh, which IGNORES the old
           # lowercase names. With $BLOCK unset, AK3 cannot resolve the boot
@@ -1308,7 +1333,7 @@ jobs:
           chmod 0755 ak3_work/anykernel.sh
 
           cat > ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt <<EOF
-          OX1D3X3 OP13 SukiSU Ultra + CCTV18 INLINE SUSFS v102
+          OX1D3X3 OP13 SukiSU Ultra + CCTV18 INLINE SUSFS v103
           Device: OnePlus 13 / sun / PJZ110
           Kernel source: cctv18/android_kernel_common_oneplus_sm8750 @ ${{ env.CCTV18_KERNEL_REF }}
           Build assets: cctv18/oppo_oplus_realme_sm8750
@@ -1327,7 +1352,7 @@ jobs:
           EOF
           sed -i 's/^          //' ak3_work/OX_CCTV18_CLEAN_BUILD_INFO.txt
 
-          zip_name="AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v102_${{ github.run_number }}_FLASH_THIS.zip"
+          zip_name="AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v103_${{ github.run_number }}_FLASH_THIS.zip"
           ( cd ak3_work && zip -r9 "../artifacts/$zip_name" . >/dev/null )
           sha256sum "artifacts/$zip_name" | tee "artifacts/$zip_name.sha256"
 
@@ -1394,7 +1419,7 @@ jobs:
 
           if [ -f "$GITHUB_STEP_SUMMARY" ]; then
             {
-              echo "# OP13 SukiSU Ultra + CCTV18 Inline StockLike Daily v102"
+              echo "# OP13 SukiSU Ultra + CCTV18 Inline StockLike Daily v103"
               echo ""
               echo "## Verdict"
               echo "- Main flashable zip uses fixed AnyKernel3 OP13 boot detection."
@@ -1411,7 +1436,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v102-${{ github.run_number }}
+          name: OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v103-${{ github.run_number }}
           path: |
             artifacts/**
             _ox_debug/**
@@ -1424,11 +1449,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -s artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v102 ]; then
-            echo "::error::Build failed before producing Image. Download OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v102 debug artifact."
+          if [ ! -s artifacts/Image_OP13_SukiSUUltra_CCTV18_inline_stocklike_v103 ]; then
+            echo "::error::Build failed before producing Image. Download OP13-SUKISU-CCTV18-INLINE-STOCKLIKE-v103 debug artifact."
             exit 1
           fi
-          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v102_*_FLASH_THIS.zip >/dev/null 2>&1; then
+          if [ "true" = "true" ] && ! ls artifacts/AK3_OP13_SukiSUUltra_CCTV18_inline_stocklike_v103_*_FLASH_THIS.zip >/dev/null 2>&1; then
             echo "::error::Image built but AnyKernel3 flashable ZIP was not produced."
             exit 1
           fi
